@@ -2,13 +2,13 @@ openapi: 3.0.3
 info:
   title: 企业全格式数字资产防泄密系统 API
   description: |
-    本文档定义企业全格式数字资产防泄密系统的 RESTful API 规范。
+    本文档定义企业全格式数字资产防泄密系统的 RESTful API 规范（v3.1）。
 
     设计原则：
-    - 统一鉴权：所有 API（除登录外）需在 Header 中携带 JWT
+    - 统一鉴权：所有 API（除登录/健康检查外）需在 Header 中携带 JWT
     - 资源命名：复数名词、kebab-case
-    - 错误响应：统一 RFC 7807 Problem Details
-    - 分页：cursor-based（默认）+ page-based（管理后台）
+    - 错误响应：统一 RFC 7807 Problem Details，含 trace_id
+    - 分页：page-based（管理后台），cursor-based（前端列表）
     - 版本：URL 前缀 /api/v1/
 
     安全模型：
@@ -16,7 +16,19 @@ info:
     - RBAC + 资源级 ACL
     - 密级 L1-L4（详见 v3.0 第六章 6.3.1）
 
-  version: 1.0.0
+    API 版本管理策略：
+    - v1 至少维护 12 个月
+    - 破坏性变更发布 v2，旧版本并行运行 6 个月
+    - 弃用 API 在响应头增加 `Sunset: <date>` + `Deprecation: true`
+    - 客户端应在 6 个月内迁移到新版本
+    - 详细变更记录：CHANGELOG.md（按语义化版本 SemVer 2.0）
+
+    限流策略（全局）：
+    - 普通接口：每用户 100 req/min、每 IP 1000 req/min
+    - 写接口（POST/PUT/DELETE）：每用户 30 req/min
+    - 登录接口：每 IP 5 req/min、每工号 3 req/min（详见 /auth/login）
+
+  version: 3.1.0
   contact:
     name: 安全团队
     email: security@example.com
@@ -35,6 +47,8 @@ servers:
 tags:
   - name: auth
     description: 鉴权与会话
+  - name: health
+    description: 健康检查
   - name: users
     description: 用户与角色
   - name: videos
@@ -53,6 +67,16 @@ tags:
     description: 水印与溯源
   - name: audit
     description: 审计日志
+  - name: search
+    description: 全文搜索
+  - name: tags
+    description: 标签管理
+  - name: notifications
+    description: 通知与消息
+  - name: webhooks
+    description: 回调注册
+  - name: admin
+    description: 管理员接口（备份/恢复）
 
 security:
   - bearerAuth: []
@@ -63,7 +87,14 @@ paths:
     post:
       tags: [auth]
       summary: 用户登录
-      description: 工号 + 密码登录，成功返回 access_token + refresh_token
+      description: |
+        工号 + 密码登录，成功返回 access_token + refresh_token。
+
+        **限流策略**：
+        - 单 IP 每分钟 5 次（429 拒绝）
+        - 单工号每分钟 3 次（429 拒绝）
+        - 单 IP 单日 100 次后要求图形验证码（响应头 `X-Captcha-Required: true`）
+        - 连续 5 次密码错误 → 账号锁定 30 分钟（需管理员解锁或工单申请）
       security: []
       requestBody:
         required: true
@@ -74,12 +105,37 @@ paths:
       responses:
         '200':
           description: 登录成功
+          headers:
+            X-RateLimit-Limit:
+              schema: { type: integer }
+              description: 限流上限
+            X-RateLimit-Remaining:
+              schema: { type: integer }
+              description: 剩余配额
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                refresh_token: rft_xxxxxxxxxxxx
+                token_type: Bearer
+                expires_in: 600
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '423':
+          description: 账号锁定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                type: about:blank
+                title: Account Locked
+                status: 423
+                detail: 连续登录失败过多，账号已被锁定 30 分钟
+                code: AUTH_ACCOUNT_LOCKED
+                trace_id: abc123def456
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -371,7 +427,13 @@ paths:
       summary: 上报播放日志
       description: |
         前端播放器周期性上报播放状态，用于审计与溯源。
-        **注意**：此接口独立于 Secure Link，是审计通道。
+
+        **鉴权要求**（v3.1 加强）：
+        - 必须携带 JWT（继承全局 security）
+        - 服务端校验：JWT 中的 user_id_hash 与 session_id 必须匹配 active session
+        - 频率限制：每用户每分钟 60 次（429 拒绝）
+        - 失败重试：客户端使用指数退避，避免雪崩
+        - **安全警示**：此接口是溯源系统的审计通道，未授权或异常请求将触发告警
       parameters:
         - in: path
           name: video_id
@@ -387,6 +449,7 @@ paths:
               properties:
                 session_id:
                   type: string
+                  description: 会话 ID（与 JWT 中的 session 绑定）
                 event:
                   type: string
                   enum: [start, progress, pause, end, error, screenshot_detected]
@@ -398,6 +461,12 @@ paths:
       responses:
         '204':
           description: 上报成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   # ===== 文档资源 =====
   /documents:
@@ -801,11 +870,11 @@ paths:
                     type: string
                     description: 签名 URL（30 分钟有效）
 
-  # ===== 健康检查 =====
+  # ===== 健康检查（v3.1 细化）=====
   /health:
     get:
-      tags: [auth]
-      summary: 健康检查
+      tags: [health]
+      summary: 总体健康检查（兼容旧版）
       security: []
       responses:
         '200':
@@ -813,14 +882,575 @@ paths:
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '503':
+          description: 服务不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /health/live:
+    get:
+      tags: [health]
+      summary: K8s liveness 探针
+      description: |
+        仅判断进程是否存活；不检查依赖。
+        K8s 配置：livenessProbe httpGet /health/live
+      security: []
+      responses:
+        '200':
+          description: 存活
+          content:
+            application/json:
+              schema:
                 type: object
                 properties:
-                  status: { type: string, enum: [ok, degraded] }
-                  components:
-                    type: object
-                    additionalProperties:
-                      type: string
-                      enum: [ok, degraded, down]
+                  status: { type: string, example: alive }
+                  uptime_sec: { type: integer }
+                  pid: { type: integer }
+
+  /health/ready:
+    get:
+      tags: [health]
+      summary: K8s readiness 探针
+      description: |
+        检查应用是否准备好接收流量（含依赖健康）。
+        K8s 配置：readinessProbe httpGet /health/ready
+      security: []
+      responses:
+        '200':
+          description: 就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '503':
+          description: 未就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /health/components:
+    get:
+      tags: [health]
+      summary: 各依赖组件健康状态
+      description: |
+        详细返回 MySQL、Redis、MinIO、Vault、RabbitMQ 等依赖的状态。
+        管理员使用，含敏感信息（如 DB 连接池统计）。
+      responses:
+        '200':
+          description: 详细健康状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentsHealth'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===== WebSocket 实时通知（v3.1 新增）=====
+  /ws/notifications:
+    get:
+      tags: [notifications]
+      summary: WebSocket 长连接（实时通知）
+      description: |
+        客户端通过 WebSocket 连接到 `/ws/notifications?token=<JWT>`，接收实时推送：
+        - 外发审批结果（approval.decided）
+        - 密钥吊销告警（key.revoked）
+        - 驱动心跳异常（driver.offline）
+        - 合规事件（compliance.alert）
+        - 系统公告（system.broadcast）
+
+        **协议**：WebSocket over TLS（WSS）
+        **心跳**：客户端每 30s 发送 ping，服务端响应 pong
+        **重连**：客户端断线后按指数退避重连（最大 5 分钟）
+        **消息格式**：JSON `{"type": "...", "data": {...}, "ts": "..."}`
+      security: []
+      parameters:
+        - in: query
+          name: token
+          required: true
+          schema: { type: string }
+          description: JWT（作为查询参数传入，因为浏览器 WebSocket API 不支持自定义 Header）
+      responses:
+        '101':
+          description: 升级为 WebSocket
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===== 批量操作（v3.1 新增）=====
+  /videos/batch-delete:
+    post:
+      tags: [videos]
+      summary: 批量删除视频
+      description: 管理员批量删除视频（最多 100 个），异步触发清理任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [video_ids, reason]
+              properties:
+                video_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 100
+                reason:
+                  type: string
+                  minLength: 10
+      responses:
+        '202':
+          description: 任务已接受
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id: { type: string }
+                  affected_count: { type: integer }
+
+  /videos/batch-permission:
+    post:
+      tags: [videos]
+      summary: 批量授权
+      description: 给多个用户批量授权视频访问权限
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [video_id, user_ids, actions]
+              properties:
+                video_id: { type: integer }
+                user_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 200
+                actions:
+                  type: integer
+                  description: 位掩码：1=view 2=download 4=edit 8=delete
+                expire_at:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: 授权成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  granted_count: { type: integer }
+
+  /documents/batch-delete:
+    post:
+      tags: [documents]
+      summary: 批量删除文档
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_ids, reason]
+              properties:
+                doc_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 100
+                reason:
+                  type: string
+      responses:
+        '202':
+          description: 任务已接受
+
+  # ===== 全文搜索（v3.1 新增）=====
+  /search/videos:
+    get:
+      tags: [search]
+      summary: 视频全文检索
+      description: 基于 Elasticsearch 的全文检索，支持标题、描述、标签、ASR 字幕
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string, minLength: 2 }
+          description: 检索关键字
+        - in: query
+          name: classification_lv
+          schema: { type: string, enum: [L1, L2, L3, L4] }
+        - in: query
+          name: highlight
+          schema: { type: boolean, default: true }
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Video'
+                        - type: object
+                          properties:
+                            highlight:
+                              type: object
+                              description: 高亮片段（如标题、ASR 字幕）
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+                  took_ms: { type: integer }
+
+  /search/documents:
+    get:
+      tags: [search]
+      summary: 文档全文检索
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+        - in: query
+          name: file_type
+          schema: { type: string, enum: [docx, pdf, xlsx, pptx, image] }
+        - in: query
+          name: highlight
+          schema: { type: boolean, default: true }
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Document'
+                        - type: object
+                          properties:
+                            highlight:
+                              type: object
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+
+  # ===== 标签管理（v3.1 新增）=====
+  /tags:
+    get:
+      tags: [tags]
+      summary: 标签列表
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string, enum: [video, document, both] }
+        - in: query
+          name: keyword
+          schema: { type: string }
+      responses:
+        '200':
+          description: 标签列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tag'
+    post:
+      tags: [tags]
+      summary: 创建标签
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagCreate'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+
+  /tags/{tag_id}:
+    parameters:
+      - in: path
+        name: tag_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [tags]
+      summary: 标签详情
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+    delete:
+      tags: [tags]
+      summary: 删除标签
+      responses:
+        '204':
+          description: 删除成功
+
+  /videos/{video_id}/tags:
+    parameters:
+      - in: path
+        name: video_id
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [tags]
+      summary: 给视频添加标签
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tag_ids:
+                  type: array
+                  items: { type: integer }
+      responses:
+        '200':
+          description: 成功
+    delete:
+      tags: [tags]
+      summary: 从视频移除标签
+      responses:
+        '204':
+          description: 成功
+
+  # ===== 通知消费端（v3.1 新增）=====
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: 当前用户通知列表
+      parameters:
+        - in: query
+          name: is_read
+          schema: { type: boolean }
+        - in: query
+          name: type
+          schema: { type: string, enum: [approval, key_alert, driver_alert, compliance, system] }
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 通知列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+                  unread_count: { type: integer }
+
+  /notifications/{notif_id}/read:
+    parameters:
+      - in: path
+        name: notif_id
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [notifications]
+      summary: 标记已读
+      responses:
+        '204':
+          description: 成功
+
+  /notifications/read-all:
+    post:
+      tags: [notifications]
+      summary: 全部标记已读
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated_count: { type: integer }
+
+  /notifications/preferences:
+    get:
+      tags: [notifications]
+      summary: 获取通知偏好
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPreferences' }
+    put:
+      tags: [notifications]
+      summary: 更新通知偏好
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPreferences' }
+      responses:
+        '200':
+          description: 成功
+
+  # ===== Webhook 回调（v3.1 新增）=====
+  /webhooks:
+    get:
+      tags: [webhooks]
+      summary: 当前用户注册的回调列表
+      responses:
+        '200':
+          description: 回调列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Webhook' }
+    post:
+      tags: [webhooks]
+      summary: 注册回调
+      description: |
+        注册外部系统回调 URL，事件触发时推送。
+        回调 URL 必须支持 HTTPS；签名机制：HMAC-SHA256(secret, body)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookCreate' }
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+
+  /webhooks/{webhook_id}:
+    parameters:
+      - in: path
+        name: webhook_id
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [webhooks]
+      summary: 注销回调
+      responses:
+        '204':
+          description: 成功
+
+  /webhooks/{webhook_id}/deliveries:
+    parameters:
+      - in: path
+        name: webhook_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [webhooks]
+      summary: 回调投递历史
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+      responses:
+        '200':
+          description: 投递历史
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WebhookDelivery' }
+
+  # ===== 管理员：备份与恢复（v3.1 新增）=====
+  /admin/backups:
+    get:
+      tags: [admin]
+      summary: 备份列表
+      responses:
+        '200':
+          description: 备份列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Backup' }
+    post:
+      tags: [admin]
+      summary: 触发备份
+      description: 异步触发全量或增量备份；高危操作需多因素认证
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, mfa_code]
+              properties:
+                type:
+                  type: string
+                  enum: [full, incremental]
+                description:
+                  type: string
+                mfa_code:
+                  type: string
+                  description: MFA 二次验证码
+      responses:
+        '202':
+          description: 备份任务已接受
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup_id: { type: string }
+                  task_id: { type: string }
+
+  /admin/backups/{backup_id}/restore:
+    parameters:
+      - in: path
+        name: backup_id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [admin]
+      summary: 从备份恢复（高危）
+      description: |
+        **高危操作**：将从备份恢复数据，会覆盖当前数据。
+        需要多因素认证 + 二级审批（主管确认）。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_code, approval_token]
+              properties:
+                mfa_code: { type: string }
+                approval_token:
+                  type: string
+                  description: 二级审批令牌（主管通过工单系统签发）
+                confirm:
+                  type: boolean
+                  description: 必须为 true
+      responses:
+        '202':
+          description: 恢复任务已接受
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id: { type: string }
 
 components:
   securitySchemes:
@@ -869,7 +1499,7 @@ components:
     # ===== 通用 =====
     Error:
       type: object
-      required: [type, title, status]
+      required: [type, title, status, trace_id]
       properties:
         type: { type: string, format: uri }
         title: { type: string }
@@ -877,6 +1507,61 @@ components:
         detail: { type: string }
         instance: { type: string }
         code: { type: string, description: 业务错误码 }
+        trace_id:
+          type: string
+          description: |
+            服务端追踪 ID（与日志关联）。
+            用户报告问题时附带此 ID，可快速定位服务端日志。
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        version: { type: string, description: 服务版本 }
+        uptime_sec: { type: integer }
+        timestamp: { type: string, format: date-time }
+
+    ComponentsHealth:
+      type: object
+      properties:
+        overall:
+          type: string
+          enum: [ok, degraded, down]
+        components:
+          type: object
+          properties:
+            mysql:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+                pool_active: { type: integer, description: 当前活跃连接数 }
+                pool_idle: { type: integer }
+            redis:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+                memory_used_mb: { type: integer }
+            minio:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+                disk_used_gb: { type: integer }
+            vault:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, degraded, down] }
+                latency_ms: { type: integer }
+                sealed: { type: boolean, description: Vault 是否已封存 }
+            rabbitmq:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                queue_depth: { type: integer }
 
     Pagination:
       type: object
@@ -1290,3 +1975,150 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuditLog' }
         pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ===== 标签（v3.1 新增）=====
+    Tag:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        code: { type: string, description: URL 友好的英文代号 }
+        type:
+          type: string
+          enum: [video, document, both]
+        color: { type: string, description: 显示颜色（hex） }
+        use_count: { type: integer }
+
+    TagCreate:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 32 }
+        code: { type: string, pattern: '^[a-z0-9-]+$' }
+        type:
+          type: string
+          enum: [video, document, both]
+        color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+
+    # ===== 通知（v3.1 新增）=====
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        type:
+          type: string
+          enum: [approval, key_alert, driver_alert, compliance, system]
+        title: { type: string }
+        content: { type: string }
+        related_resource_type:
+          type: string
+          enum: [video, document, approval, none]
+        related_resource_id: { type: integer, nullable: true }
+        is_read: { type: boolean }
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    NotificationPreferences:
+      type: object
+      properties:
+        channels:
+          type: object
+          properties:
+            email: { type: boolean }
+            sms: { type: boolean }
+            im_webhook: { type: boolean }
+            in_app: { type: boolean }
+        types:
+          type: object
+          description: 各类通知是否启用
+          properties:
+            approval: { type: boolean }
+            key_alert: { type: boolean }
+            driver_alert: { type: boolean }
+            compliance: { type: boolean }
+            system: { type: boolean }
+        quiet_hours:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            start: { type: string, example: '22:00' }
+            end: { type: string, example: '08:00' }
+
+    # ===== Webhook（v3.1 新增）=====
+    Webhook:
+      type: object
+      properties:
+        id: { type: integer }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items:
+            type: string
+            enum:
+              - approval.decided
+              - key.revoked
+              - driver.offline
+              - document.uploaded
+              - video.processed
+        secret:
+          type: string
+          description: 签名密钥（创建时返回一次）
+        status:
+          type: string
+          enum: [active, paused, failed]
+        created_at: { type: string, format: date-time }
+
+    WebhookCreate:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+          pattern: '^https://'
+        events:
+          type: array
+          items: { type: string }
+          minItems: 1
+        description: { type: string }
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: integer }
+        webhook_id: { type: integer }
+        event: { type: string }
+        payload: { type: string, description: JSON 负载 }
+        response_status: { type: integer }
+        response_body: { type: string }
+        delivered_at: { type: string, format: date-time }
+        retry_count: { type: integer }
+
+    # ===== 备份（v3.1 新增）=====
+    Backup:
+      type: object
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [full, incremental]
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        size_bytes: { type: integer }
+        started_at: { type: string, format: date-time }
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        operator_id: { type: integer }
+        description: { type: string }
+        storage_path: { type: string, description: 备份存储位置 }

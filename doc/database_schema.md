@@ -55,6 +55,7 @@
 | created_at | DATETIME(3) | NOT NULL | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updated_at | DATETIME(3) | NOT NULL, ON UPDATE | CURRENT_TIMESTAMP(3) | 更新时间 |
 | deleted_at | DATETIME(3) | NULL | NULL | 软删除时间 |
+| version | INT UNSIGNED | NOT NULL | 0 | 乐观锁版本号（MyBatis-Plus @Version） |
 
 **索引**：
 - PRIMARY KEY (id)
@@ -316,7 +317,11 @@ system:audit_export, system:user_manage, system:role_manage
 | status | TINYINT | NOT NULL | 0 | 0=pending 1=approved 2=rejected 3=expired 4=revoked |
 | current_open_count | INT UNSIGNED | NOT NULL | 0 | 已打开次数 |
 | final_decision_at | DATETIME(3) | | NULL | 最终决策时间 |
+| revoked_by | BIGINT UNSIGNED | FK→sys_user.id | NULL | 撤销人（紧急撤销） |
+| revoked_at | DATETIME(3) | | NULL | 撤销时间 |
+| revoke_reason | VARCHAR(512) | | NULL | 撤销原因（合规审计必填） |
 | created_at | DATETIME(3) | NOT NULL | | |
+| version | INT UNSIGNED | NOT NULL | 0 | 乐观锁 |
 
 **索引**：
 - PRIMARY KEY (id)
@@ -598,6 +603,275 @@ system:audit_export, system:user_manage, system:role_manage
 
 ---
 
-**文档版本**：v1.0  ·  日期：2026-08-12  ·  作者：Claude Code
+## 十、数据库迁移规范（v3.1 新增）
+
+### 10.1 工具选型
+
+- **首选**：**Flyway**（Spring Boot 原生集成，Open Source，社区活跃）
+- **备选**：Liquibase（功能更丰富但配置复杂）
+- **不推荐**：自研迁移工具
+
+### 10.2 命名规范
+
+```
+格式：V<version>__<description>.sql
+示例：V20260812__add_driver_status_table.sql
+      V20260815__add_revoked_by_to_approval.sql
+      V20260820__add_index_on_video_file_hash.sql
+```
+
+- 版本号：YYYYMMDD（发版日期），同一天多个迁移按 `V20260812.1`、`V20260812.2` 顺序编号
+- 描述：英文小写 + 下划线，描述迁移内容
+- 路径：`src/main/resources/db/migration/`
+
+### 10.3 禁用操作（必须分步执行）
+
+| 禁用操作 | 替代方案 |
+| --- | --- |
+| `ALTER TABLE ... DROP COLUMN` | 标记 deprecated → 多版本兼容 → 后续版本移除 |
+| `ALTER TABLE ... MODIFY COLUMN type` | 新建列 → 双写 → 数据迁移 → 切换 → 删旧列 |
+| `ALTER TABLE ... ADD INDEX`（大表）） | 使用 gh-ost 或 pt-online-schema-change 异步执行 |
+| 一次性 `UPDATE` 大表 | 分批更新（如每次 1 万行 + sleep 100ms） |
+
+### 10.4 大表 ALTER 工具
+
+- **gh-ost**（GitHub 开源）：基于 binlog 的在线 ALTER，不锁表
+- **pt-online-schema-change**（Percona）：触发器方式，需注意复制延迟
+- 选择：优先 gh-ost，对主从延迟敏感时使用 pt-osc
+
+### 10.5 灰度发布规范
+
+1. **本地验证**：开发环境完整跑通 migration
+2. **预发布**：staging 环境执行；与生产 schema 必须一致
+3. **生产灰度**：先在 1 个分片执行；观察 1 小时无异常后全量
+4. **回滚预案**：每个 migration 必须有对应 `U<version>__<description>.sql` 回滚脚本（Flyway `repair` 命令记录）
+5. **变更窗口**：大表 ALTER 安排在业务低峰（建议 02:00-06:00）
+
+---
+
+## 十一、时区与精度统一规范（v3.1 新增）
+
+### 11.1 数据库层
+
+- 所有时间字段类型：**`DATETIME(3)`**（毫秒精度）
+- 数据库连接时区：**`UTC`**
+- 字符集：**`utf8mb4`** / **`utf8mb4_unicode_ci`**
+
+### 11.2 应用层（Spring Boot）
+
+```yaml
+spring:
+  jackson:
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSS'Z'
+  datasource:
+    url: jdbc:mysql://.../?serverTimezone=UTC&useUnicode=true&characterEncoding=utf8
+```
+
+```java
+// 实体类示例
+@JsonFormat(shape = JsonFormat.Shape.STRING, timezone = "UTC")
+private LocalDateTime createdAt;
+```
+
+### 11.3 前端层
+
+- 使用 **dayjs** 或 **luxon** 处理时区
+- 用户偏好时区存于 `localStorage`，默认浏览器时区
+- 显示格式：`2026-08-12 14:00:00 UTC+8`（带时区标注）
+
+### 11.4 API 层
+
+- 所有时间字段统一 **ISO-8601 + UTC**：`2026-08-12T14:00:00.000Z`
+- 后端不自动转换时区；前端按用户时区渲染
+
+---
+
+## 十二、应用层加密策略（v3.1 新增）
+
+### 12.1 加密分层
+
+| 层级 | 用途 | 实现 |
+| --- | --- | --- |
+| 应用层字段加密 | PII 字段（real_name、email、phone、mfa_secret） | Vault Transit + 应用层加解密 |
+| 数据库 TDE | 全库加密（防止磁盘失窃） | MySQL Enterprise / 文件级加密 |
+| 备份加密 | 备份文件加密 | AES-256-GCM，密钥存 Vault |
+| 传输加密 | 客户端到服务端、服务端到 DB | TLS 1.2+ |
+
+### 12.2 PII 字段加密实现
+
+```java
+// 加密示例（伪代码）
+String encrypt(String plaintext) {
+    return vault.transit.encrypt("pii-key", plaintext);
+}
+String decrypt(String ciphertext) {
+    return vault.transit.decrypt("pii-key", ciphertext);
+}
+```
+
+### 12.3 密钥轮转
+
+- 主密钥（KEK）：每 90 天轮转
+- 数据加密密钥（DEK）：每 365 天轮转
+- 旧密钥保留期：轮转后保留 180 天（解密历史数据）
+- Vault 密钥版本：`pii-key:v1`、`pii-key:v2`，解密时按版本路由
+
+### 12.4 字段访问审计
+
+PII 字段（real_name、email、phone）访问需记录到 `operation_log`：
+- `operation_type = view_pii`
+- 包含访问者、访问对象、原因
+
+---
+
+## 十三、软删除与乐观锁规范（v3.1 新增）
+
+### 13.1 软删除规范
+
+| 表 | 软删除字段 | 策略 |
+| --- | --- | --- |
+| sys_user | `deleted_at` | 已支持；30 天后硬删除 |
+| video_resource | `deleted_at` | 已支持；保留 90 天 |
+| doc_resource | `deleted_at` | 已支持；保留 90 天 |
+| sys_role | — | 建议增加 `deleted_at`（v3.2） |
+| distribution_approval | — | 业务要求硬删除（合规审计） |
+| 操作日志类 | — | 不允许删除（合规） |
+
+**应用层实现**：
+```java
+// MyBatis-Plus 配置
+@TableLogic
+private LocalDateTime deletedAt;
+```
+
+**FK 关联**：`ON DELETE RESTRICT`；通过应用层实现软删除，避免 DB 级硬删
+
+### 13.2 乐观锁规范
+
+所有业务表必须有 `version` 字段（INT UNSIGNED NOT NULL DEFAULT 0）：
+
+```java
+@Version
+private Integer version;
+```
+
+```sql
+UPDATE video_resource
+SET ..., version = version + 1
+WHERE id = ? AND version = ?
+```
+
+应用层捕获 `OptimisticLockingFailureException` 后重试（最多 3 次），避免并发覆盖。
+
+---
+
+## 十四、索引使用率监控（v3.1 新增）
+
+### 14.1 监控指标
+
+| 指标 | 来源 | 告警阈值 |
+| --- | --- | --- |
+| 索引使用率 | `performance_schema.table_io_waits_summary_by_index_usage` | 30 天未使用的索引需评估删除 |
+| 慢查询 | `slow_query_log`（long_query_time = 1s） | 每小时 > 100 条告警 |
+| 索引基数 | `INFORMATION_SCHEMA.STATISTICS` | cardinality < 行数 1% 提示索引失效 |
+
+### 14.2 索引维护
+
+- **统计信息更新**：`ANALYZE TABLE` 每周日 03:00 自动执行
+- **碎片整理**：`OPTIMIZE TABLE` 当碎片率 > 30% 时执行（业务低峰）
+- **索引审查**：每季度一次 SRE + DBA 联合审查，删除冗余索引
+
+### 14.3 索引规范
+
+- 单表索引数 ≤ 5 个（过多影响写入性能）
+- 联合索引遵循最左前缀原则
+- TEXT/BLOB 字段必须指定前缀长度（如 `VARCHAR(255)`）
+- 不在低基数列（如 status、type）单独建索引（区分度低）
+
+---
+
+## 十五、Notification 通知表（v3.1 新增，配合 OpenAPI）
+
+| 字段 | 类型 | 约束 | 默认值 | 说明 |
+|---|---|---|---|---|
+| id | BIGINT UNSIGNED | PK | | |
+| user_id | BIGINT UNSIGNED | NOT NULL, FK→sys_user.id | | 接收用户 |
+| type | VARCHAR(32) | NOT NULL | | approval / key_alert / driver_alert / compliance / system |
+| title | VARCHAR(255) | NOT NULL | | 标题 |
+| content | TEXT | | NULL | 内容 |
+| related_resource_type | VARCHAR(32) | | NULL | video / document / approval / none |
+| related_resource_id | BIGINT UNSIGNED | | NULL | |
+| is_read | TINYINT(1) | NOT NULL | 0 | |
+| read_at | DATETIME(3) | | NULL | |
+| created_at | DATETIME(3) | NOT NULL | | |
+| expires_at | DATETIME(3) | | NULL | 通知过期时间（可选自动清理） |
+
+**索引**：
+- PRIMARY KEY (id)
+- KEY idx_user_unread (user_id, is_read, created_at)
+- KEY idx_created_at (created_at)（清理过期通知）
+- KEY idx_related (related_resource_type, related_resource_id)
+
+---
+
+## 十六、Webhook 注册表（v3.1 新增）
+
+| 字段 | 类型 | 约束 | 默认值 | 说明 |
+|---|---|---|---|---|
+| id | BIGINT UNSIGNED | PK | | |
+| owner_id | BIGINT UNSIGNED | NOT NULL, FK→sys_user.id | | 注册人 |
+| url | VARCHAR(512) | NOT NULL | | HTTPS URL |
+| events | VARCHAR(512) | NOT NULL | | 逗号分隔的事件列表 |
+| secret_hash | CHAR(64) | NOT NULL | | 签名密钥 SHA-256（不回显） |
+| status | TINYINT | NOT NULL | 1 | 1=active 2=paused 3=failed |
+| last_delivered_at | DATETIME(3) | | NULL | |
+| fail_count | INT UNSIGNED | NOT NULL | 0 | 连续失败次数（>10 自动暂停） |
+| created_at | DATETIME(3) | NOT NULL | | |
+
+**索引**：PRIMARY KEY (id), KEY idx_owner_id (owner_id), KEY idx_status (status)
+
+---
+
+## 十七、Webhook 投递历史表（v3.1 新增）
+
+| 字段 | 类型 | 约束 | 默认值 | 说明 |
+|---|---|---|---|---|
+| id | BIGINT UNSIGNED | PK | | |
+| webhook_id | BIGINT UNSIGNED | NOT NULL, FK→webhook.id | | |
+| event | VARCHAR(64) | NOT NULL | | |
+| payload | JSON | NOT NULL | | 投递内容 |
+| response_status | INT | | NULL | HTTP 状态码 |
+| response_body | TEXT | | NULL | 截断前 1KB |
+| delivered_at | DATETIME(3) | NOT NULL | | |
+| retry_count | TINYINT | NOT NULL | 0 | |
+| next_retry_at | DATETIME(3) | | NULL | 指数退避 |
+
+**索引**：PRIMARY KEY (id), KEY idx_webhook_delivered (webhook_id, delivered_at)
+
+**重试策略**：指数退避（1min → 5min → 30min → 2h → 12h），最多 5 次
+
+---
+
+## 十八、备份元数据表（v3.1 新增）
+
+| 字段 | 类型 | 约束 | 默认值 | 说明 |
+|---|---|---|---|---|
+| id | VARCHAR(64) | PK | | 备份 ID（UUID） |
+| type | TINYINT | NOT NULL | | 1=full 2=incremental |
+| status | TINYINT | NOT NULL | 0 | 0=pending 1=running 2=completed 3=failed |
+| size_bytes | BIGINT UNSIGNED | | NULL | |
+| storage_path | VARCHAR(512) | | NULL | MinIO/OSS 路径 |
+| started_at | DATETIME(3) | NOT NULL | | |
+| completed_at | DATETIME(3) | | NULL | |
+| operator_id | BIGINT UNSIGNED | FK→sys_user.id | | 操作人 |
+| description | VARCHAR(255) | | NULL | |
+| checksum | CHAR(64) | | NULL | SHA-256 校验和 |
+
+**索引**：PRIMARY KEY (id), KEY idx_status (status), KEY idx_started_at (started_at)
+
+---
+
+**文档版本**：v3.1  ·  日期：2026-08-12  ·  作者：Claude Code
 **对应方案书**：v3.0 第七章
 **配套文档**：`openapi.yaml`、`图3-数据库ER图.png`
