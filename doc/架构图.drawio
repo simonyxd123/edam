@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-08-12T14:00:00.000Z" agent="claude-code" version="24.0.0" type="device">
+  <diagram id="architecture" name="架构图">
+    <mxGraphModel dx="2000" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="企业全格式数字资产防泄密系统 — 整体架构" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="20" width="250" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="layer-前端展示层" value="前端展示层&#10;&#10;Vue3 + DPlayer/Video.js/hls.js&#10;Canvas 动态明水印&#10;防误操作拦截" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="50" y="120" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="layer-业务后端层" value="业务后端层&#10;&#10;Spring Boot 3.x&#10;RBAC + JWT 鉴权&#10;API 网关 (限流/熔断)" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e0e6;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="50" y="260" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="layer-异步处理流水线" value="异步处理流水线&#10;&#10;RabbitMQ&#10;Python Worker&#10;HLS 切片 + 帧指纹 + 盲水印&#10;GPU 加速" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#98fb98;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="50" y="400" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="layer-流媒体与文档服务层" value="流媒体与文档服务层&#10;&#10;Nginx (secure_link)&#10;FFmpeg&#10;文档外发网关&#10;透明加解密" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#dda0dd;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="50" y="540" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cross-可观测性层" value="可观测性层&#10;&#10;Prometheus + Grafana&#10;ELK / Loki&#10;SkyWalking" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#f0e68c;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="450" y="120" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cross-密钥管理层" value="密钥管理层&#10;&#10;HashiCorp Vault&#10;双密钥灰度轮转&#10;HSM 长期演进" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#f0e68c;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="450" y="260" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="terminal" value="终端层（员工）&#10;&#10;Windows / Linux 终端&#10;驱动：minifilter / FUSE&#10;MDM 移动管控" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#dda0dd;strokeColor=#333333;fontSize=12;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="450" y="540" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="storage" value="业务数据存储&#10;&#10;MySQL 8.0  |  Redis Cluster  |  MinIO" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#ffb6c1;strokeColor=#333333;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="850" y="120" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="users" value="终端与外部用户&#10;&#10;员工 / 主管 / 外协 / 审计员&#10;移动设备 (MDM 管控)" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#c0c0c0;strokeColor=#333333;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="850" y="260" width="380" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="threats" value="外部威胁：内部恶意员工 / 离职员工 / 黑客 / 外协" style="rounded=1;whiteSpace=wrap;html=1;rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#999999;fontSize=11;fontStyle=2;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="850" y="460" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-d0cead83" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#0066CC;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="layer-前端展示层" target="layer-业务后端层">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-72553824" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#0066CC;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="layer-业务后端层" target="layer-异步处理流水线">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-833f19aa" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#0066CC;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="layer-异步处理流水线" target="layer-流媒体与文档服务层">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-7f984b72" value="用户请求" style="endArrow=classic;html=1;rounded=0;strokeColor=#0066CC;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="users" target="layer-前端展示层">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-storage" value="数据响应" style="endArrow=classic;html=1;rounded=0;strokeColor=#CC6600;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="cross-可观测性层" target="storage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-encrypt" value="加密流量" style="endArrow=classic;html=1;rounded=0;strokeColor=#990099;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="users" target="terminal">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arrow-encrypt2" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#990099;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="terminal" target="cross-密钥管理层">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,1292 @@
+openapi: 3.0.3
+info:
+  title: 企业全格式数字资产防泄密系统 API
+  description: |
+    本文档定义企业全格式数字资产防泄密系统的 RESTful API 规范。
+
+    设计原则：
+    - 统一鉴权：所有 API（除登录外）需在 Header 中携带 JWT
+    - 资源命名：复数名词、kebab-case
+    - 错误响应：统一 RFC 7807 Problem Details
+    - 分页：cursor-based（默认）+ page-based（管理后台）
+    - 版本：URL 前缀 /api/v1/
+
+    安全模型：
+    - JWT 有效期 5-10 分钟，refresh token 7 天
+    - RBAC + 资源级 ACL
+    - 密级 L1-L4（详见 v3.0 第六章 6.3.1）
+
+  version: 1.0.0
+  contact:
+    name: 安全团队
+    email: security@example.com
+  license:
+    name: GPL-3.0
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产环境
+  - url: https://api-staging.example.com/api/v1
+    description: 预发布环境
+  - url: http://localhost:8080/api/v1
+    description: 本地开发
+
+tags:
+  - name: auth
+    description: 鉴权与会话
+  - name: users
+    description: 用户与角色
+  - name: videos
+    description: 视频资源
+  - name: documents
+    description: 文档资源
+  - name: playback
+    description: 视频播放与鉴权
+  - name: preview
+    description: 文档预览
+  - name: permissions
+    description: 权限管理
+  - name: distribution
+    description: 外发审批
+  - name: watermarks
+    description: 水印与溯源
+  - name: audit
+    description: 审计日志
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ===== 鉴权 =====
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 用户登录
+      description: 工号 + 密码登录，成功返回 access_token + refresh_token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: 刷新 access_token
+      description: 使用 refresh_token 换取新的 access_token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+                  description: refresh_token（7 天有效期）
+      responses:
+        '200':
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出
+      description: 撤销当前 access_token 与 refresh_token
+      responses:
+        '204':
+          description: 登出成功
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: 获取当前用户信息
+      description: |
+        返回当前登录用户的基本信息（PII 字段如姓名/工号仅在此接口返回）。
+        **重要**：Token 中不携带 PII，避免泄露。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+
+  # ===== 用户管理 =====
+  /users:
+    get:
+      tags: [users]
+      summary: 用户列表
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - in: query
+          name: dept_id
+          schema: { type: integer }
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, disabled, locked] }
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+    post:
+      tags: [users]
+      summary: 创建用户
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /users/{user_id}:
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [users]
+      summary: 用户详情
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [users]
+      summary: 更新用户
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+    delete:
+      tags: [users]
+      summary: 软删除用户（设置 status=disabled，立即吊销密钥）
+      responses:
+        '204':
+          description: 删除成功
+
+  /users/{user_id}/revoke-keys:
+    post:
+      tags: [users]
+      summary: 立即吊销用户所有密钥
+      description: 用于员工离职、违规等紧急场景
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '204':
+          description: 吊销成功
+
+  # ===== 视频资源 =====
+  /videos:
+    get:
+      tags: [videos]
+      summary: 视频资源列表
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - in: query
+          name: classification_lv
+          schema: { type: string, enum: [L1, L2, L3, L4] }
+        - in: query
+          name: uploader_id
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 视频列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoListResponse'
+    post:
+      tags: [videos]
+      summary: 上传视频
+      description: |
+        上传视频文件，触发 RabbitMQ 异步处理（HLS 切片 + 帧指纹提取）。
+        请求体为 multipart/form-data。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, classification_lv]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 视频文件（mp4/mov/avi 等）
+                classification_lv:
+                  type: string
+                  enum: [L1, L2, L3, L4]
+                title:
+                  type: string
+                description:
+                  type: string
+                tags:
+                  type: array
+                  items: { type: string }
+      responses:
+        '202':
+          description: 上传已接受，异步处理中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoUploadResponse'
+
+  /videos/{video_id}:
+    parameters:
+      - in: path
+        name: video_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [videos]
+      summary: 视频详情
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Video'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [videos]
+      summary: 删除视频（仅上传者或管理员）
+      responses:
+        '204':
+          description: 删除成功
+
+  # ===== 播放鉴权 =====
+  /playback/{video_id}/token:
+    post:
+      tags: [playback]
+      summary: 获取播放 Token
+      description: |
+        用户鉴权后请求播放视频，业务后端校验权限并签发 JWT。
+        实际播放 token 由 Nginx secure_link 二次校验。
+      parameters:
+        - in: path
+          name: video_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Token 签发成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackToken'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /playback/{video_id}/key:
+    get:
+      tags: [playback]
+      summary: 获取 HLS AES 密钥
+      description: |
+        HLS 播放器调用此接口获取解密密钥。响应头必须包含 Cache-Control: no-store。
+        返回的是 **一次性会话密钥**，绑定 session_id。
+      parameters:
+        - in: path
+          name: video_id
+          required: true
+          schema: { type: integer }
+        - in: header
+          name: X-Session-Token
+          required: true
+          schema: { type: string }
+          description: 会话 Token
+      responses:
+        '200':
+          description: 密钥返回
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: no-store
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: 16 字节 AES-128 密钥
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /playback/{video_id}/log:
+    post:
+      tags: [playback]
+      summary: 上报播放日志
+      description: |
+        前端播放器周期性上报播放状态，用于审计与溯源。
+        **注意**：此接口独立于 Secure Link，是审计通道。
+      parameters:
+        - in: path
+          name: video_id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, event]
+              properties:
+                session_id:
+                  type: string
+                event:
+                  type: string
+                  enum: [start, progress, pause, end, error, screenshot_detected]
+                timestamp:
+                  type: string
+                  format: date-time
+                progress_sec:
+                  type: integer
+      responses:
+        '204':
+          description: 上报成功
+
+  # ===== 文档资源 =====
+  /documents:
+    get:
+      tags: [documents]
+      summary: 文档资源列表
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - in: query
+          name: classification_lv
+          schema: { type: string, enum: [L1, L2, L3, L4] }
+        - in: query
+          name: file_type
+          schema: { type: string, enum: [docx, pdf, xlsx, pptx, image] }
+      responses:
+        '200':
+          description: 文档列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentListResponse'
+    post:
+      tags: [documents]
+      summary: 上传文档
+      description: 触发 RabbitMQ 异步任务（频域盲水印 + 格式转换）
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, classification_lv]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                classification_lv:
+                  type: string
+                  enum: [L1, L2, L3, L4]
+                title: { type: string }
+                enable_watermark:
+                  type: boolean
+                  default: true
+      responses:
+        '202':
+          description: 上传已接受
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUploadResponse'
+
+  /documents/{doc_id}:
+    parameters:
+      - in: path
+        name: doc_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [documents]
+      summary: 文档详情
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [documents]
+      summary: 删除文档
+      responses:
+        '204':
+          description: 删除成功
+
+  # ===== 文档预览 =====
+  /preview/{doc_id}:
+    get:
+      tags: [preview]
+      summary: 文档预览（含 Canvas 动态明水印）
+      parameters:
+        - in: path
+          name: doc_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: format
+          schema: { type: string, enum: [html, pdf_preview, image_per_page] }
+      responses:
+        '200':
+          description: 预览 HTML（含水印）
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /preview/{doc_id}/download:
+    get:
+      tags: [preview]
+      summary: 下载已加密文档
+      description: |
+        下载文档必须通过文档外发网关，返回的文档：
+        - 加密（AES-256）
+        - 含 Canvas 动态明水印
+        - 含频域盲水印（如启用）
+      parameters:
+        - in: path
+          name: doc_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 加密文档下载
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # ===== 权限管理 =====
+  /permissions:
+    get:
+      tags: [permissions]
+      summary: 权限列表
+      responses:
+        '200':
+          description: 权限列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Permission'
+
+  /roles:
+    get:
+      tags: [permissions]
+      summary: 角色列表
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+
+  /users/{user_id}/permissions:
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [permissions]
+      summary: 用户的有效权限（含 RBAC + 资源 ACL）
+      responses:
+        '200':
+          description: 权限列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EffectivePermission'
+
+  # ===== 外发审批 =====
+  /distribution/approvals:
+    get:
+      tags: [distribution]
+      summary: 外发审批列表
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, approved, rejected, expired, revoked] }
+        - in: query
+          name: applicant_id
+          schema: { type: integer }
+        - in: query
+          name: approver_id
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 审批列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListResponse'
+    post:
+      tags: [distribution]
+      summary: 发起外发审批
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalCreate'
+      responses:
+        '201':
+          description: 审批发起成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+
+  /distribution/approvals/{approval_id}:
+    parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [distribution]
+      summary: 审批详情
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+
+  /distribution/approvals/{approval_id}/decide:
+    post:
+      tags: [distribution]
+      summary: 审批决策
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [approve, reject]
+                comment:
+                  type: string
+      responses:
+        '200':
+          description: 决策成功
+
+  /distribution/approvals/{approval_id}/revoke:
+    post:
+      tags: [distribution]
+      summary: 撤销已审批的外发（紧急情况）
+      responses:
+        '204':
+          description: 撤销成功
+
+  # ===== 水印与溯源 =====
+  /watermarks/extract:
+    post:
+      tags: [watermarks]
+      summary: 提取水印/指纹
+      description: |
+        上传疑似泄露文件，提取水印或帧指纹，定位泄密者。
+        - 图片/PDF：频域盲水印提取
+        - 视频：帧指纹比对
+        - Word/Excel：隐写提取
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, type]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                type:
+                  type: string
+                  enum: [image, pdf, video, docx, xlsx]
+      responses:
+        '200':
+          description: 提取成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkExtractResult'
+
+  /watermarks/cache:
+    get:
+      tags: [watermarks]
+      summary: 水印缓存查询
+      parameters:
+        - in: query
+          name: resource_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: resource_type
+          required: true
+          schema: { type: string, enum: [video, document] }
+      responses:
+        '200':
+          description: 缓存命中情况
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkCacheEntry'
+
+  /watermarks/cache/{cache_id}:
+    delete:
+      tags: [watermarks]
+      summary: 清除水印缓存（资源权限变更时）
+      parameters:
+        - in: path
+          name: cache_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '204':
+          description: 清除成功
+
+  # ===== 审计日志 =====
+  /audit/logs:
+    get:
+      tags: [audit]
+      summary: 操作日志查询
+      parameters:
+        - in: query
+          name: user_id
+          schema: { type: integer }
+        - in: query
+          name: operation_type
+          schema: { type: string }
+        - in: query
+          name: start_time
+          schema: { type: string, format: date-time }
+        - in: query
+          name: end_time
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 日志列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListResponse'
+
+  /audit/logs/{log_id}:
+    get:
+      tags: [audit]
+      summary: 日志详情
+      parameters:
+        - in: path
+          name: log_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLog'
+
+  /audit/logs/export:
+    post:
+      tags: [audit]
+      summary: 导出日志
+      description: 异步生成日志导出文件，签名 URL 下载
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [start_time, end_time, format]
+              properties:
+                start_time: { type: string, format: date-time }
+                end_time: { type: string, format: date-time }
+                format:
+                  type: string
+                  enum: [csv, json, parquet]
+                filter:
+                  type: object
+                  description: 过滤条件
+      responses:
+        '202':
+          description: 导出任务已接受
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id: { type: string }
+                  download_url:
+                    type: string
+                    description: 签名 URL（30 分钟有效）
+
+  # ===== 健康检查 =====
+  /health:
+    get:
+      tags: [auth]
+      summary: 健康检查
+      security: []
+      responses:
+        '200':
+          description: 服务健康
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  components:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      enum: [ok, degraded, down]
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PageParam:
+      in: query
+      name: page
+      schema: { type: integer, default: 1, minimum: 1 }
+    PageSizeParam:
+      in: query
+      name: page_size
+      schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+
+  responses:
+    Unauthorized:
+      description: 未认证
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: 权限不足
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: 请求过于频繁
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    # ===== 通用 =====
+    Error:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, description: 业务错误码 }
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    # ===== 鉴权 =====
+    LoginRequest:
+      type: object
+      required: [employee_no, password]
+      properties:
+        employee_no:
+          type: string
+          description: 工号
+        password:
+          type: string
+          format: password
+        mfa_code:
+          type: string
+          description: 多因素认证码（L3+ 资源访问必须）
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT（5-10 分钟）
+        refresh_token:
+          type: string
+          description: refresh_token（7 天）
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: 过期秒数 }
+
+    CurrentUser:
+      type: object
+      properties:
+        user_id: { type: integer }
+        employee_no: { type: string }
+        real_name:
+          type: string
+          description: 真实姓名（PII）
+        dept_id: { type: integer }
+        dept_name: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+        last_login_time: { type: string, format: date-time }
+
+    # ===== 用户 =====
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        employee_no: { type: string }
+        real_name: { type: string }
+        email: { type: string, format: email }
+        dept_id: { type: integer }
+        status:
+          type: string
+          enum: [active, disabled, locked]
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time }
+
+    UserCreate:
+      type: object
+      required: [username, employee_no, real_name, password, dept_id]
+      properties:
+        username: { type: string }
+        employee_no: { type: string }
+        real_name: { type: string }
+        email: { type: string }
+        password: { type: string, format: password }
+        dept_id: { type: integer }
+        role_ids:
+          type: array
+          items: { type: integer }
+
+    UserUpdate:
+      type: object
+      properties:
+        real_name: { type: string }
+        email: { type: string }
+        dept_id: { type: integer }
+        status: { type: string, enum: [active, disabled, locked] }
+        role_ids:
+          type: array
+          items: { type: integer }
+
+    UserListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ===== 视频 =====
+    Video:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        file_hash: { type: string }
+        duration_sec: { type: integer }
+        size_bytes: { type: integer }
+        classification_lv: { type: string, enum: [L1, L2, L3, L4] }
+        uploader_id: { type: integer }
+        upload_time: { type: string, format: date-time }
+        hls_status:
+          type: string
+          enum: [pending, processing, ready, failed]
+        fingerprint_status:
+          type: string
+          enum: [pending, processing, ready, failed]
+        tags:
+          type: array
+          items: { type: string }
+
+    VideoUploadResponse:
+      type: object
+      properties:
+        video_id: { type: integer }
+        file_hash: { type: string }
+        hls_status: { type: string, example: pending }
+        fingerprint_status: { type: string, example: pending }
+        estimated_processing_sec: { type: integer }
+
+    VideoListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Video' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    PlaybackToken:
+      type: object
+      properties:
+        session_id:
+          type: string
+          description: 会话 ID（用于密钥接口绑定）
+        m3u8_url:
+          type: string
+          description: HLS 播放列表 URL（已签名）
+        token:
+          type: string
+          description: Secure Link token（md5/sha256）
+        expires_at:
+          type: string
+          format: date-time
+        key_url:
+          type: string
+          description: 密钥获取 URL
+        watermark_template:
+          type: string
+          description: 水印模板（前端 Canvas 渲染）
+
+    # ===== 文档 =====
+    Document:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        file_type:
+          type: string
+          enum: [docx, pdf, xlsx, pptx, image]
+        file_hash: { type: string }
+        size_bytes: { type: integer }
+        classification_lv: { type: string, enum: [L1, L2, L3, L4] }
+        uploader_id: { type: integer }
+        upload_time: { type: string, format: date-time }
+        watermark_status:
+          type: string
+          enum: [pending, processing, ready, failed, skipped]
+        preview_status:
+          type: string
+          enum: [pending, processing, ready, failed]
+
+    DocumentUploadResponse:
+      type: object
+      properties:
+        doc_id: { type: integer }
+        file_hash: { type: string }
+        watermark_status: { type: string }
+        preview_status: { type: string }
+
+    DocumentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Document' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ===== 权限 =====
+    Permission:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: 'video:read' }
+        name: { type: string }
+        resource_type:
+          type: string
+          enum: [video, document, system]
+
+    Role:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: 'dept_manager' }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+
+    EffectivePermission:
+      type: object
+      properties:
+        resource_type: { type: string }
+        resource_id: { type: integer, nullable: true }
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [view, download, edit, delete, distribute, print]
+        source:
+          type: string
+          enum: [rbac, acl, default]
+        expire_time:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ===== 外发审批 =====
+    Approval:
+      type: object
+      properties:
+        id: { type: integer }
+        doc_id: { type: integer }
+        applicant_id: { type: integer }
+        applicant_name: { type: string }
+        external_recipient:
+          type: object
+          properties:
+            name: { type: string }
+            email: { type: string }
+            org: { type: string }
+        reason:
+          type: string
+          description: 外发理由
+        valid_hours:
+          type: integer
+          description: 有效期（小时）
+        max_open_count:
+          type: integer
+          description: 最大打开次数
+        allow_forward: { type: boolean }
+        allow_print: { type: boolean }
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired, revoked]
+        decisions:
+          type: array
+          items:
+            type: object
+            properties:
+              approver_id: { type: integer }
+              approver_name: { type: string }
+              decision: { type: string, enum: [approve, reject] }
+              comment: { type: string }
+              decided_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        decided_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ApprovalCreate:
+      type: object
+      required: [doc_id, external_recipient, reason, valid_hours]
+      properties:
+        doc_id: { type: integer }
+        external_recipient:
+          type: object
+          required: [name, email]
+          properties:
+            name: { type: string }
+            email: { type: string, format: email }
+            org: { type: string }
+        reason:
+          type: string
+          minLength: 10
+          description: 外发理由（不少于 10 字）
+        valid_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          description: 有效期（1 小时-30 天）
+        max_open_count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 5
+        allow_forward: { type: boolean, default: false }
+        allow_print: { type: boolean, default: false }
+
+    ApprovalListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Approval' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ===== 水印 =====
+    WatermarkExtractResult:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [image, pdf, video, docx, xlsx]
+        extracted:
+          type: object
+          description: 提取到的内容
+          properties:
+            employee_no: { type: string }
+            extract_time: { type: string, format: date-time }
+            fingerprint:
+              type: string
+              description: 帧指纹哈希
+            confidence:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+              description: 提取置信度
+        matched_users:
+          type: array
+          description: 匹配到的可疑用户
+          items:
+            type: object
+            properties:
+              user_id: { type: integer }
+              employee_no: { type: string }
+              real_name: { type: string }
+              match_score: { type: number, format: float }
+              match_time:
+                type: string
+                format: date-time
+                description: 该用户访问资源的时间
+
+    WatermarkCacheEntry:
+      type: object
+      properties:
+        cache_id: { type: integer }
+        resource_id: { type: integer }
+        resource_type: { type: string }
+        user_id_hash: { type: string }
+        fingerprint: { type: string }
+        created_at: { type: string, format: date-time }
+        ttl_sec: { type: integer }
+        hit_count: { type: integer }
+
+    # ===== 审计 =====
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        user_employee_no: { type: string }
+        operation_type:
+          type: string
+          enum:
+            - login
+            - logout
+            - view
+            - download
+            - upload
+            - delete
+            - distribute
+            - approve
+            - reject
+            - revoke_keys
+            - watermark_extract
+        resource_type:
+          type: string
+          enum: [video, document, system, none]
+        resource_id: { type: integer, nullable: true }
+        ip: { type: string }
+        user_agent: { type: string }
+        result:
+          type: string
+          enum: [success, failure, denied]
+        detail:
+          type: string
+          description: JSON 详情
+        timestamp: { type: string, format: date-time }
+
+    AuditLogListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditLog' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
