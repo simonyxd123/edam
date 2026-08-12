@@ -1,0 +1,116 @@
+# ============================================================================
+# Alertmanager 配置
+# 告警路由 → 通知渠道（Slack / 钉钉 / 邮件 / 电话）
+# ============================================================================
+
+global:
+  resolve_timeout: 5m
+  # SMTP 配置
+  smtp_smarthost: 'smtp.example.com:587'
+  smtp_from: 'alertmanager@example.com'
+  smtp_auth_username: 'alertmanager@example.com'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
+  # Slack / 钉钉 Webhook
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+# 模板
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# 路由树
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # P0 告警：电话 + 短信 + Slack
+    - match_re:
+        severity: critical
+      receiver: 'pagerduty'
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+    - match_re:
+        severity: critical
+      receiver: 'slack-critical'
+      group_wait: 10s
+      repeat_interval: 30m
+
+    # P1 告警：Slack + 邮件
+    - match_re:
+        severity: warning
+      receiver: 'slack-warning'
+      group_wait: 30s
+      repeat_interval: 2h
+
+    # 安全相关 → 安全团队
+    - match_re:
+        tier: security
+      receiver: 'security-team'
+      group_wait: 10s
+      repeat_interval: 1h
+
+# 抑制规则
+inhibit_rules:
+  # 节点宕机时抑制其上所有 Pod 告警
+  - source_match:
+      alertname: 'KubeNodeNotReady'
+    target_match_re:
+      pod: 'edam-.*'
+    equal: ['node']
+
+  # 服务不可达时抑制其衍生告警
+  - source_match:
+      alertname: 'MySQLDown'
+    target_match_re:
+      component: 'mysql'
+    equal: ['instance']
+
+# 接收器
+receivers:
+  - name: 'default'
+    slack_configs:
+      - channel: '#edam-alerts'
+        title: '{{ .CommonAnnotations.summary }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+        send_resolved: true
+
+  - name: 'pagerduty'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+
+  - name: 'slack-critical'
+    slack_configs:
+      - channel: '#edam-critical'
+        title: '🚨 CRITICAL: {{ .CommonAnnotations.summary }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          Runbook: {{ .Annotations.runbook }}
+          {{ end }}
+        send_resolved: true
+
+  - name: 'slack-warning'
+    slack_configs:
+      - channel: '#edam-warning'
+        title: '⚠️ WARNING: {{ .CommonAnnotations.summary }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+        send_resolved: true
+
+  - name: 'security-team'
+    slack_configs:
+      - channel: '#edam-security'
+        title: '🔒 SECURITY: {{ .CommonAnnotations.summary }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+        send_resolved: true
+    email_configs:
+      - to: 'security@example.com'
+        send_resolved: true

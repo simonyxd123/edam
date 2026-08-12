@@ -1,0 +1,287 @@
+# ============================================================================
+# PrometheusRule 告警规则（EDAM）
+# 由 Prometheus Operator 自动加载
+# ============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+
+metadata:
+  name: edam-rules
+  namespace: edam
+  labels:
+    app: edam
+    prometheus: edam
+  annotations:
+    description: 'EDAM 核心告警规则集'
+
+spec:
+  groups:
+    # =======================================================================
+    # 1. 后端服务告警
+    # =======================================================================
+    - name: edam-backend
+      interval: 30s
+      rules:
+        # 高错误率
+        - alert: BackendHighErrorRate
+          expr: |
+            sum(rate(http_server_requests_seconds_count{application="edam-backend",status=~"5.."}[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="edam-backend"}[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            tier: application
+            component: backend
+          annotations:
+            summary: '后端错误率过高'
+            description: '5xx 错误率 {{ $value | humanizePercentage }} 超过 5% 持续 5 分钟'
+            runbook: 'ops/sop/01-incident-response.md#后端服务不可用'
+
+        # 高延迟
+        - alert: BackendHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_server_requests_seconds_bucket{application="edam-backend"}[5m])) by (le, uri)
+            ) > 1
+          for: 10m
+          labels:
+            severity: warning
+            tier: application
+            component: backend
+          annotations:
+            summary: '后端 P99 延迟过高'
+            description: '{{ $labels.uri }} P99 延迟 {{ $value }}s 超过 1s'
+
+        # Pod 频繁重启
+        - alert: BackendPodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{pod=~"edam-.*-backend-.*"}[15m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: backend
+          annotations:
+            summary: '后端 Pod 频繁重启'
+            description: 'Pod {{ $labels.pod }} 重启率 {{ $value }} 次/15分钟'
+
+        # 内存使用率
+        - alert: BackendHighMemory
+          expr: |
+            container_memory_usage_bytes{pod=~"edam-.*-backend-.*",container="backend"}
+            / container_spec_memory_limit_bytes{pod=~"edam-.*-backend-.*",container="backend"}
+            > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            tier: application
+            component: backend
+          annotations:
+            summary: '后端内存使用率 > 85%'
+
+    # =======================================================================
+    # 2. 数据库告警（MySQL）
+    # =======================================================================
+    - name: edam-mysql
+      interval: 30s
+      rules:
+        # MySQL 不可达
+        - alert: MySQLDown
+          expr: mysql_up == 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: infrastructure
+            component: mysql
+          annotations:
+            summary: 'MySQL 不可达'
+            description: 'MySQL 实例 {{ $labels.instance }} 不可达超过 1 分钟'
+            runbook: 'ops/sop/01-incident-response.md#mysql-故障'
+
+        # 慢查询
+        - alert: MySQLSlowQueries
+          expr: rate(mysql_global_status_slow_queries[5m]) > 5
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: mysql
+          annotations:
+            summary: 'MySQL 慢查询激增'
+            description: '慢查询 {{ $value }} 条/秒'
+
+        # 主从延迟
+        - alert: MySQLReplicationLag
+          expr: mysql_slave_status_seconds_behind_master > 60
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: mysql
+          annotations:
+            summary: 'MySQL 主从延迟过高'
+            description: '从库延迟 {{ $value }}s 超过 60s'
+
+        # 连接数
+        - alert: MySQLHighConnections
+          expr: |
+            mysql_global_status_threads_connected
+            / mysql_global_variables_max_connections > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: mysql
+          annotations:
+            summary: 'MySQL 连接数使用率 > 85%'
+
+    # =======================================================================
+    # 3. Redis 告警
+    # =======================================================================
+    - name: edam-redis
+      interval: 30s
+      rules:
+        - alert: RedisDown
+          expr: redis_up == 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: infrastructure
+            component: redis
+          annotations:
+            summary: 'Redis 不可达'
+
+        - alert: RedisHighMemory
+          expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: redis
+          annotations:
+            summary: 'Redis 内存使用率 > 90%'
+
+        - alert: RedisRejectedConnections
+          expr: rate(redis_rejected_connections_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: redis
+          annotations:
+            summary: 'Redis 拒绝连接'
+
+    # =======================================================================
+    # 4. RabbitMQ 告警
+    # =======================================================================
+    - name: edam-rabbitmq
+      interval: 30s
+      rules:
+        - alert: RabbitMQDown
+          expr: rabbitmq_up == 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: infrastructure
+            component: rabbitmq
+          annotations:
+            summary: 'RabbitMQ 不可达'
+
+        - alert: RabbitMQQueueDepth
+          expr: rabbitmq_queue_messages_ready{queue=~"q\\..*"} > 1000
+          for: 10m
+          labels:
+            severity: warning
+            tier: infrastructure
+            component: rabbitmq
+          annotations:
+            summary: 'RabbitMQ 队列积压'
+            description: '队列 {{ $labels.queue }} 积压 {{ $value }} 条消息'
+
+    # =======================================================================
+    # 5. Vault 告警
+    # =======================================================================
+    - name: edam-vault
+      interval: 30s
+      rules:
+        - alert: VaultSealed
+          expr: vault_sealed == 1
+          for: 1m
+          labels:
+            severity: critical
+            tier: security
+            component: vault
+          annotations:
+            summary: 'Vault 已封存'
+            description: 'Vault 处于封存状态，需要 unseal'
+            runbook: 'ops/sop/01-incident-response.md#vault-故障'
+
+        - alert: VaultHighUnsealDuration
+          expr: vault_unsealed < 1
+          for: 5m
+          labels:
+            severity: warning
+            tier: security
+            component: vault
+          annotations:
+            summary: 'Vault 长时间封存'
+
+    # =======================================================================
+    # 6. 业务级告警
+    # =======================================================================
+    - name: edam-business
+      interval: 60s
+      rules:
+        # HLS 切片失败率高
+        - alert: VideoTranscodeFailure
+          expr: |
+            sum(rate(worker_tasks_processed_total{task_type="video",result="failed"}[10m]))
+            /
+            sum(rate(worker_tasks_processed_total{task_type="video"}[10m]))
+            > 0.1
+          for: 10m
+          labels:
+            severity: warning
+            tier: business
+            component: worker
+          annotations:
+            summary: '视频转码失败率 > 10%'
+
+        # 登录失败激增（可能暴力破解）
+        - alert: SuspiciousLoginAttempts
+          expr: rate(operation_log_total{operation_type="login",result="failure"}[5m]) > 10
+          for: 5m
+          labels:
+            severity: critical
+            tier: security
+            component: auth
+          annotations:
+            summary: '可疑登录尝试激增'
+            description: '登录失败 {{ $value }} 次/秒，疑似暴力破解'
+
+        # 外发撤销激增（可能数据泄露）
+        - alert: AbnormalDistributionRevokes
+          expr: rate(operation_log_total{operation_type="revoke"}[5m]) > 1
+          for: 5m
+          labels:
+            severity: warning
+            tier: security
+            component: distribution
+          annotations:
+            summary: '外发撤销异常增加'
+            description: '可能存在数据泄露事件，需立即调查'
+
+        # Vault 密钥轮转停滞
+        - alert: KeyRotationStalled
+          expr: time() - vault_secret_lease_duration_seconds > 7776000  # 90 天
+          for: 1h
+          labels:
+            severity: warning
+            tier: security
+            component: vault
+          annotations:
+            summary: '密钥未在 90 天内轮转'
+            description: '密钥 {{ $labels.path }} 超过 90 天未轮转'

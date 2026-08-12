@@ -1,0 +1,48 @@
+# EDAM Worker 运行时依赖
+# Python 3.10+
+
+# Web 框架
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+
+# 消息队列
+aio-pika==9.4.3
+pika==1.3.2
+
+# 数据库
+sqlalchemy==2.0.35
+aiomysql==0.2.0
+pymysql==1.1.1
+alembic==1.13.3
+
+# 缓存
+redis[hiredis]==5.0.8
+
+# 对象存储
+minio==7.2.8
+
+# 视频处理
+# FFmpeg 需系统级安装：apt install ffmpeg
+# Python 调用：subprocess + shlex
+
+# 图像处理与水印
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+numpy==1.26.4
+blind-watermark==0.4.1
+PyPDF2==3.0.1
+python-docx==1.1.2
+openpyxl==3.1.5
+
+# 国密算法
+gmssl==3.2.2
+
+# 监控
+prometheus-client==0.20.0
+
+# 工具
+python-multipart==0.0.10
+tenacity==9.0.0
+structlog==24.4.0
+PyYAML==6.0.2
