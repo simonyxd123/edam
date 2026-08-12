@@ -1,0 +1,13 @@
+{{- if .Values.backend.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "edam.fullname" . }}-backend
+  labels:
+    {{- include "edam.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.backend.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "edam.backend.selectorLabels" . | nindent 6 }}
+{{- end }}

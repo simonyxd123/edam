@@ -1,0 +1,53 @@
+# Prometheus 配置
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'edam-dev'
+    env: 'development'
+
+scrape_configs:
+  # Spring Boot 后端
+  - job_name: 'spring-boot-backend'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          service: 'backend'
+          tier: 'application'
+
+  # Python Worker
+  - job_name: 'python-worker'
+    static_configs:
+      - targets: ['host.docker.internal:8001']
+        labels:
+          service: 'worker'
+          tier: 'application'
+
+  # Nginx
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['host.docker.internal:9113']
+        labels:
+          service: 'nginx'
+          tier: 'proxy'
+
+  # 基础设施监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MySQL Exporter
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['host.docker.internal:9104']
+
+  # Redis Exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['host.docker.internal:9121']
+
+  # RabbitMQ Exporter
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['host.docker.internal:9419']

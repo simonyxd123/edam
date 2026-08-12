@@ -1,0 +1,17 @@
+apiVersion: v2
+name: edam
+description: 企业全格式数字资产防泄密系统 Helm Chart
+type: application
+version: 1.0.0
+appVersion: "3.1.0"
+home: https://example.com/edam
+sources:
+  - https://example.com/edam.git
+keywords:
+  - dlp
+  - data-loss-prevention
+  - security
+  - compliance
+maintainers:
+  - name: 安全团队
+    email: security@example.com

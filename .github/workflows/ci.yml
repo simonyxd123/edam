@@ -1,0 +1,255 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, release/*]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  JAVA_VERSION: '17'
+  PYTHON_VERSION: '3.10'
+  NODE_VERSION: '18'
+
+jobs:
+  # ===========================================================================
+  # 1. 文档与 Schema 校验
+  # ===========================================================================
+  docs-lint:
+    name: 文档与 Schema 校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 yamllint
+        run: pip install yamllint
+
+      - name: 校验 OpenAPI YAML
+        run: |
+          python -c "import yaml; yaml.safe_load(open('doc/openapi.yaml'))" || exit 1
+          echo "OpenAPI YAML 语法 OK"
+
+      - name: 校验 drawio XML
+        run: |
+          for f in doc/*.drawio; do
+            python -c "import xml.etree.ElementTree as ET; ET.parse('$f')" || exit 1
+          done
+          echo "drawio XML 语法 OK"
+
+      - name: 校验 Helm Chart
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+      - run: helm lint helm/edam
+
+      - name: 校验 Markdown 链接
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          config-file: '.github/markdown-link-check.json'
+          folder-path: 'doc,modify,helm,docs'
+
+  # ===========================================================================
+  # 2. 数据库迁移脚本校验
+  # ===========================================================================
+  db-migration:
+    name: 数据库迁移脚本校验
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: edam_test
+        ports: ['3306:3306']
+        options: --health-cmd="mysqladmin ping" --health-interval=10s
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Flyway
+        run: |
+          curl -L https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.10.0/flyway-commandline-10.10.0-linux-x64.tar.gz | tar -xz
+          sudo mv flyway-10.10.0 /opt/flyway
+          echo "/opt/flyway" >> $GITHUB_PATH
+
+      - name: 执行迁移
+        run: |
+          flyway -url=jdbc:mysql://127.0.0.1:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/migration migrate
+
+      - name: 执行种子数据
+        run: |
+          flyway -url=jdbc:mysql://127.0.0.1:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/seed migrate
+
+      - name: 校验表数量
+        run: |
+          TABLES=$(mysql -h127.0.0.1 -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'" 2>/dev/null)
+          if [ "$TABLES" -lt 20 ]; then
+            echo "ERROR: 期望至少 20 张表，实际 $TABLES"
+            exit 1
+          fi
+          echo "数据库表数量: $TABLES OK"
+
+  # ===========================================================================
+  # 3. 后端编译（Java）
+  # ===========================================================================
+  backend-build:
+    name: 后端编译
+    runs-on: ubuntu-latest
+    needs: docs-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: 缓存 Maven
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - run: mvn -B compile
+      - run: mvn -B test -DfailIfNoTests=false
+      - run: mvn -B package -DskipTests
+
+      - name: 上传 JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: target/*.jar
+
+  # ===========================================================================
+  # 4. Worker 单元测试（Python）
+  # ===========================================================================
+  worker-test:
+    name: Worker 单元测试
+    runs-on: ubuntu-latest
+    needs: docs-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          cd worker
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: 运行测试
+        run: |
+          cd worker
+          pytest --cov=. --cov-report=xml --cov-report=term
+
+      - name: 上传 coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: worker/coverage.xml
+
+  # ===========================================================================
+  # 5. 前端构建
+  # ===========================================================================
+  frontend-build:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    needs: docs-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          cd web
+          npm ci
+
+      - name: Lint
+        run: cd web && npm run lint
+
+      - name: 测试
+        run: cd web && npm test -- --coverage
+
+      - name: 构建
+        run: cd web && npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/dist/
+
+  # ===========================================================================
+  # 6. 镜像构建
+  # ===========================================================================
+  docker-build:
+    name: Docker 镜像构建
+    runs-on: ubuntu-latest
+    needs: [backend-build, worker-test, frontend-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建后端镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/backend.Dockerfile
+          push: true
+          tags: |
+            edam/backend:${{ github.sha }}
+            edam/backend:latest
+
+      - name: 构建 Worker 镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/worker.Dockerfile
+          push: true
+          tags: |
+            edam/worker:${{ github.sha }}
+            edam/worker:latest
+
+      - name: 构建前端镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web
+          push: true
+          tags: |
+            edam/web:${{ github.sha }}
+            edam/web:latest
+
+  # ===========================================================================
+  # 7. 安全扫描
+  # ===========================================================================
+  security-scan:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+    needs: docs-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy 漏洞扫描
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: GitLeaks 密钥扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

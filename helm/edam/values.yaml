@@ -1,0 +1,186 @@
+# ============================================================================
+# Helm Chart 默认值
+# ============================================================================
+
+# 全局配置
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# 后端服务（Spring Boot）
+backend:
+  enabled: true
+  name: backend
+  image:
+    repository: edam/backend
+    tag: "3.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  service:
+    type: ClusterIP
+    port: 8080
+  env:
+    SPRING_PROFILES_ACTIVE: production
+    SERVER_PORT: 8080
+    LOG_LEVEL: INFO
+    # 关键配置通过 Secret 注入
+    VAULT_ADDR: http://vault:8200
+    MYSQL_HOST: mysql.edam.svc.cluster.local
+    MYSQL_PORT: "3306"
+    REDIS_HOST: redis-cluster.edam.svc.cluster.local
+    REDIS_PORT: "6379"
+    MINIO_ENDPOINT: http://minio.edam.svc.cluster.local:9000
+    RABBITMQ_HOST: rabbitmq.edam.svc.cluster.local
+    RABBITMQ_PORT: "5672"
+  probes:
+    liveness:
+      enabled: true
+      path: /health/live
+      initialDelaySeconds: 60
+      periodSeconds: 10
+    readiness:
+      enabled: true
+      path: /health/ready
+      initialDelaySeconds: 30
+      periodSeconds: 5
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /actuator/prometheus
+
+# Python Worker
+worker:
+  enabled: true
+  name: worker
+  image:
+    repository: edam/worker
+    tag: "3.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  env:
+    WORKER_TYPE: async_pipeline
+    LOG_LEVEL: INFO
+    RABBITMQ_HOST: rabbitmq.edam.svc.cluster.local
+
+# Nginx 网关
+nginx:
+  enabled: true
+  name: nginx
+  image:
+    repository: nginx:1.25-alpine
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  service:
+    type: LoadBalancer
+    port: 80
+    httpsPort: 443
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-ssl-cert: ""
+  config:
+    clientMaxBodySize: "500m"
+    nginxConf: |
+      worker_processes auto;
+      events { worker_connections 4096; }
+      http {
+        include /etc/nginx/mime.types;
+        client_max_body_size {{ .Values.nginx.config.clientMaxBodySize }};
+        upstream backend {
+          least_conn;
+          server backend:8080;
+        }
+        server {
+          listen 80;
+          location /api/ {
+            proxy_pass http://backend;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+          }
+        }
+      }
+
+# Ingress
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: api.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: edam-tls
+      hosts:
+        - api.example.com
+
+# 服务账户
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod 安全
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# 资源（生产级）
+resources: {}
+
+# 节点选择
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# 密钥（生产环境必须通过 --set 或外部 secret 覆盖）
+secret:
+  dbPassword: "change-me-in-production"
+  vaultToken: "change-me-in-production"
+  jwtSecret: "change-me-in-production-must-be-256-bit"
