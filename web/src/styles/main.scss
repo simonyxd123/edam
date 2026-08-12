@@ -1,0 +1,20 @@
+// 全局样式
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f0f2f5;
+  color: #333;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page-title {
+  margin: 0 0 20px;
+  font-size: 20px;
+  color: #303133;
+}
+
+.text-muted { color: #909399; }
+.text-danger { color: #f56c6c; }
+.text-success { color: #67c23a; }
+.text-warning { color: #e6a23c; }

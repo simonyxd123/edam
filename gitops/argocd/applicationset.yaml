@@ -1,0 +1,107 @@
+# ============================================================================
+# ArgoCD ApplicationSet
+# 基于 Git generator 自动生成多环境 Application
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+
+metadata:
+  name: edam
+  namespace: argocd
+
+spec:
+  # Git generator: 扫描 git 仓库的 overlays 目录
+  generators:
+    - git:
+        repoURL: https://github.com/example/edam.git
+        revision: HEAD
+        directories:
+          - path: gitops/overlays/*
+
+  template:
+    metadata:
+      name: 'edam-{{path.basename}}'
+      labels:
+        env: '{{path.basename}}'
+        app: edam
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+
+    spec:
+      project: edam
+
+      source:
+        repoURL: https://github.com/example/edam.git
+        targetRevision: '{{.git.targetRevision}}'
+        path: helm/edam
+        helm:
+          releaseName: 'edam-{{path.basename}}'
+          valueFiles:
+            - '../../gitops/overlays/{{path.basename}}/values.yaml'
+          parameters:
+            - name: global.imageRegistry
+              value: ghcr.io/example/edam
+            - name: backend.image.tag
+              value: $ARGOCD_APP_REVISION
+
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'edam-{{path.basename}}'
+
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+
+        # 环境差异化同步策略
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+      revisionHistoryLimit: 10
+
+      # 环境差异化配置
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+
+---
+# ============================================================================
+# 备选方案：基于 List generator（无需 Git 仓库）
+# 适合环境固定的场景
+# ============================================================================
+
+# apiVersion: argoproj.io/v1alpha1
+# kind: ApplicationSet
+# metadata:
+#   name: edam
+#   namespace: argocd
+# spec:
+#   generators:
+#     - list:
+#         elements:
+#           - env: dev
+#             namespace: edam-dev
+#             cluster: https://kubernetes.default.svc
+#             replicaCount: 1
+#           - env: staging
+#             namespace: edam-staging
+#             cluster: https://kubernetes.default.svc
+#             replicaCount: 2
+#           - env: prod
+#             namespace: edam
+#             cluster: https://kubernetes.default.svc
+#             replicaCount: 5
+#   template: ...
