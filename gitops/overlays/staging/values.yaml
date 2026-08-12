@@ -1,0 +1,53 @@
+# ============================================================================
+# GitOps Overlays: 预发布环境配置
+# ============================================================================
+
+backend:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 3Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  env:
+    SPRING_PROFILES_ACTIVE: staging
+    LOG_LEVEL: INFO
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+nginx:
+  enabled: true
+  replicaCount: 1
+
+ingress:
+  enabled: true
+  hosts:
+    - host: staging-api.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: staging-tls
+      hosts:
+        - staging-api.example.com
+
+# 密钥（必须通过 External Secrets 从 Vault 同步）
+secret:
+  dbPassword: "REPLACE_FROM_VAULT"
+  vaultToken: "REPLACE_FROM_VAULT"
+  jwtSecret: "REPLACE_FROM_VAULT"

@@ -1,0 +1,80 @@
+# ============================================================================
+# ArgoCD Application: EDAM 生产环境
+# 仅通过 tag 触发（如 v3.1.0）
+# 需 SRE 手动同步 + 多级审批
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: edam-prod
+  namespace: argocd
+  labels:
+    env: prod
+    app: edam
+    criticality: high
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+  annotations:
+    # Slack 通知
+    notifications.argoproj.io/subscribe.on-deployed.slack: edam-deployments
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: edam-alerts
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: edam-alerts
+
+spec:
+  project: edam
+
+  source:
+    repoURL: 'https://github.com/example/edam.git'
+    targetRevision: v3.1.0  # 固定 tag
+    path: helm/edam
+    helm:
+      releaseName: edam
+      valueFiles:
+        - ../../gitops/overlays/prod/values.yaml
+      parameters:
+        - name: global.imageRegistry
+          value: ghcr.io/example/edam
+        - name: backend.image.tag
+          value: v3.1.0
+        - name: worker.image.tag
+          value: v3.1.0
+
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: edam
+
+  syncPolicy:
+    # 禁用自动同步
+    automated: null
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+
+  revisionHistoryLimit: 20
+
+  # 部署策略（Argo Rollouts）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  # 忽略某些字段差异
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas  # HPA 控制
+
+  # 健康检查
+  revisionHistoryLimit: 20

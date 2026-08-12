@@ -1,0 +1,41 @@
+# ============================================================================
+# GitOps Overlays: 开发环境配置
+# 覆盖 helm/edam/values.yaml 的默认值
+# ============================================================================
+
+backend:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  autoscaling:
+    enabled: false
+  env:
+    SPRING_PROFILES_ACTIVE: dev
+    LOG_LEVEL: DEBUG
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+nginx:
+  enabled: false  # dev 用 kubectl port-forward
+
+ingress:
+  enabled: false
+
+# 密钥（开发环境使用默认值）
+secret:
+  dbPassword: "dev-password"
+  vaultToken: "dev-token"
+  jwtSecret: "dev-jwt-secret-not-for-production"

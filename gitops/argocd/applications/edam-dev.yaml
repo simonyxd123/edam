@@ -1,0 +1,63 @@
+# ============================================================================
+# ArgoCD Application: EDAM 开发环境
+# 自动同步：PR 合入 main 后 3 分钟内自动部署
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: edam-dev
+  namespace: argocd
+  labels:
+    env: dev
+    app: edam
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  project: edam
+
+  source:
+    repoURL: 'https://github.com/example/edam.git'
+    targetRevision: HEAD
+    path: helm/edam
+    helm:
+      releaseName: edam-dev
+      valueFiles:
+        - ../../gitops/overlays/dev/values.yaml
+      parameters:
+        - name: global.imageRegistry
+          value: ghcr.io/example/edam
+        - name: backend.image.tag
+          value: $ARGOCD_APP_REVISION
+        - name: worker.image.tag
+          value: $ARGOCD_APP_REVISION
+        - name: backend.replicaCount
+          value: '1'
+        - name: backend.resources.requests.cpu
+          value: 200m
+        - name: backend.resources.requests.memory
+          value: 512Mi
+
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: edam-dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  revisionHistoryLimit: 10

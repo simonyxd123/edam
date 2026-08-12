@@ -1,0 +1,29 @@
+{
+  "name": "edam-e2e",
+  "version": "3.1.0",
+  "description": "EDAM E2E 测试套件（Playwright + Cypress）",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:report": "playwright show-report playwright-report",
+    "cypress:open": "cd cypress && npx cypress open",
+    "cypress:run": "cd cypress && npx cypress run",
+    "cypress:run:headless": "cd cypress && npx cypress run --headless",
+    "lint": "eslint . --ext .ts,.js",
+    "format": "prettier --write \"**/*.{ts,js,json,md}\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "@types/node": "^20.0.0",
+    "cypress": "^13.10.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

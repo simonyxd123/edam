@@ -1,0 +1,55 @@
+# ============================================================================
+# ArgoCD Application: EDAM 预发布环境
+# 自动同步：main 分支更新
+# 人工审批：手动触发
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: edam-staging
+  namespace: argocd
+  labels:
+    env: staging
+    app: edam
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  project: edam
+
+  source:
+    repoURL: 'https://github.com/example/edam.git'
+    targetRevision: main
+    path: helm/edam
+    helm:
+      releaseName: edam-staging
+      valueFiles:
+        - ../../gitops/overlays/staging/values.yaml
+      parameters:
+        - name: global.imageRegistry
+          value: ghcr.io/example/edam
+        - name: backend.image.tag
+          value: $ARGOCD_APP_REVISION
+
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: edam-staging
+
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    automated: {}  # 禁用自动同步，需手动
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+
+  revisionHistoryLimit: 10
+
+  # 通知（使用 ArgoCD Notifications）
+  # 实际部署需配置 argocd-notifications ConfigMap

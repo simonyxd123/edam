@@ -1,0 +1,94 @@
+# ============================================================================
+# ArgoCD AppProject
+# 定义项目边界：允许部署的命名空间、源仓库、目标集群
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+
+metadata:
+  name: edam
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  description: 'EDAM 企业全格式数字资产防泄密系统'
+
+  # 源仓库
+  sourceRepos:
+    - 'https://github.com/example/edam.git'
+    - 'https://charts.bitnami.com/bitnami'
+    - 'oci://ghcr.io/example/edam'
+
+  # 目标集群与命名空间
+  destinations:
+    - namespace: 'edam-dev'
+      server: 'https://kubernetes.default.svc'
+    - namespace: 'edam-staging'
+      server: 'https://kubernetes.default.svc'
+    - namespace: 'edam'
+      server: 'https://kubernetes.default.svc'
+
+  # 允许的资源类型
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: ConfigMap
+    - group: ''
+      kind: Secret
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ServiceAccount
+    - group: 'apps'
+      kind: Deployment
+    - group: 'apps'
+      kind: StatefulSet
+    - group: 'autoscaling'
+      kind: HorizontalPodAutoscaler
+    - group: 'policy'
+      kind: PodDisruptionBudget
+    - group: 'networking.k8s.io'
+      kind: Ingress
+    - group: 'monitoring.coreos.com'
+      kind: ServiceMonitor
+    - group: 'monitoring.coreos.com'
+      kind: PrometheusRule
+
+  # 禁止的资源（防止误操作）
+  clusterResourceBlacklist:
+    - group: ''
+      kind: '*'
+
+  # 同步窗口（仅在允许时间同步）
+  syncWindows:
+    - kind: deny
+      schedule: '0 0 * * 6'  # 周六全天禁止
+      applications:
+        - '*'
+    - kind: deny
+      schedule: '0 22 * * 5'  # 周五 22:00 后禁止
+      applications:
+        - '*'
+
+  roles:
+    - name: admin
+      description: 'EDAM 项目管理员'
+      policies:
+        - 'p, proj:edam:admin, applications, *, edam/*, allow'
+        - 'p, proj:edam:admin, applications, sync, edam/*, allow'
+        - 'p, proj:edam:admin, exec, *, edam/*, allow'
+      groups:
+        - edam-admins:edam
+
+  - name: developer
+    description: 'EDAM 开发者（只读 + 同步）'
+    policies:
+      - 'p, proj:edam:developer, applications, get, edam/*, allow'
+      - 'p, proj:edam:developer, applications, sync, edam/dev, allow'
+    groups:
+      - edam-devs:edam
