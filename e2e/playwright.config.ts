@@ -52,11 +52,15 @@ export default defineConfig({
     },
   ],
 
-  // 启动 Prism Mock 作为前置服务（生产 CI 中）
-  webServer: process.env.CI ? {
-    command: 'docker run --rm -d -p 4010:4010 -v $PWD/doc/openapi.yaml:/tmp/openapi.yaml:ro --name edam-prism stoplight/prism:5 mock -p 4010 -h 0.0.0.0 /tmp/openapi.yaml',
-    url: 'http://localhost:4010/health',
-    timeout: 60 * 1000,
+  // 启动 Mock Server 作为前置服务
+  // 本地使用 Python 轻量级 mock（无需 Docker）
+  // CI 中可使用 stoplight/prism:5
+  webServer: {
+    command: process.env.CI
+      ? 'docker run --rm -p 4010:4010 -v $PWD/doc/openapi.yaml:/tmp/openapi.yaml:ro --name edam-prism stoplight/prism:5 mock -p 4010 -h 0.0.0.0 /tmp/openapi.yaml'
+      : `python ${process.cwd().replace(/\\/g, '/')}/dev/mock/server.py 4010`,
+    url: 'http://localhost:4010/health/live',
+    timeout: 30 * 1000,
     reuseExistingServer: true,
-  } : undefined,
+  },
 });
