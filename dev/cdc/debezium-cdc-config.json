@@ -1,0 +1,31 @@
+{
+  "name": "edam-mysql-cdc",
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "database.hostname": "mysql-master",
+    "database.port": "3306",
+    "database.user": "debezium",
+    "database.password": "${DB_PASSWORD}",
+    "database.server.id": "184054",
+    "topic.prefix": "edam-cdc",
+    "database.include.list": "edam",
+    "table.include.list": "edam.video_resource,edam.doc_resource,edam.sys_user,edam.distribution_approval",
+    "column.include.list": "edam.video_resource.id,edam.video_resource.title,edam.video_resource.description,edam.video_resource.classification_lv,edam.video_resource.uploader_id,edam.video_resource.upload_time,edam.video_resource.view_count,edam.video_resource.deleted_at,edam.doc_resource.id,edam.doc_resource.title,edam.doc_resource.classification_lv,edam.doc_resource.uploader_id,edam.doc_resource.upload_time,edam.doc_resource.view_count,edam.doc_resource.deleted_at",
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "true",
+    "include.schema.changes": "false",
+    "transforms": "route,addTopicPrefix",
+    "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.route.regex": "([^.]+)\\.([^.]+)\\.([^.]+)",
+    "transforms.route.replacement": "edam-es-$3",
+    "transforms.addTopicPrefix.type": "org.apache.kafka.connect.transforms.InsertHeader$Value",
+    "transforms.addTopicPrefix.header": "source.table",
+    "key.converter": "io.debezium.converters.DecimalHandlingConverter",
+    "value.converter": "io.debezium.converters.CloudEventsConverter",
+    "value.converter.serializer.type": "io.debezium.converters.spi.CloudEventsProvider",
+    "value.converter.data.serializer.type": "io.apicurio.registry.serde.avro.AvroKafkaSerializer",
+    "value.converter.avro.schema.registry.url": "http://apicurio:8080"
+  }
+}

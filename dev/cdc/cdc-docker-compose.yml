@@ -1,0 +1,70 @@
+# CDC 同步 Docker Compose（v3.3 W-10）
+# 监听 MySQL binlog → Kafka → ES
+
+version: '3.8'
+
+services:
+  # Zookeeper
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+  # Debezium Connect
+  debezium:
+    image: debezium/connect:2.5
+    depends_on: [kafka]
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium-config
+      OFFSET_STORAGE_TOPIC: debezium-offsets
+      STATUS_STORAGE_TOPIC: debezium-status
+    ports:
+      - "8083:8083"
+
+  # Debezium MySQL Connector 注册
+  debezium-init:
+    image: curlimages/curl:8.4.0
+    depends_on: [debezium]
+    networks: [default]
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      sleep 30
+      curl -X POST http://debezium:8083/connectors \
+        -H 'Content-Type: application/json' \
+        -d @/config/debezium-cdc-config.json
+      echo "Debezium connector registered."
+
+  # ES CDC Consumer（自定义处理）
+  es-cdc-consumer:
+    build:
+      context: ../..
+      dockerfile: docker/cdc-consumer.Dockerfile
+    depends_on: [kafka, debezium]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      ES_HOST: http://elasticsearch:9200
+      KAFKA_GROUP: es-cdc-consumer
+    restart: unless-stopped
+    volumes:
+      - ./debezium-cdc-config.json:/config/debezium-cdc-config.json:ro
+      - ./es-cdc-consumer.py:/app/consumer.py:ro
+
+volumes:
+  kafka-data:
