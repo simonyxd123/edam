@@ -1,0 +1,362 @@
+name: Performance Test (k6)
+
+# ============================================================================
+# EDAM k6 压测 CI（v3.4 V4-03 阶段 6）
+#
+# 触发方式：
+#   1. workflow_dispatch：手动触发（推荐发版前）
+#   2. schedule：每周一凌晨 2 点（UTC）自动跑
+#   3. workflow_call：被其他 workflow 调用（如 release.yml 发版前）
+#
+# 工作流程：
+#   - 4 个并行 jobs：smoke / load / peak / stress
+#   - 每个 job：安装 k6 → 跑对应脚本 → 跑 SLO 检查 → 上传 artifact
+#   - 主 job 聚合：解析 HTML + Slack 通知 + 失败门禁
+#
+# 环境变量（GitHub Secrets）：
+#   PERF_BASE_URL    - 压测目标 URL（如 https://staging.example.com/api/v1）
+#   PERF_SLACK_WEBHOOK - Slack Webhook URL（用于失败通知）
+#
+# 使用：
+#   1. Settings → Secrets → Actions → 添加 PERF_BASE_URL 和 PERF_SLACK_WEBHOOK
+#   2. Actions → Performance Test → Run workflow
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: '压测档位'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - smoke
+          - load
+          - peak
+          - stress
+      base_url:
+        description: '压测目标 URL（留空使用 PERF_BASE_URL Secret）'
+        required: false
+        type: string
+        default: ''
+      user_pool_size:
+        description: '测试用户池大小'
+        required: false
+        type: string
+        default: '100'
+
+  schedule:
+    # 每周一凌晨 2 点（UTC = 北京时间 10:00）自动跑
+    - cron: '0 2 * * 1'
+
+  workflow_call:
+    inputs:
+      stage:
+        description: '压测档位'
+        required: false
+        type: string
+        default: 'all'
+      base_url:
+        description: '压测目标 URL'
+        required: false
+        type: string
+        default: ''
+      user_pool_size:
+        description: '测试用户池大小'
+        required: false
+        type: string
+        default: '100'
+
+env:
+  K6_VERSION: '0.50.0'
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  # ===========================================================================
+  # 1. 烟囱测试（10 VUs × 5min）
+  # ===========================================================================
+  smoke:
+    name: Smoke Test (10 VUs × 5min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6="${{ env.K6_VERSION }}"
+
+      - name: 验证 k6
+        run: k6 version
+
+      - name: 跑烟囱测试
+        env:
+          BASE_URL: ${{ secrets.PERF_BASE_URL || inputs.base_url }}
+          K6_USER_POOL_SIZE: ${{ inputs.user_pool_size || '100' }}
+        run: |
+          cd perf/k6
+          mkdir -p results
+          TS=$(date +%Y%m%d-%H%M%S)
+          k6 run \
+            --out "json=results/smoke-${TS}.json" \
+            -e BASE_URL="${BASE_URL}" \
+            -e K6_USER_POOL_SIZE="${K6_USER_POOL_SIZE}" \
+            scripts/smoke.js
+
+      - name: SLO 检查
+        id: slo
+        if: always()
+        env:
+          BASE_URL: ${{ secrets.PERF_BASE_URL || inputs.base_url }}
+        run: |
+          cd perf/k6
+          JSON=$(ls -t results/smoke-*.json | head -1)
+          ./scripts/check-slo.sh smoke "${JSON}" || exit 1
+
+      - name: 上传 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-smoke-${{ github.run_id }}
+          path: perf/k6/results/smoke-*.json
+          retention-days: 30
+
+  # ===========================================================================
+  # 2. 负载测试（200 QPS × 10min）
+  # ===========================================================================
+  load:
+    name: Load Test (200 QPS × 10min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6="${{ env.K6_VERSION }}"
+
+      - name: 跑负载测试
+        env:
+          BASE_URL: ${{ secrets.PERF_BASE_URL || inputs.base_url }}
+          K6_USER_POOL_SIZE: ${{ inputs.user_pool_size || '100' }}
+        run: |
+          cd perf/k6
+          mkdir -p results
+          TS=$(date +%Y%m%d-%H%M%S)
+          k6 run \
+            --out "json=results/load-${TS}.json" \
+            -e BASE_URL="${BASE_URL}" \
+            -e K6_USER_POOL_SIZE="${K6_USER_POOL_SIZE}" \
+            scripts/load-test.js
+
+      - name: SLO 检查
+        id: slo
+        if: always()
+        run: |
+          cd perf/k6
+          JSON=$(ls -t results/load-*.json | head -1)
+          ./scripts/check-slo.sh load "${JSON}" || exit 1
+
+      - name: 上传 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-${{ github.run_id }}
+          path: perf/k6/results/load-*.json
+          retention-days: 30
+
+  # ===========================================================================
+  # 3. 峰值测试（500 QPS × 10min）
+  # ===========================================================================
+  peak:
+    name: Peak Test (500 QPS × 10min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6="${{ env.K6_VERSION }}"
+
+      - name: 跑峰值测试
+        env:
+          BASE_URL: ${{ secrets.PERF_BASE_URL || inputs.base_url }}
+          K6_USER_POOL_SIZE: ${{ inputs.user_pool_size || '100' }}
+        run: |
+          cd perf/k6
+          mkdir -p results
+          TS=$(date +%Y%m%d-%H%M%S)
+          k6 run \
+            --out "json=results/peak-${TS}.json" \
+            -e BASE_URL="${BASE_URL}" \
+            -e K6_USER_POOL_SIZE="${K6_USER_POOL_SIZE}" \
+            scripts/peak-test.js
+
+      - name: SLO 检查
+        id: slo
+        if: always()
+        run: |
+          cd perf/k6
+          JSON=$(ls -t results/peak-*.json | head -1)
+          ./scripts/check-slo.sh peak "${JSON}" || exit 1
+
+      - name: 上传 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-peak-${{ github.run_id }}
+          path: perf/k6/results/peak-*.json
+          retention-days: 30
+
+  # ===========================================================================
+  # 4. 极限测试（1000 QPS × 5min）
+  # ===========================================================================
+  stress:
+    name: Stress Test (1000 QPS × 5min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6="${{ env.K6_VERSION }}"
+
+      - name: 跑极限测试
+        env:
+          BASE_URL: ${{ secrets.PERF_BASE_URL || inputs.base_url }}
+          K6_USER_POOL_SIZE: ${{ inputs.user_pool_size || '100' }}
+        run: |
+          cd perf/k6
+          mkdir -p results
+          TS=$(date +%Y%m%d-%H%M%S)
+          k6 run \
+            --out "json=results/stress-${TS}.json" \
+            -e BASE_URL="${BASE_URL}" \
+            -e K6_USER_POOL_SIZE="${K6_USER_POOL_SIZE}" \
+            scripts/stress-test.js
+
+      - name: 不做 SLO 检查（极限档无阈值）
+        run: echo "极限档不设 SLO 阈值，仅记录原始数据"
+
+      - name: 上传 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-stress-${{ github.run_id }}
+          path: perf/k6/results/stress-*.json
+          retention-days: 30
+
+  # ===========================================================================
+  # 5. 报告聚合（依赖全部成功）
+  # ===========================================================================
+  aggregate:
+    name: 报告聚合
+    runs-on: ubuntu-latest
+    needs: [smoke, load, peak, stress]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载所有 artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 收集 JSON 到统一目录
+        run: |
+          mkdir -p perf/k6/results
+          find artifacts -name "*.json" -exec cp {} perf/k6/results/ \;
+
+      - name: 设置 Python + 解析 HTML
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装 Python 依赖
+        run: pip install jinja2
+
+      - name: 生成综合 HTML 报告
+        run: |
+          cd perf/k6
+          python3 scripts/parse-k6.py results/ results/report-${{ github.run_id }}.html
+
+      - name: 上传综合报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-report-${{ github.run_id }}
+          path: perf/k6/results/report-*.html
+          retention-days: 90
+
+      - name: 汇总到 PR 评论（仅 PR 触发）
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const resultsDir = 'perf/k6/results';
+            const files = fs.readdirSync(resultsDir).filter(f => f.endsWith('.json'));
+
+            let summary = '## k6 压测结果\n\n';
+            summary += '| 档位 | 总请求 | RPS | P50 | P95 | P99 | 失败率 |\n';
+            summary += '|------|--------|-----|-----|-----|-----|--------|\n';
+
+            for (const f of files) {
+              const data = JSON.parse(fs.readFileSync(path.join(resultsDir, f), 'utf8'));
+              const m = data.metrics;
+              const stage = f.split('-')[0];
+              summary += `| ${stage} | ${m.http_reqs.values.count} | ${m.http_reqs.values.rate.toFixed(1)} | ${m.http_req_duration.values['p(50)'].toFixed(0)}ms | ${m.http_req_duration.values['p(95)'].toFixed(0)}ms | ${m.http_req_duration.values['p(99)'].toFixed(0)}ms | ${(m.http_req_failed.values.rate * 100).toFixed(2)}% |\n`;
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Slack 通知（失败时）
+        if: failure() && env.PERF_SLACK_WEBHOOK != ''
+        env:
+          PERF_SLACK_WEBHOOK: ${{ secrets.PERF_SLACK_WEBHOOK }}
+        run: |
+          curl -X POST "${PERF_SLACK_WEBHOOK}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "❌ *k6 压测失败*\n> Workflow: ${{ github.workflow }}\n> Run: ${{ github.run_id }}\n> Commit: ${{ github.sha }}\n> Actor: ${{ github.actor }}\n> 查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }'
+
+      - name: Slack 通知（成功时）
+        if: success() && env.PERF_SLACK_WEBHOOK != ''
+        env:
+          PERF_SLACK_WEBHOOK: ${{ secrets.PERF_SLACK_WEBHOOK }}
+        run: |
+          curl -X POST "${PERF_SLACK_WEBHOOK}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "✅ *k6 压测成功*\n> Workflow: ${{ github.workflow }}\n> Run: ${{ github.run_id }}\n> 报告: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }'
+
+      - name: 失败门禁
+        if: failure()
+        run: |
+          echo "❌ k6 压测失败，详细信息见 workflow run"
+          exit 1
