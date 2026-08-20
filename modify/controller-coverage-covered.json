@@ -1,0 +1,198 @@
+[
+  {
+    "method": "POST",
+    "path": "/auth/login",
+    "tag": "auth",
+    "summary": "用户登录",
+    "impl": "AuthController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/refresh",
+    "tag": "auth",
+    "summary": "刷新 access_token",
+    "impl": "AuthController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/logout",
+    "tag": "auth",
+    "summary": "登出",
+    "impl": "AuthController"
+  },
+  {
+    "method": "GET",
+    "path": "/users/{user_id}",
+    "tag": "users",
+    "summary": "用户详情",
+    "impl": "UserController"
+  },
+  {
+    "method": "PUT",
+    "path": "/users/{user_id}",
+    "tag": "users",
+    "summary": "更新用户",
+    "impl": "UserController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/users/{user_id}",
+    "tag": "users",
+    "summary": "软删除用户（设置 status=disabled，立即吊销密钥）",
+    "impl": "UserController"
+  },
+  {
+    "method": "POST",
+    "path": "/users/{user_id}/revoke-keys",
+    "tag": "users",
+    "summary": "立即吊销用户所有密钥",
+    "impl": "UserController"
+  },
+  {
+    "method": "GET",
+    "path": "/videos/{video_id}",
+    "tag": "videos",
+    "summary": "视频详情",
+    "impl": "VideoController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/videos/{video_id}",
+    "tag": "videos",
+    "summary": "删除视频（仅上传者或管理员）",
+    "impl": "VideoController"
+  },
+  {
+    "method": "POST",
+    "path": "/playback/{video_id}/token",
+    "tag": "playback",
+    "summary": "获取播放 Token",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "GET",
+    "path": "/playback/{video_id}/key",
+    "tag": "playback",
+    "summary": "获取 HLS AES 密钥",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "POST",
+    "path": "/playback/{video_id}/log",
+    "tag": "playback",
+    "summary": "上报播放日志",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "GET",
+    "path": "/documents/{doc_id}",
+    "tag": "documents",
+    "summary": "文档详情",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/documents/{doc_id}",
+    "tag": "documents",
+    "summary": "删除文档",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/distribution/approvals/{approval_id}",
+    "tag": "distribution",
+    "summary": "审批详情",
+    "impl": "DistributionController"
+  },
+  {
+    "method": "POST",
+    "path": "/distribution/approvals/{approval_id}/decide",
+    "tag": "distribution",
+    "summary": "审批决策",
+    "impl": "DistributionController"
+  },
+  {
+    "method": "POST",
+    "path": "/distribution/approvals/{approval_id}/revoke",
+    "tag": "distribution",
+    "summary": "撤销已审批的外发（紧急情况）",
+    "impl": "DistributionController"
+  },
+  {
+    "method": "POST",
+    "path": "/watermarks/extract",
+    "tag": "watermarks",
+    "summary": "提取水印/指纹",
+    "impl": "WatermarkController"
+  },
+  {
+    "method": "GET",
+    "path": "/watermarks/cache",
+    "tag": "watermarks",
+    "summary": "水印缓存查询",
+    "impl": "WatermarkController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/watermarks/cache/{cache_id}",
+    "tag": "watermarks",
+    "summary": "清除水印缓存（资源权限变更时）",
+    "impl": "WatermarkController"
+  },
+  {
+    "method": "GET",
+    "path": "/audit/logs/{log_id}",
+    "tag": "audit",
+    "summary": "日志详情",
+    "impl": "AuditController"
+  },
+  {
+    "method": "POST",
+    "path": "/audit/logs/export",
+    "tag": "audit",
+    "summary": "导出日志",
+    "impl": "AuditController"
+  },
+  {
+    "method": "GET",
+    "path": "/health/live",
+    "tag": "health",
+    "summary": "K8s liveness 探针",
+    "impl": "HealthController"
+  },
+  {
+    "method": "GET",
+    "path": "/health/ready",
+    "tag": "health",
+    "summary": "K8s readiness 探针",
+    "impl": "HealthController"
+  },
+  {
+    "method": "GET",
+    "path": "/health/components",
+    "tag": "health",
+    "summary": "各依赖组件健康状态",
+    "impl": "HealthController"
+  },
+  {
+    "method": "POST",
+    "path": "/videos/batch-delete",
+    "tag": "videos",
+    "summary": "批量删除视频",
+    "impl": "VideoController"
+  },
+  {
+    "method": "POST",
+    "path": "/videos/batch-permission",
+    "tag": "videos",
+    "summary": "批量授权",
+    "impl": "VideoController"
+  },
+  {
+    "method": "POST",
+    "path": "/documents/batch-delete",
+    "tag": "documents",
+    "summary": "批量删除文档",
+    "impl": "DocumentController"
+  }
+]
