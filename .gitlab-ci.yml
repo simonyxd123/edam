@@ -33,10 +33,29 @@ docs:lint:
     - curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz | tar -xz
     - mv linux-amd64/helm /usr/local/bin/
     - helm lint helm/edam
+    # v3.2 V-10: 后端 Controller vs OpenAPI 一致性扫描（覆盖 95% 强制）
+    - python scripts/check_controller_coverage.py
+    - |
+      COVERAGE=$(grep -oP '已覆盖.*?\(\K[\d.]+(?=%)' modify/controller-coverage.md | head -1)
+      if [ -z "$COVERAGE" ]; then
+        echo "ERROR: 无法从 modify/controller-coverage.md 读取覆盖率"
+        exit 1
+      fi
+      echo "当前 OpenAPI Controller 覆盖率: ${COVERAGE}%"
+      if [ "$(echo "$COVERAGE < 95" | bc -l)" = "1" ]; then
+        echo "ERROR: 覆盖率 ${COVERAGE}% 低于 95% 阈值"
+        echo "请运行 'python scripts/check_controller_coverage.py' 查看缺失端点"
+        exit 1
+      fi
+    artifacts:
+      paths:
+        - modify/controller-coverage.md
+      expire_in: 30 days
   rules:
     - changes:
         - doc/**/*
         - helm/**/*
+        - backend/**/*
 
 # ----------------------------------------------------------------------------
 # 2. 数据库迁移

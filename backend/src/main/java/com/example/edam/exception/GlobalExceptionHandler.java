@@ -46,6 +46,41 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Bad Request", ex.getMessage(), "REQ_400");
     }
 
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleRateLimit(RateLimitExceededException ex) {
+        Map<String, Object> body = Map.of(
+            "type", URI.create("about:blank"),
+            "title", "Too Many Requests",
+            "status", HttpStatus.TOO_MANY_REQUESTS.value(),
+            "detail", ex.getMessage(),
+            "code", "RL_429",
+            "dimension", ex.getDimension(),
+            "retry_after_seconds", ex.getRetryAfterSeconds(),
+            "remaining_tokens", ex.getRemainingTokens(),
+            "trace_id", getOrCreateTraceId(),
+            "timestamp", OffsetDateTime.now().toString()
+        );
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+            .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+            .header("X-RateLimit-Dimension", ex.getDimension())
+            .body(body);
+    }
+
+    @ExceptionHandler(AccountLockedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccountLocked(AccountLockedException ex) {
+        Map<String, Object> body = Map.of(
+            "type", URI.create("about:blank"),
+            "title", "Account Locked",
+            "status", HttpStatus.LOCKED.value(),
+            "detail", "连续登录失败过多，账号已被锁定 30 分钟",
+            "code", "AUTH_ACCOUNT_LOCKED",
+            "retry_after_seconds", ex.getRemainingLockSeconds(),
+            "trace_id", getOrCreateTraceId(),
+            "timestamp", OffsetDateTime.now().toString()
+        );
+        return ResponseEntity.status(HttpStatus.LOCKED).body(body);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
         log.error("Unhandled exception", ex);
@@ -54,18 +89,21 @@ public class GlobalExceptionHandler {
     }
 
     private ResponseEntity<Map<String, Object>> build(HttpStatus status, String title, String detail, String code) {
-        String traceId = MDC.get("trace_id");
-        if (traceId == null) traceId = UUID.randomUUID().toString();
-
         Map<String, Object> body = Map.of(
             "type", URI.create("about:blank"),
             "title", title,
             "status", status.value(),
             "detail", detail,
             "code", code,
-            "trace_id", traceId,
+            "trace_id", getOrCreateTraceId(),
             "timestamp", OffsetDateTime.now().toString()
         );
         return ResponseEntity.status(status).body(body);
+    }
+
+    private String getOrCreateTraceId() {
+        String traceId = MDC.get("trace_id");
+        if (traceId == null) traceId = UUID.randomUUID().toString();
+        return traceId;
     }
 }

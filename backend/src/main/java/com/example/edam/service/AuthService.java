@@ -1,5 +1,6 @@
 package com.example.edam.service;
 
+import com.example.edam.exception.AccountLockedException;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
@@ -7,13 +8,14 @@ import com.example.edam.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.SecureRandom;
 import java.time.Duration;
-import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -23,7 +25,9 @@ import java.util.UUID;
  * - 登录（密码校验 + 签发 JWT）
  * - 刷新 Token
  * - 登出（撤销 refresh_token）
- * - 限流（Redis 计数器）
+ * - 当前用户
+ *
+ * v3.2 V-3：限流已迁移到 LoginRateLimiter（IP + 工号双维度）
  */
 @Slf4j
 @Service
@@ -40,34 +44,48 @@ public class AuthService {
 
     /**
      * 登录
+     *
+     * @param employeeNo 工号
+     * @param password   密码（明文）
+     * @param mfaCode    MFA 验证码（可选，L3+ 资源必填）
+     * @return 登录响应（access_token + refresh_token）
      */
     @Transactional
-    public Map<String, Object> login(String employeeNo, String password) {
-        // 1. 限流检查（IP + 工号）
-        checkRateLimit(employeeNo);
-
-        // 2. 查询用户
+    public Map<String, Object> login(String employeeNo, String password, String mfaCode) {
+        // 1. 查询用户
         SysUser user = userRepository.findByEmployeeNo(employeeNo);
         if (user == null) {
             throw new ResourceNotFoundException("工号或密码错误");
         }
 
-        // 3. 检查账号状态
+        // 2. 检查账号状态
         if (user.getStatus() == 3) {
-            throw new IllegalArgumentException("账号已锁定，请 30 分钟后再试");
+            throw new AccountLockedException(LOCK_DURATION_MINUTES * 60L);
         }
         if (user.getStatus() == 2) {
             throw new IllegalArgumentException("账号已禁用，请联系管理员");
         }
 
-        // 4. 密码校验
+        // 3. 密码校验
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
             handleFailedLogin(user);
-            throw new IllegalArgumentException("工号或密码错误");
+            throw new ResourceNotFoundException("工号或密码错误");
+        }
+
+        // 4. MFA 校验（L3+ 资源 + 用户启用 MFA）
+        if (user.getMfaEnabled() != null && user.getMfaEnabled() == 1) {
+            if (mfaCode == null || mfaCode.isBlank()) {
+                throw new IllegalArgumentException("MFA 验证码必填");
+            }
+            // TODO: 接入 TOTP 校验（v3.2 二期）
+            // 当前简单占位：长度校验
+            if (mfaCode.length() != 6 || !mfaCode.matches("\\d{6}")) {
+                throw new IllegalArgumentException("MFA 验证码格式错误（6 位数字）");
+            }
         }
 
         // 5. 重置失败计数
-        user.setFailedLoginCount(0);
+        user.setFailedLoginCount((short) 0);
         userRepository.updateById(user);
 
         // 6. 签发 token
@@ -85,12 +103,12 @@ public class AuthService {
 
         log.info("用户登录成功: employee_no={}, session_id={}", employeeNo, sessionId);
 
-        return Map.of(
-            "access_token", accessToken,
-            "refresh_token", refreshToken,
-            "token_type", "Bearer",
-            "expires_in", 600
-        );
+        Map<String, Object> response = new HashMap<>();
+        response.put("access_token", accessToken);
+        response.put("refresh_token", refreshToken);
+        response.put("token_type", "Bearer");
+        response.put("expires_in", 600);
+        return response;
     }
 
     /**
@@ -108,42 +126,61 @@ public class AuthService {
 
         String newAccessToken = jwtTokenProvider.createAccessToken(
             user.getId(), UUID.randomUUID().toString(), List.of("ROLE_USER"));
-        return Map.of(
-            "access_token", newAccessToken,
-            "token_type", "Bearer",
-            "expires_in", 600
-        );
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("access_token", newAccessToken);
+        response.put("token_type", "Bearer");
+        response.put("expires_in", 600);
+        return response;
     }
 
     /**
      * 登出（撤销 refresh_token）
      */
     public void logout(String refreshToken) {
-        redisTemplate.delete("refresh:" + refreshToken);
+        if (refreshToken != null) {
+            redisTemplate.delete("refresh:" + refreshToken);
+        }
     }
 
     /**
-     * 限流检查
+     * 获取当前登录用户信息
      */
-    private void checkRateLimit(String employeeNo) {
-        String key = "ratelimit:login:" + employeeNo;
-        String count = redisTemplate.opsForValue().get(key);
-        if (count != null && Integer.parseInt(count) >= 3) {
-            throw new IllegalArgumentException("登录过于频繁，请稍后再试");
+    public Map<String, Object> getCurrentUser() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+            throw new IllegalArgumentException("未登录");
         }
-        redisTemplate.opsForValue().increment(key);
-        redisTemplate.expire(key, Duration.ofMinutes(1));
+
+        Long userId = Long.valueOf(auth.getName());
+        SysUser user = userRepository.findById(userId);
+        if (user == null) {
+            throw new ResourceNotFoundException("用户不存在");
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("user_id", user.getId());
+        response.put("employee_no", user.getEmployeeNo());
+        response.put("real_name", user.getRealName());
+        response.put("email", user.getEmail());
+        response.put("dept_id", user.getDeptId());
+        response.put("status", user.getStatus());
+        response.put("last_login_at", user.getLastLoginAt());
+        return response;
     }
 
     /**
      * 处理登录失败
+     * - 累计失败次数
+     * - 连续 5 次失败 → 锁定账号 30 分钟
      */
     private void handleFailedLogin(SysUser user) {
-        int failedCount = user.getFailedLoginCount() + 1;
+        short failedCount = (short) (user.getFailedLoginCount() + 1);
         user.setFailedLoginCount(failedCount);
         if (failedCount >= MAX_FAILED_ATTEMPTS) {
-            user.setStatus(3); // 锁定
-            log.warn("账号锁定: employee_no={}", user.getEmployeeNo());
+            user.setStatus((short) 3); // 锁定
+            log.warn("账号锁定: employee_no={} failed_count={}",
+                user.getEmployeeNo(), failedCount);
         }
         userRepository.updateById(user);
     }

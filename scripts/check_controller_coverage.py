@@ -11,20 +11,42 @@ for java_file in sorted(controllers_dir.glob('*Controller.java')):
     class_mapping = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?"([^"]+)"', text)
     class_path = (class_mapping.group(1) if class_mapping else '').rstrip('/')
     cls = java_file.stem
-    pattern = re.compile(
+    # 匹配带路径字符串的注解
+    pattern_with_path = re.compile(
         r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*(?:value\s*=\s*)?"([^"]+)"'
     )
-    for m in pattern.finditer(text):
+    # 匹配裸注解（无参数，映射到类路径）
+    pattern_bare = re.compile(
+        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*\)'
+    )
+
+    for m in pattern_with_path.finditer(text):
         method = m.group(1).replace('Mapping', '').upper()
         sub = m.group(2)
-        # 处理 prefix 问题：sub 可能以 / 开头
         if sub.startswith('/'):
             full = class_path + sub
         else:
             full = class_path + '/' + sub
-        # 规范化
         full = re.sub(r'//+', '/', full).rstrip('/') or '/'
         implemented[(method, full)] = cls
+
+    for m in pattern_bare.finditer(text):
+        method = m.group(1).replace('Mapping', '').upper()
+        full = class_path or '/'
+        full = re.sub(r'//+', '/', full).rstrip('/') or '/'
+        implemented[(method, full)] = cls
+
+    # 匹配裸注解（无括号，无参数；Java 允许 @GetMapping 后跟换行 + 其他注解 + public）
+    pattern_bare_no_paren = re.compile(
+        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)(?:\s*\n|\s+)(?:@\w+(?:\([^)]*\))?\s*\n)*\s*public\s+'
+    )
+    for m in pattern_bare_no_paren.finditer(text):
+        method = m.group(1).replace('Mapping', '').upper()
+        full = class_path or '/'
+        full = re.sub(r'//+', '/', full).rstrip('/') or '/'
+        # 仅在未添加过时添加（避免覆盖带路径的版本）
+        if (method, full) not in implemented:
+            implemented[(method, full)] = cls
 
 # 2. 解析 OpenAPI
 with open('doc/openapi.yaml', 'r', encoding='utf-8') as f:

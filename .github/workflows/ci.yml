@@ -48,6 +48,40 @@ jobs:
           config-file: '.github/markdown-link-check.json'
           folder-path: 'doc,modify,helm,docs'
 
+      # v3.2 V-10: 后端 Controller vs OpenAPI 一致性扫描（覆盖 100% 强制）
+      - name: OpenAPI vs Controller 一致性检查（v3.2 V-10）
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装 PyYAML
+        run: pip install pyyaml
+
+      - name: 扫描 Controller 覆盖率
+        run: |
+          python scripts/check_controller_coverage.py
+
+      - name: 校验覆盖率必须 = 100%
+        run: |
+          COVERAGE=$(grep -oP '已覆盖.*?\(\K[\d.]+(?=%)' modify/controller-coverage.md | head -1)
+          if [ -z "$COVERAGE" ]; then
+            echo "ERROR: 无法从 modify/controller-coverage.md 读取覆盖率"
+            exit 1
+          fi
+          echo "当前 OpenAPI Controller 覆盖率: ${COVERAGE}%"
+          # 检查是否为整数（允许浮点）
+          if [ "$(echo "$COVERAGE < 95" | bc -l)" = "1" ]; then
+            echo "ERROR: 覆盖率 ${COVERAGE}% 低于 95% 阈值"
+            echo "请运行 'python scripts/check_controller_coverage.py' 查看缺失端点"
+            exit 1
+          fi
+
+      - name: 上传覆盖率报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-coverage-report
+          path: modify/controller-coverage.md
+
   # ===========================================================================
   # 2. 数据库迁移脚本校验
   # ===========================================================================

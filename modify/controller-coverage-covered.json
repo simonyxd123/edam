@@ -22,6 +22,27 @@
   },
   {
     "method": "GET",
+    "path": "/auth/me",
+    "tag": "auth",
+    "summary": "获取当前用户信息",
+    "impl": "AuthController"
+  },
+  {
+    "method": "GET",
+    "path": "/users",
+    "tag": "users",
+    "summary": "用户列表",
+    "impl": "UserController"
+  },
+  {
+    "method": "POST",
+    "path": "/users",
+    "tag": "users",
+    "summary": "创建用户",
+    "impl": "UserController"
+  },
+  {
+    "method": "GET",
     "path": "/users/{user_id}",
     "tag": "users",
     "summary": "用户详情",
@@ -47,6 +68,20 @@
     "tag": "users",
     "summary": "立即吊销用户所有密钥",
     "impl": "UserController"
+  },
+  {
+    "method": "GET",
+    "path": "/videos",
+    "tag": "videos",
+    "summary": "视频资源列表",
+    "impl": "VideoController"
+  },
+  {
+    "method": "POST",
+    "path": "/videos",
+    "tag": "videos",
+    "summary": "上传视频",
+    "impl": "VideoController"
   },
   {
     "method": "GET",
@@ -85,6 +120,20 @@
   },
   {
     "method": "GET",
+    "path": "/documents",
+    "tag": "documents",
+    "summary": "文档资源列表",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "POST",
+    "path": "/documents",
+    "tag": "documents",
+    "summary": "上传文档",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
     "path": "/documents/{doc_id}",
     "tag": "documents",
     "summary": "文档详情",
@@ -96,6 +145,55 @@
     "tag": "documents",
     "summary": "删除文档",
     "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/preview/{doc_id}",
+    "tag": "preview",
+    "summary": "文档预览（含 Canvas 动态明水印）",
+    "impl": "PreviewController"
+  },
+  {
+    "method": "GET",
+    "path": "/preview/{doc_id}/download",
+    "tag": "preview",
+    "summary": "下载已加密文档",
+    "impl": "PreviewController"
+  },
+  {
+    "method": "GET",
+    "path": "/permissions",
+    "tag": "permissions",
+    "summary": "权限列表",
+    "impl": "PermissionsController"
+  },
+  {
+    "method": "GET",
+    "path": "/roles",
+    "tag": "permissions",
+    "summary": "角色列表",
+    "impl": "PermissionsController"
+  },
+  {
+    "method": "GET",
+    "path": "/users/{user_id}/permissions",
+    "tag": "permissions",
+    "summary": "用户的有效权限（含 RBAC + 资源 ACL）",
+    "impl": "PermissionsController"
+  },
+  {
+    "method": "GET",
+    "path": "/distribution/approvals",
+    "tag": "distribution",
+    "summary": "外发审批列表",
+    "impl": "DistributionController"
+  },
+  {
+    "method": "POST",
+    "path": "/distribution/approvals",
+    "tag": "distribution",
+    "summary": "发起外发审批",
+    "impl": "DistributionController"
   },
   {
     "method": "GET",
@@ -141,6 +239,13 @@
   },
   {
     "method": "GET",
+    "path": "/audit/logs",
+    "tag": "audit",
+    "summary": "操作日志查询",
+    "impl": "AuditController"
+  },
+  {
+    "method": "GET",
     "path": "/audit/logs/{log_id}",
     "tag": "audit",
     "summary": "日志详情",
@@ -152,6 +257,13 @@
     "tag": "audit",
     "summary": "导出日志",
     "impl": "AuditController"
+  },
+  {
+    "method": "GET",
+    "path": "/health",
+    "tag": "health",
+    "summary": "总体健康检查（兼容旧版）",
+    "impl": "HealthController"
   },
   {
     "method": "GET",
@@ -175,6 +287,13 @@
     "impl": "HealthController"
   },
   {
+    "method": "GET",
+    "path": "/ws/notifications",
+    "tag": "notifications",
+    "summary": "WebSocket 长连接（实时通知）",
+    "impl": "NotificationsController"
+  },
+  {
     "method": "POST",
     "path": "/videos/batch-delete",
     "tag": "videos",
@@ -194,5 +313,145 @@
     "tag": "documents",
     "summary": "批量删除文档",
     "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/search/videos",
+    "tag": "search",
+    "summary": "视频全文检索",
+    "impl": "SearchController"
+  },
+  {
+    "method": "GET",
+    "path": "/search/documents",
+    "tag": "search",
+    "summary": "文档全文检索",
+    "impl": "SearchController"
+  },
+  {
+    "method": "GET",
+    "path": "/tags",
+    "tag": "tags",
+    "summary": "标签列表",
+    "impl": "TagsController"
+  },
+  {
+    "method": "POST",
+    "path": "/tags",
+    "tag": "tags",
+    "summary": "创建标签",
+    "impl": "TagsController"
+  },
+  {
+    "method": "GET",
+    "path": "/tags/{tag_id}",
+    "tag": "tags",
+    "summary": "标签详情",
+    "impl": "TagsController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/tags/{tag_id}",
+    "tag": "tags",
+    "summary": "删除标签",
+    "impl": "TagsController"
+  },
+  {
+    "method": "POST",
+    "path": "/videos/{video_id}/tags",
+    "tag": "tags",
+    "summary": "给视频添加标签",
+    "impl": "TagsController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/videos/{video_id}/tags",
+    "tag": "tags",
+    "summary": "从视频移除标签",
+    "impl": "TagsController"
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "tag": "notifications",
+    "summary": "当前用户通知列表",
+    "impl": "NotificationsController"
+  },
+  {
+    "method": "POST",
+    "path": "/notifications/{notif_id}/read",
+    "tag": "notifications",
+    "summary": "标记已读",
+    "impl": "NotificationsController"
+  },
+  {
+    "method": "POST",
+    "path": "/notifications/read-all",
+    "tag": "notifications",
+    "summary": "全部标记已读",
+    "impl": "NotificationsController"
+  },
+  {
+    "method": "GET",
+    "path": "/notifications/preferences",
+    "tag": "notifications",
+    "summary": "获取通知偏好",
+    "impl": "NotificationsController"
+  },
+  {
+    "method": "PUT",
+    "path": "/notifications/preferences",
+    "tag": "notifications",
+    "summary": "更新通知偏好",
+    "impl": "NotificationsController"
+  },
+  {
+    "method": "GET",
+    "path": "/webhooks",
+    "tag": "webhooks",
+    "summary": "当前用户注册的回调列表",
+    "impl": "WebhooksController"
+  },
+  {
+    "method": "POST",
+    "path": "/webhooks",
+    "tag": "webhooks",
+    "summary": "注册回调",
+    "impl": "WebhooksController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/webhooks/{webhook_id}",
+    "tag": "webhooks",
+    "summary": "注销回调",
+    "impl": "WebhooksController"
+  },
+  {
+    "method": "GET",
+    "path": "/webhooks/{webhook_id}/deliveries",
+    "tag": "webhooks",
+    "summary": "回调投递历史",
+    "impl": "WebhooksController"
+  },
+  {
+    "method": "GET",
+    "path": "/admin/backups",
+    "tag": "admin",
+    "summary": "备份列表",
+    "impl": "AdminController"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/backups",
+    "tag": "admin",
+    "summary": "触发备份",
+    "impl": "AdminController"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/backups/{backup_id}/restore",
+    "tag": "admin",
+    "summary": "从备份恢复（高危）",
+    "impl": "AdminController"
   }
 ]
