@@ -87,6 +87,8 @@ def embed_dct(video_path: str, wm_text: str, output_dir: str, frame_interval: in
 
     原理：在视频关键帧的 DCT 系数中嵌入文本水印
     库：blind-watermark (0.4.1)
+
+    frame_interval：每隔多少帧取一关键帧嵌入（默认 10）
     """
     from blind_watermark import WaterMark
 
@@ -94,19 +96,24 @@ def embed_dct(video_path: str, wm_text: str, output_dir: str, frame_interval: in
     out_dir.mkdir(parents=True, exist_ok=True)
 
     bwm = WaterMark(password_wm=1, password_img=1)
-    wm = wm_text.encode("utf-8")
+    # blind-watermark 0.4.1 API：mode in ('img','str','bit')
+    # bytes 模式已被弃用，改用 bit 模式
+    wm_bits = [int(b) for byte in wm_text.encode("utf-8") for b in format(byte, "08b")]
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # 提取关键帧
+    # 提取关键帧（限制最多 5 帧，控制总耗时）
     key_frames = []
-    for i in range(0, total_frames, frame_interval):
+    step = max(frame_interval, total_frames // 5)
+    for i in range(0, total_frames, step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
         if ret:
             key_frames.append((i, frame))
+            if len(key_frames) >= 5:
+                break
     cap.release()
 
     # 嵌入到每个关键帧
@@ -117,8 +124,14 @@ def embed_dct(video_path: str, wm_text: str, output_dir: str, frame_interval: in
         temp_out = embedded_dir / f"frame_{idx}_out.png"
         cv2.imwrite(str(temp_in), frame)
         bwm.read_img(str(temp_in))
-        bwm.read_wm(wm, mode="bytes")
+        bwm.read_wm(wm_bits, mode="bit")
         bwm.embed(str(temp_out))
+
+    # 保存 wm_bits 长度供 extract 使用（extract 需要 wm_shape 参数）
+    import json as _json
+    (embedded_dir / "meta.json").write_text(
+        _json.dumps({"wm_bits_len": len(wm_bits)}, ensure_ascii=False)
+    )
 
     return str(embedded_dir)
 
@@ -126,6 +139,7 @@ def embed_dct(video_path: str, wm_text: str, output_dir: str, frame_interval: in
 def extract_dct(embedded_dir: str) -> tuple[bool, str, float]:
     """从 DCT 水印帧中提取"""
     from blind_watermark import WaterMark
+    import json as _json
 
     bwm = WaterMark(password_wm=1, password_img=1)
     out_dir = Path(embedded_dir)
@@ -135,10 +149,32 @@ def extract_dct(embedded_dir: str) -> tuple[bool, str, float]:
     if not pngs:
         return False, "", 0.0
 
+    meta_path = out_dir / "meta.json"
+    wm_bits_len = 88  # 默认 USER_00001 = 11 字节 = 88 bit
+    if meta_path.exists():
+        try:
+            wm_bits_len = _json.loads(meta_path.read_text()).get("wm_bits_len", wm_bits_len)
+        except Exception:
+            pass
+
     try:
-        wm = bwm.extract(str(pngs[0]), mode="bytes")
-        text = wm.decode("utf-8", errors="ignore")
-        return True, text, 1.0
+        # blind-watermark 0.4.1 返回 numpy bool array，需要转 0/1
+        wm = bwm.extract(str(pngs[0]), mode="bit", wm_shape=(wm_bits_len,))
+        if hasattr(wm, '__len__') and len(wm) > 0:
+            # numpy bool array -> list of int
+            bits = [1 if x else 0 for x in wm]
+            text_bytes = bytearray()
+            for i in range(0, len(bits) - 7, 8):
+                byte_bits = bits[i:i+8]
+                if len(byte_bits) < 8:
+                    break
+                text_bytes.append(int("".join(str(b) for b in byte_bits), 2))
+            try:
+                text = text_bytes.decode("utf-8", errors="ignore")
+                return True, text, 1.0
+            except Exception:
+                return False, "", 0.0
+        return False, "", 0.0
     except Exception as e:
         return False, "", 0.0
 
@@ -185,13 +221,14 @@ def embed_dwt(video_path: str, wm_text: str, output_dir: str, frame_interval: in
         # 在低频子带 cA 嵌入
         if bit_idx < len(bits):
             # 简单 LSB 替换（仅做 POC）
-            cA_flat = cA.flatten()
+            # 注意：cA 是 float32，bitwise_and 需要 int 类型
+            cA_flat = np.floor(cA).astype(np.int32).flatten()
             for j in range(min(len(cA_flat), len(bits) - bit_idx)):
-                cA_flat[j] = (np.floor(cA_flat[j]) & ~1) | bits[bit_idx + j]
+                cA_flat[j] = (int(cA_flat[j]) & ~1) | int(bits[bit_idx + j])
                 if bit_idx + j >= len(bits) - 1:
                     break
             bit_idx += len(cA_flat)
-            cA_new = cA_flat.reshape(cA.shape)
+            cA_new = cA_flat.astype(np.float32).reshape(cA.shape)
 
             # DWT 重构
             reconstructed = pywt.idwt2((cA_new, (cH, cV, cD)), "haar")
@@ -219,11 +256,11 @@ def extract_dwt(embedded_dir: str, original_video: str, wm_text: str) -> tuple[b
     img = cv2.imread(str(embedded[0]), cv2.IMREAD_GRAYSCALE)
     coeffs = pywt.dwt2(img, "haar")
     cA, _ = coeffs
-    cA_flat = cA.flatten()
+    cA_flat = np.floor(cA).astype(np.int32).flatten()
 
     bits = []
     for v in cA_flat[: len(wm_text) * 8]:
-        bits.append(int(np.floor(v)) & 1)
+        bits.append(int(v) & 1)
 
     # bits -> bytes
     if len(bits) < len(wm_text) * 8:
@@ -344,21 +381,46 @@ def attack_crop(embedded_dir: str, crop_ratio: float = 0.1) -> str:
 
 
 def attack_compress(video_path: str, crf: int = 35) -> str:
-    """攻击 2：H.264 重压缩（FFmpeg，模拟录屏/转发）"""
-    import subprocess
+    """攻击 2：H.264 重压缩（模拟录屏/转发）
 
+    优先用 FFmpeg，缺失时用 OpenCV 重编码（mp4v）。
+    """
     out_path = Path(video_path).parent / f"attacked_compress_{Path(video_path).stem}.mp4"
+
+    # 尝试 FFmpeg
+    import subprocess
     cmd = [
-        "ffmpeg", "-y", "-i", video_path,
+        "ffmpeg", "-y", "-i", str(video_path),
         "-c:v", "libx264", "-crf", str(crf),
         "-c:a", "copy",
         str(out_path),
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # FFmpeg 未安装时跳过
+        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
         return str(out_path)
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        # fallback：OpenCV 重编码（mp4v 是 MPEG-4 Visual，对 DCT 也有破坏效果）
+        pass
+
+    # OpenCV fallback
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # 提高压缩：缩小到 50% 再编码
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # 模拟重压缩：降低质量（resize 一下）
+        small = cv2.resize(frame, (w // 2, h // 2))
+        restored = cv2.resize(small, (w, h))
+        writer.write(restored)
+    cap.release()
+    writer.release()
     return str(out_path)
 
 
@@ -423,6 +485,15 @@ ALGORITHM_FUNCTIONS = {
 }
 
 
+def extract_with_args(algo_name: str, embedded: str, original_video: str = None):
+    """统一 extract 调用，处理 phash 等需要额外参数的算法"""
+    _, _, extract_fn = ALGORITHM_FUNCTIONS[algo_name]
+    if algo_name == "phash":
+        # pHash 需要原始视频做比对
+        return extract_fn(embedded, original_video or str(Path(embedded).parent / "original.mp4"))
+    return extract_fn(embedded)
+
+
 def run_poc(
     videos_dir: str,
     output_dir: str,
@@ -462,7 +533,7 @@ def run_poc(
     print()
 
     results = []
-    total = len(videos) * len(algorithms) * len(attacks)
+    total = len(videos) * len(algorithms) * (1 + len(attacks))
     current = 0
 
     for video in videos:
@@ -472,10 +543,13 @@ def run_poc(
             algo_label, embed_fn, extract_fn = ALGORITHM_FUNCTIONS[algo_name]
             print(f"▶ [{algo_name}] 嵌入 {sample_id}...")
             try:
+                embedded = embed_fn(str(video), wm_text, str(output_path / "embedded"))
+                # pHash 需要原视频路径用于提取比对
                 if algo_name == "phash":
-                    embedded = embed_fn(str(video), wm_text, str(output_path / "embedded"))
-                else:
-                    embedded = embed_fn(str(video), wm_text, str(output_path / "embedded"))
+                    import shutil
+                    orig_link = output_path / "embedded" / "original.mp4"
+                    if not orig_link.exists():
+                        shutil.copy(str(video), str(orig_link))
                 print(f"  ✓ 嵌入完成: {embedded}")
             except Exception as e:
                 print(f"  ✗ 嵌入失败: {e}")
@@ -484,7 +558,7 @@ def run_poc(
             # 无攻击基线
             current += 1
             t0 = time.time()
-            ok, text, conf = extract_fn(embedded)
+            ok, text, conf = extract_with_args(algo_name, embedded, str(video))
             cost = (time.time() - t0) * 1000
             results.append(PocResult(
                 sample_id=sample_id,
@@ -508,7 +582,7 @@ def run_poc(
                     else:
                         attacked = attack_fn(embedded)
                     t0 = time.time()
-                    ok, text, conf = extract_fn(attacked)
+                    ok, text, conf = extract_with_args(algo_name, attacked, str(video))
                     cost = (time.time() - t0) * 1000
                     results.append(PocResult(
                         sample_id=sample_id,

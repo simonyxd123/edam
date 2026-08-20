@@ -117,3 +117,8 @@ tmp/
 temp/
 *.swp
 *.swo
+
+# POC 测试视频（生成产物）
+test_videos/
+poc_*/
+
