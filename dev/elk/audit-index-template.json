@@ -1,0 +1,44 @@
+{
+  "index_patterns": ["edam-audit-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 2,
+      "number_of_replicas": 1,
+      "refresh_interval": "5s",
+      "index.lifecycle.name": "edam-audit-policy",
+      "index.lifecycle.rollover_alias": "edam-audit"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "service": { "type": "keyword" },
+        "host": { "type": "keyword" },
+        "trace_id": { "type": "keyword" },
+        "user_id": { "type": "long" },
+        "user_employee_no": { "type": "keyword" },
+        "operation_type": {
+          "type": "keyword",
+          "fields": {
+            "text": { "type": "text" }
+          }
+        },
+        "resource_type": { "type": "keyword" },
+        "resource_id": { "type": "long" },
+        "ip": { "type": "ip" },
+        "user_agent": { "type": "text" },
+        "result": { "type": "keyword" },
+        "detail": {
+          "type": "object",
+          "enabled": false
+        },
+        "log_level": { "type": "keyword" },
+        "request_method": { "type": "keyword" },
+        "request_path": { "type": "keyword" },
+        "response_status": { "type": "integer" },
+        "duration_ms": { "type": "long" }
+      }
+    }
+  },
+  "priority": 200
+}

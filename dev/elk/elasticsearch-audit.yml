@@ -1,0 +1,50 @@
+# Elasticsearch 集中审计配置（v3.3 W-1 G-3）
+# 用于等保三级集中日志审计 ≥ 180 天
+
+cluster.name: edam-audit-cluster
+node.name: edam-audit-node-1
+
+# 单节点（开发）
+discovery.type: single-node
+
+# 网络
+network.host: 0.0.0.0
+http.port: 9200
+
+# 内存（生产建议 ≥ 8 GB）
+-Xms4g
+-Xmx4g
+
+# 索引生命周期
+action.auto_create_index: false
+
+# 审计专用索引模板
+index.lifecycle.name: edam-audit-policy
+index.lifecycle.rollover_alias: edam-audit
+
+# 性能
+indices.query.bool.max_clause_count: 4096
+search.max_open_scroll_context: 500
+
+# 安全（生产必开）
+xpack.security.enabled: true
+xpack.security.enrollment.enabled: false
+xpack.security.http.ssl:
+  enabled: true
+  keystore.path: certs/http.p12
+xpack.security.transport.ssl:
+  enabled: true
+  verification_mode: certificate
+  keystore.path: certs/transport.p12
+  truststore.path: certs/transport.p12
+
+# 审计日志（X-Pack）
+xpack.security.audit.enabled: true
+xpack.security.audit.logfile.events.emit_request_body: false
+xpack.security.audit.logfile.events.ignore_filters:
+  - users: [ 'kibana_system' ]
+    actions: ['authenticated_request', 'security_config_change']
+
+# 加密静态数据
+xpack.encrypted_savings:
+  enabled: true
