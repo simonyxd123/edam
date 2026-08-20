@@ -42,15 +42,21 @@
 
 ### 2.1 基础指标
 
-```
-========== k6 压测结果 ==========
-总请求数: _______
-平均 RPS: _______
-P50 延迟: _______ ms
-P95 延迟: _______ ms
-P99 延迟: _______ ms
-失败率: _______%
-==============================
+实测报告由 `perf/k6/scripts/parse-k6.py` 自动生成到 `perf/k6/results/report-{TS}.html`：
+
+```bash
+# 一键执行 4 档位 + 生成报告
+cd perf/k6 && ./scripts/run-all.sh
+
+# 输出示例（report.html 包含）
+# ┌─────────┬─────────┬────────┬───────┬───────┬───────┬────────┐
+# │ stage   │ total   │ avgRPS │ P50   │ P95   │ P99   │ fail%  │
+# ├─────────┼─────────┼────────┼───────┼───────┼───────┼────────┤
+# │ smoke   │  xxx    │  xxx   │ xxx   │ xxx   │ xxx   │ xxx    │
+# │ load    │  xxx    │  xxx   │ xxx   │ xxx   │ xxx   │ xxx    │
+# │ peak    │  xxx    │  xxx   │ xxx   │ xxx   │ xxx   │ xxx    │
+# │ stress  │  xxx    │  xxx   │ xxx   │ xxx   │ xxx   │ xxx    │
+# └─────────┴─────────┴────────┴───────┴───────┴───────┴────────┘
 ```
 
 ### 2.2 性能瓶颈
@@ -121,21 +127,38 @@ P99 延迟: _______ ms
 
 ### 5.1 CI 集成
 
+v3.4 起切换到 `perf/k6/scripts/` 模块化套件，详见 `perf/k6/README.md` 第五节。
+
 ```yaml
-# GitHub Actions
-performance-test:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - name: 启动 staging 环境
-      run: ./scripts/start-staging.sh
-    - name: k6 压测
-      uses: grafana/k6-action@v0.3.0
-      with:
-        script: perf/load-test.js
-    - name: 验证 SLO
-      run: ./scripts/check-slo.sh
+# GitHub Actions（v3.4 V4-03 起）
+name: Performance Test
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1'
+
+jobs:
+  k6-load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 启动 staging 环境
+        run: ./scripts/start-staging.sh
+      - name: 安装 k6
+        run: sudo apt-get install -y k6
+      - name: 跑负载测试
+        run: k6 run --out json=perf/k6/results/load.json perf/k6/scripts/load-test.js
+      - name: SLO 检查
+        run: perf/k6/scripts/check-slo.sh load perf/k6/results/load.json
+      - name: 上传报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-report
+          path: perf/k6/results/
 ```
+
+> 注：v3.3 旧版 CI 配置（`grafana/k6-action` + `perf/load-test.js`）保留作为历史归档，新 CI 使用 `perf/k6/` 模块化套件。
 
 ### 5.2 自动告警
 
@@ -192,6 +215,44 @@ autoscaling:
 - `helm/edam/values.yaml` — 资源配置
 - `monitoring/prometheus.yml` — 指标采集
 - `monitoring/grafana/` — 监控仪表板
+
+## 八、v3.4 V4-03 实测报告位置
+
+按 V4-03 路线图要求，v3.4 起的实测报告归档结构：
+
+```
+perf/k6/results/
+├── smoke-{TS}.json              # 烟囱实测
+├── load-{TS}.json               # 负载实测（SLO 验证）
+├── peak-{TS}.json               # 峰值实测
+├── stress-{TS}.json             # 极限实测
+└── report-{TS}.html             # 汇总报告（含 SLO 检查）
+```
+
+**查看命令**：
+
+```bash
+# 最新一次报告
+ls -lt perf/k6/results/report-*.html | head -1 | awk '{print $NF}' | xargs open
+
+# 本周所有报告
+ls -lt perf/k6/results/report-*.html | head -7
+```
+
+**报告流转**：
+
+| 触发 | 报告路径 | 通知 |
+| --- | --- | --- |
+| 周一凌晨 2 点定时 | `perf/k6/results/report-{周一日期}.html` | Slack #perf-alerts |
+| 发版前手动 | `perf/k6/results/report-{版本号}.html` | PR 评论 + Slack |
+| 故障复盘 | `perf/k6/results/report-{事故日期}.html` | 故障报告附件 |
+
+## 九、维护说明
+
+- 本文档每季度 review 一次（与发版节奏对齐）
+- SLO 阈值变更需经架构组 review
+- 实测报告保留最近 12 份（30 天滚动），更早归档到 S3/MinIO
+- 任何 k6 脚本变更需更新 `perf/k6/README.md` 与本文件第 5.1 节
 
 ---
 
