@@ -65,7 +65,7 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
-        <mxCell id="conn-6d2e55da" value="数据响应" style="endArrow=classic;html=1;rounded=0;strokeColor=#CC6600;strokeWidth=1.5;fontSize=10;" edge="1" parent="1" source="cross_ids[0]" target="storage">
+        <mxCell id="conn-6d2e55da" value="监控/指标上报" style="endArrow=classic;html=1;rounded=0;strokeColor=#CC6600;strokeWidth=1.5;fontSize=10;" edge="1" parent="1" source="cross-可观测性层" target="storage">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
