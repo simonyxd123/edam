@@ -53,6 +53,40 @@ public class VideoService {
     }
 
     /**
+     * Cursor 分页列表（v3.2 V-4）
+     *
+     * 基于 id < cursor.id 的倒序查询，避免 OFFSET 性能衰减
+     *
+     * @param parts    cursor 解码结果（含 id + ts）
+     * @param limit    每页数量（1-100）
+     * @param classificationLv 密级过滤
+     * @param uploaderId     上传者过滤
+     */
+    public java.util.List<VideoResource> listByCursor(
+            com.example.edam.util.CursorUtil.CursorParts parts,
+            int limit, String classificationLv, Long uploaderId) {
+        LambdaQueryWrapper<VideoResource> wrapper = new LambdaQueryWrapper<>();
+        if (parts != null) {
+            // 倒序分页：id < cursor.id
+            wrapper.lt(VideoResource::getId, parts.id());
+        }
+        if (classificationLv != null) {
+            wrapper.eq(VideoResource::getClassificationLv, parseClassification(classificationLv));
+        }
+        if (uploaderId != null) {
+            wrapper.eq(VideoResource::getUploaderId, uploaderId);
+        }
+        wrapper.orderByDesc(VideoResource::getId);
+        // 多取 1 个用于判断 has_more
+        wrapper.last("LIMIT " + (limit + 1));
+        java.util.List<VideoResource> result = videoRepository.selectList(wrapper);
+        if (result.size() > limit) {
+            return result.subList(0, limit);
+        }
+        return result;
+    }
+
+    /**
      * 上传视频
      */
     @Transactional

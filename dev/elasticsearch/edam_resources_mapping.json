@@ -1,0 +1,116 @@
+{
+  "_doc": {
+    "settings": {
+      "number_of_shards": 3,
+      "number_of_replicas": 2,
+      "refresh_interval": "5s",
+      "analysis": {
+        "analyzer": {
+          "ik_smart_pinyin": {
+            "type": "custom",
+            "tokenizer": "ik_max_word",
+            "filter": ["lowercase", "pinyin_filter"]
+          }
+        },
+        "filter": {
+          "pinyin_filter": {
+            "type": "pinyin",
+            "keep_first_letter": true,
+            "keep_separate_first_letter": false,
+            "keep_full_pinyin": true,
+            "keep_joined_full_pinyin": true,
+            "keep_none_chinese_in_joined_full_pinyin": true,
+            "keep_none_chinese": true,
+            "keep_original": true,
+            "limit_first_letter_length": 16,
+            "lowercase": true
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "id": {
+          "type": "keyword",
+          "doc_values": false
+        },
+        "resource_type": {
+          "type": "keyword"
+        },
+        "title": {
+          "type": "text",
+          "analyzer": "ik_max_word",
+          "search_analyzer": "ik_smart",
+          "fields": {
+            "raw": { "type": "keyword" },
+            "pinyin": { "type": "text", "analyzer": "ik_smart_pinyin" }
+          }
+        },
+        "description": {
+          "type": "text",
+          "analyzer": "ik_max_word",
+          "search_analyzer": "ik_smart"
+        },
+        "tags": {
+          "type": "keyword"
+        },
+        "asr_text": {
+          "type": "text",
+          "analyzer": "ik_max_word",
+          "search_analyzer": "ik_smart"
+        },
+        "classification_lv": {
+          "type": "keyword"
+        },
+        "uploader_id": {
+          "type": "long"
+        },
+        "uploader_name": {
+          "type": "keyword"
+        },
+        "dept_id": {
+          "type": "long"
+        },
+        "file_hash": {
+          "type": "keyword"
+        },
+        "mime_type": {
+          "type": "keyword"
+        },
+        "size_bytes": {
+          "type": "long"
+        },
+        "duration_sec": {
+          "type": "integer"
+        },
+        "upload_time": {
+          "type": "date",
+          "format": "strict_date_optional_time||epoch_millis"
+        },
+        "view_count": {
+          "type": "long"
+        },
+        "permissions": {
+          "type": "long"
+        },
+        "tags_extended": {
+          "type": "nested",
+          "properties": {
+            "tag_id": { "type": "long" },
+            "tag_name": { "type": "keyword" }
+          }
+        },
+        "status": {
+          "type": "keyword"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "aliases": {
+      "edam_resources": {}
+    }
+  }
+}
