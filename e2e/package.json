@@ -1,6 +1,6 @@
 {
   "name": "edam-e2e",
-  "version": "3.1.0",
+  "version": "3.3.0",
   "description": "EDAM E2E 测试套件（Playwright + Cypress）",
   "private": true,
   "scripts": {

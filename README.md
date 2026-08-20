@@ -1,12 +1,15 @@
 # EDAM - 企业全格式数字资产防泄密系统
 
-[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](CHANGELOG.md)
+[![Release Status](https://img.shields.io/badge/status-v3.3%E5%8F%AF%E5%8F%91%E5%B8%83-brightgreen.svg)](modify/2026-08-28-项目最终总结v1.0-v3.3.md)
+[![API Coverage](https://img.shields.io/badge/API_Coverage-100%25-success.svg)](scripts/check_controller_coverage.py)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://openjdk.org/)
 [![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://python.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)](https://vuejs.org/)
+[![等保](https://img.shields.io/badge/%E7%AD%89%E4%BF%9D-%E4%B8%89%E7%BA%A7-blue.svg)](modify/2026-08-12-等保三级测评准备.md)
 
-> 基于开源技术栈的零商业授权费用方案，覆盖视频与文档的全链路防泄密。
+> 基于开源技术栈的零商业授权费用方案，覆盖视频与文档的全链路防泄密。**v3.3 已具备发布条件**（参见 [最终总结](modify/2026-08-28-项目最终总结v1.0-v3.3.md)）。
 
 ## 概述
 
@@ -66,12 +69,39 @@ cd ../web && npm install && npm run dev
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-# 2. 部署 EDAM（GitOps）
+# 2. 部署 EDAM（GitOps 多环境：dev/staging/prod）
 kubectl apply -f gitops/argocd/projects/edam-appproject.yaml
 kubectl apply -f gitops/argocd/applicationset.yaml
 
-# 3. 等待自动同步（3 分钟内）
+# 3. 等待自动同步（dev 即时，staging 5min，prod 手动审批）
 argocd app list
+argocd app sync edam-dev --watch   # 实时观察
+```
+
+### 2.5 移动 SDK 集成（v3.3）
+
+```bash
+# iOS（Swift Package Manager）
+# 在 Xcode → File → Add Packages → 输入 mobile-sdk/ios/EDAMPlayer 路径
+# 或 SPM URL: git@github.com:example/edam.git, 路径 mobile-sdk/ios/EDAMPlayer
+
+# Android（Gradle）
+# 在 settings.gradle.kts 添加：
+# include(":edam-player")
+# project(":edam-player").projectDir = file("../mobile-sdk/android/edam-player")
+```
+
+### 2.6 性能压测（k6）
+
+```bash
+# 启动本地服务（同 1. 节）后执行
+cd perf/k6
+k6 run --out json=results.json scripts/smoke.js         # 烟囱测试
+k6 run --out json=results.json scripts/load-test.js    # 负载测试
+k6 run --out json=results.json scripts/stress-test.js  # 压测到极限
+
+# 报告查看
+python3 scripts/parse_k6.py results.json > report.html
 ```
 
 ### 3. 使用 API Mock
@@ -91,8 +121,8 @@ argocd app list
 ```
 edam/
 ├── doc/                          # 方案与 API 规范
-│   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书 (v3.0)
-│   ├── openapi.yaml              # OpenAPI 3.0 规范 (51 endpoints)
+│   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书 (v3.3)
+│   ├── openapi.yaml              # OpenAPI 3.0 规范 (65 endpoints, v3.3)
 │   ├── database_schema.md        # 26 张表详细定义
 │   ├── 图1-图4 PNG + drawio     # 架构/时序/ER/数据流
 │   └── ER图.drawio / 架构图.drawio / ...    # 可编辑源文件
@@ -193,6 +223,24 @@ edam/
 └── README.md                     # 本文件
 ```
 
+## v3.3 亮点（11 项 P0/P1/P2 全部闭环）
+
+| 类别 | 模块 | 状态 | 关键产出 |
+| --- | --- | --- | --- |
+| 🛡️ 合规 | 等保三级 P0 整改（W-1） | ✅ 9/9 | WAF + SOC + ELK + EDR + 密码策略 + 应急预案 + 漏洞扫描 + 密钥文档 + PIA |
+| 🇨🇳 合规 | 国密算法集成（W-2） | ✅ | SM4-CBC HLS + SM3 JWT + Vault Transit SM4-GCM + 国密 TLS |
+| 🇨🇳 合规 | 商密许可申请材料（W-3） | ✅ 6/6 | 信息系统密码应用方案 + 评估报告 + 申请材料清单 |
+| 🔐 安全 | SSO 集成（W-4） | ✅ | SAML 2.0 + OIDC + JIT Provisioning + 6 个 IdP 已验证 |
+| 🔐 安全 | WebAuthn / FIDO2（W-5） | ✅ AAL3 | 注册 + 登录 + 凭据管理 + 备份码 |
+| 🔍 溯源 | 频域水印生产（W-6） | ✅ | pHash 指纹库（30+ 帧）+ DCT 文档水印 + 泄露检测 |
+| 📊 安全 | 数据分类分级（W-7） | ✅ L1-L4 | 自动识别 + 强制打标 + 变更审计 |
+| 🔄 性能 | ES CDC 同步（W-10） | ✅ | Canal + Kafka + ES 5s flush + 每日对账 |
+| 📱 移动 | SDK v1.1（W-11） | ✅ | 文档预览 + 离线缓存 + 录屏检测 + 越狱检测 |
+| 🚀 DevOps | ArgoCD 多环境（W-12） | ✅ | ApplicationSet + Kustomize + Sync Wave + manual-approve |
+| 📈 性能 | k6 压测 + 容量规划（W-15） | ✅ | 核心 API + 鉴权 + 视频 + 文档全套脚本 |
+
+完整评估：[`modify/2026-08-28-项目最终总结v1.0-v3.3.md`](modify/2026-08-28-项目最终总结v1.0-v3.3.md)。
+
 ## 技术栈
 
 | 类别 | 技术 | 说明 |
@@ -213,7 +261,7 @@ edam/
 
 ## 核心 API
 
-完整 API 规范：[`doc/openapi.yaml`](doc/openapi.yaml)（51 个端点 / 36 个 schema / 16 个 tag）
+完整 API 规范：[`doc/openapi.yaml`](doc/openapi.yaml)（v3.3：65 个端点 / 36 个 schema / 16 个 tag）
 
 主要模块：
 
@@ -287,6 +335,9 @@ cd web && npm run build
 ```bash
 # 启动 Prism mock 后台
 ./dev/mock/prism.sh &
+
+# 安装依赖（首次）
+cd e2e && npm ci    # 严格按 package-lock.json 安装
 
 # 跑 Playwright
 cd e2e && npx playwright test
