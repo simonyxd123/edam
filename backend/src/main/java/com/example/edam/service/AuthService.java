@@ -85,7 +85,7 @@ public class AuthService {
         }
 
         // 5. 重置失败计数
-        user.setFailedLoginCount((short) 0);
+        user.setFailedLoginCount(0);
         userRepository.updateById(user);
 
         // 6. 签发 token
@@ -175,10 +175,10 @@ public class AuthService {
      * - 连续 5 次失败 → 锁定账号 30 分钟
      */
     private void handleFailedLogin(SysUser user) {
-        short failedCount = (short) (user.getFailedLoginCount() + 1);
+        int failedCount = user.getFailedLoginCount() + 1;
         user.setFailedLoginCount(failedCount);
         if (failedCount >= MAX_FAILED_ATTEMPTS) {
-            user.setStatus((short) 3); // 锁定
+            user.setStatus(3); // 锁定
             log.warn("账号锁定: employee_no={} failed_count={}",
                 user.getEmployeeNo(), failedCount);
         }

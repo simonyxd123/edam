@@ -6,6 +6,7 @@ import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.service.DocumentService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -21,6 +22,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/documents")
+@Slf4j
 @RequiredArgsConstructor
 public class DocumentController {
 

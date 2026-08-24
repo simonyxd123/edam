@@ -34,6 +34,12 @@ public class SysUser {
     private String lastLoginIp;
     private Integer failedLoginCount;
 
+    /** 密码最近修改时间（v3.3 W-1 G-5 密码轮转策略） */
+    private OffsetDateTime passwordChangedAt;
+
+    /** 是否强制下次登录修改密码（管理员重置后置 true） */
+    private Boolean mustChangePassword;
+
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;
 

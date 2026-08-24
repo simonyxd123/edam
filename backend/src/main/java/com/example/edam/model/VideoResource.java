@@ -40,6 +40,9 @@ public class VideoResource {
     private Long keyId;
     private Long viewCount;
 
+    @TableField(fill = FieldFill.INSERT_UPDATE)
+    private OffsetDateTime updatedAt;
+
     @TableLogic
     private OffsetDateTime deletedAt;
 

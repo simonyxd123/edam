@@ -50,7 +50,7 @@ public class VideoListController {
         long lastId = items.isEmpty() ? 0L : items.get(items.size() - 1).getId();
         long lastTs = items.isEmpty() ? 0L
             : items.get(items.size() - 1).getUploadTime() != null
-                ? items.get(items.size() - 1).getUploadTime().toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                ? items.get(items.size() - 1).getUploadTime().toInstant().toEpochMilli()
                 : System.currentTimeMillis();
 
         log.info("video_list_cursor cursor={} limit={} count={}", cursor, limit, items.size());

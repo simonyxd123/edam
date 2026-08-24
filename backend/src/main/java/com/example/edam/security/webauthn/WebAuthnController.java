@@ -75,7 +75,7 @@ public class WebAuthnController {
 
         // 认证器选择
         response.setAuthenticatorSelection(new AuthenticatorSelection(
-            properties.getAuthenticatorSelection().getResidentKey(),
+            properties.getAuthenticatorSelection().isResidentKey(),
             properties.getAuthenticatorSelection().getUserVerification(),
             properties.getAuthenticatorSelection().getAuthenticatorAttachment()
         ));

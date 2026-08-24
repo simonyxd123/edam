@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 /**
  * 数据分类强制打标中间件（v3.3 W-7.3）
@@ -87,7 +88,7 @@ public class ClassificationEnforcement {
             : ClassificationLevel.L1_PUBLIC;
 
         video.setClassificationLv(parseLevel(newLevel));
-        video.setUpdatedAt(LocalDateTime.now());
+        video.setUpdatedAt(OffsetDateTime.now());
         videoRepository.updateById(video);
 
         classificationService.recordChange(
@@ -143,7 +144,7 @@ public class ClassificationEnforcement {
                 ? ClassificationLevel.fromCode(toLevelCode(video.getClassificationLv()))
                 : ClassificationLevel.L1_PUBLIC;
             video.setClassificationLv(parseLevel(newLevel));
-            video.setUpdatedAt(LocalDateTime.now());
+            video.setUpdatedAt(OffsetDateTime.now());
             videoRepository.updateById(video);
         } else {
             DocResource doc = docRepository.selectById(resourceId);

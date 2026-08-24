@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -70,9 +71,9 @@ public class PasswordService {
 
         // 4. 更新密码
         user.setPasswordHash(newHash);
-        user.setPasswordChangedAt(LocalDateTime.now());
+        user.setPasswordChangedAt(OffsetDateTime.now());
         user.setMustChangePassword(false);
-        user.setFailedLoginCount((short) 0);  // 重置失败计数
+        user.setFailedLoginCount(0);  // 重置失败计数
         userRepository.updateById(user);
 
         // 5. 记录密码历史
@@ -102,7 +103,7 @@ public class PasswordService {
         String newHash = passwordEncoder.encode(tempPassword);
 
         user.setPasswordHash(newHash);
-        user.setPasswordChangedAt(LocalDateTime.now());
+        user.setPasswordChangedAt(OffsetDateTime.now());
         user.setMustChangePassword(true);  // 强制下次登录修改
         userRepository.updateById(user);
 

@@ -37,7 +37,7 @@ public class WebhookRetryConsumer {
             log.info("webhook_retry_received webhook_id={} attempt={}", webhookId, attempt);
             deliveryService.deliver(url, secret, payload, webhookId, event);
         } catch (Exception e) {
-            log.error("webhook_retry_failed", error=e);
+            log.error("webhook_retry_failed", e);
         }
     }
 

@@ -84,7 +84,7 @@ public class DocumentService {
             doc.setUploaderId(uploaderId);
             doc.setWatermarkStatus(enableWatermark ? 0 : 4);  // 0=pending 4=skipped
             doc.setPreviewStatus(0);
-            doc.setEncrypted(true);
+            doc.setEncrypted(1);
             docRepository.insert(doc);
 
             // 5. 触发异步处理
@@ -102,7 +102,7 @@ public class DocumentService {
             return doc;
 
         } catch (Exception e) {
-            log.error("doc_upload_failed", error=e);
+            log.error("doc_upload_failed", e);
             throw new RuntimeException("文档上传失败: " + e.getMessage(), e);
         }
     }

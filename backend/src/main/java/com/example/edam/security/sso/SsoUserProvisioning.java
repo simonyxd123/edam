@@ -11,9 +11,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -47,9 +46,9 @@ public class SsoUserProvisioning {
      */
     @Transactional
     public void provision(SsoUserInfo userInfo) {
-        Optional<SysUser> existingOpt = userRepository.findByEmployeeNo(userInfo.getEmployeeNo());
+        SysUser existing = userRepository.findByEmployeeNo(userInfo.getEmployeeNo());
 
-        if (existingOpt.isEmpty()) {
+        if (existing == null) {
             // 新用户 → 自动开通
             SysUser newUser = createNewUser(userInfo);
             userInfo.setNewlyProvisioned(true);
@@ -57,11 +56,10 @@ public class SsoUserProvisioning {
                 newUser.getId(), newUser.getEmployeeNo(), userInfo.getProviderId());
         } else {
             // 已存在 → 更新属性
-            SysUser user = existingOpt.get();
-            updateExistingUser(user, userInfo);
+            updateExistingUser(existing, userInfo);
             userInfo.setNewlyProvisioned(false);
             log.info("sso_user_updated user_id={} employee_no={}",
-                user.getId(), user.getEmployeeNo());
+                existing.getId(), existing.getEmployeeNo());
         }
 
         // 检查是否被 IdP 禁用
@@ -114,12 +112,12 @@ public class SsoUserProvisioning {
         user.setEmail(userInfo.getEmail());
         user.setPhone(userInfo.getPhone());
         user.setDeptId(resolveDeptId(defaultDeptCode));
-        user.setStatus((short) 1);  // active
-        user.setMfaEnabled((short) 0);
-        user.setFailedLoginCount((short) 0);
+        user.setStatus(1);  // active
+        user.setMfaEnabled(0);
+        user.setFailedLoginCount(0);
         user.setPasswordHash("SSO_NO_PASSWORD");  // SSO 用户无本地密码
-        user.setPasswordChangedAt(LocalDateTime.now());
-        user.setLastLoginAt(LocalDateTime.now());
+        user.setPasswordChangedAt(OffsetDateTime.now());
+        user.setLastLoginAt(OffsetDateTime.now());
         userRepository.insert(user);
         return user;
     }
@@ -134,7 +132,7 @@ public class SsoUserProvisioning {
         if (userInfo.getDepartment() != null) {
             user.setDeptId(resolveDeptId(userInfo.getDepartment()));
         }
-        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginAt(OffsetDateTime.now());
         userRepository.updateById(user);
     }
 
@@ -144,7 +142,7 @@ public class SsoUserProvisioning {
     private void disableUser(String employeeNo) {
         SysUser user = userRepository.findByEmployeeNo(employeeNo);
         if (user == null) return;
-        user.setStatus((short) 2);  // disabled
+        user.setStatus(2);  // disabled
         userRepository.updateById(user);
         log.warn("sso_user_disabled employee_no={} reason=idp_status_change", employeeNo);
     }

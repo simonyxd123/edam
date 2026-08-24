@@ -131,7 +131,7 @@ public class VideoService {
             log.info("video_uploaded, video_id={}, size={}", video.getId(), file.getSize());
             return video;
         } catch (Exception e) {
-            log.error("video_upload_failed", error=e);
+            log.error("video_upload_failed", e);
             throw new RuntimeException("视频上传失败: " + e.getMessage(), e);
         }
     }

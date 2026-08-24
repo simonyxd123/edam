@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.security.Signature;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.Optional;
 
@@ -74,7 +75,7 @@ public class WebAuthnAuthenticationService {
         credentialRepository.updateCounter(credential.getId(), newCounter, LocalDateTime.now());
 
         // 6. 更新用户最后登录时间
-        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginAt(OffsetDateTime.now());
         userRepository.updateById(user);
 
         log.info("webauthn_assertion_verified credential_id={} counter={}",

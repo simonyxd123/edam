@@ -68,7 +68,7 @@ public class OidcProviderFactory {
             // OAuth 2.0 Authorization Code Flow + PKCE
             String state = generateRandomString(32);
             String codeVerifier = generateRandomString(64);
-            String codeChallenge = base64UrlEncode(sha256(codeVerifier).getBytes());
+            String codeChallenge = base64UrlEncode(sha256(codeVerifier));
 
             StringBuilder url = new StringBuilder(config.getAuthorizationUri());
             url.append("?response_type=code");

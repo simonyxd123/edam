@@ -2,20 +2,16 @@ package com.example.edam.crypto.gmsm;
 
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
 import org.bouncycastle.crypto.generators.ECKeyPairGenerator;
+import org.bouncycastle.crypto.params.ECDomainParameters;
 import org.bouncycastle.crypto.params.ECKeyGenerationParameters;
 import org.bouncycastle.crypto.params.ECPrivateKeyParameters;
 import org.bouncycastle.crypto.params.ECPublicKeyParameters;
 import org.bouncycastle.crypto.params.ParametersWithRandom;
 import org.bouncycastle.crypto.signers.SM2Signer;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.jce.spec.ECParameterSpec;
-import org.bouncycastle.jce.spec.ECPrivateKeySpec;
-import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.math.ec.ECPoint;
-import org.bouncycastle.math.ec.FixedPointCombMultiplier;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.asn1.gm.GMNamedCurves;
-import org.bouncycastle.asn1.x9.ECNamedCurveTable;
 import org.bouncycastle.crypto.digests.SM3Digest;
 
 import java.math.BigInteger;
@@ -40,7 +36,7 @@ public final class SM2Util {
 
     private static final SecureRandom RNG = new SecureRandom();
     private static final X9ECParameters SM2_CURVE_PARAMS = GMNamedCurves.getByName("sm2p256v1");
-    private static final ECParameterSpec SM2_SPEC = new ECParameterSpec(
+    private static final ECDomainParameters SM2_SPEC = new ECDomainParameters(
         SM2_CURVE_PARAMS.getCurve(),
         SM2_CURVE_PARAMS.getG(),
         SM2_CURVE_PARAMS.getN(),
