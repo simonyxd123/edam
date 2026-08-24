@@ -36,7 +36,7 @@ EDAM 是一套面向中大型企业的数字资产防泄密系统，围绕"视�
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/example/edam.git
+git clone https://github.com/simonyxd123/edam.git
 cd edam
 
 # 2. 启动所有依赖
@@ -83,7 +83,7 @@ argocd app sync edam-dev --watch   # 实时观察
 ```bash
 # iOS（Swift Package Manager）
 # 在 Xcode → File → Add Packages → 输入 mobile-sdk/ios/EDAMPlayer 路径
-# 或 SPM URL: git@github.com:example/edam.git, 路径 mobile-sdk/ios/EDAMPlayer
+# 或 SPM URL: git@github.com:simonyxd123/edam.git, 路径 mobile-sdk/ios/EDAMPlayer
 
 # Android（Gradle）
 # 在 settings.gradle.kts 添加：
@@ -442,7 +442,7 @@ flyway -url=jdbc:mysql://localhost:3306/edam -user=root -password=xxx \
 ## 联系方式
 
 - **项目主页**：https://example.com/edam
-- **问题反馈**：https://github.com/example/edam/issues
+- **问题反馈**：https://github.com/simonyxd123/edam/issues
 - **邮件**：team@example.com
 
 ---
