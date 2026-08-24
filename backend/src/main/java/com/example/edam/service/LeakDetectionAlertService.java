@@ -104,7 +104,7 @@ public class LeakDetectionAlertService {
      */
     public void notifyLegalAndHR(Long detectionId) {
         if (legalWebhook == null || legalWebhook.isBlank()) return;
-        LeakDetection detection = leakRepository.findByDetectionId(detectionId);
+        LeakDetection detection = leakRepository.findByDetectionId(String.valueOf(detectionId));
         if (detection == null || !"confirmed".equals(detection.getStatus())) {
             return;
         }

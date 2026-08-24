@@ -160,7 +160,12 @@ public final class SM4Util {
     private static byte[] process(PaddedBufferedBlockCipher cipher, byte[] input) {
         byte[] output = new byte[cipher.getOutputSize(input.length)];
         int len1 = cipher.processBytes(input, 0, input.length, output, 0);
-        int len2 = cipher.doFinal(output, len1);
+        int len2;
+        try {
+            len2 = cipher.doFinal(output, len1);
+        } catch (org.bouncycastle.crypto.InvalidCipherTextException e) {
+            throw new RuntimeException("SM4 cipher finalisation failed", e);
+        }
         return Arrays.copyOf(output, len1 + len2);
     }
 

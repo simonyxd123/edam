@@ -91,9 +91,9 @@ public class PasswordPolicy {
     /**
      * 是否需要强制更换（密码创建时间距今 > rotationDays）
      */
-    public boolean needsRotation(java.time.LocalDateTime lastChanged) {
+    public boolean needsRotation(java.time.OffsetDateTime lastChanged) {
         if (lastChanged == null) return true;
-        long daysSinceChange = java.time.Duration.between(lastChanged, java.time.LocalDateTime.now()).toDays();
+        long daysSinceChange = java.time.Duration.between(lastChanged, java.time.OffsetDateTime.now()).toDays();
         return daysSinceChange >= rotationDays;
     }
 
