@@ -30,6 +30,7 @@ minio==7.2.8
 opencv-python-headless==4.10.0.84
 Pillow==10.4.0
 numpy==1.26.4
+imagehash==4.3.1
 blind-watermark==0.4.1
 PyPDF2==3.0.1
 python-docx==1.1.2
