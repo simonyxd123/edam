@@ -158,7 +158,7 @@ public final class SM4Util {
     }
 
     private static byte[] process(PaddedBufferedBlockCipher cipher, byte[] input) {
-        byte[] = new byte[cipher.getOutputSize(input.length)];
+        byte[] output = new byte[cipher.getOutputSize(input.length)];
         int len1 = cipher.processBytes(input, 0, input.length, output, 0);
         int len2 = cipher.doFinal(output, len1);
         return Arrays.copyOf(output, len1 + len2);
