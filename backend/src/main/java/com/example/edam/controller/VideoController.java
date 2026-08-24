@@ -30,7 +30,7 @@ public class VideoController {
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size,
         @RequestParam(required = false) String classification_lv,
-        @RequestParam(required = "false") Long uploader_id
+        @RequestParam(required = false) Long uploader_id
     ) {
         Page<VideoResource> result = videoService.list(page, page_size, classification_lv, uploader_id);
         return toPaginationResponse(result);

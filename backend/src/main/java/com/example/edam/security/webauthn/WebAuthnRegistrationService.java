@@ -2,6 +2,7 @@ package com.example.edam.security.webauthn;
 
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
+import com.example.edam.repository.WebAuthnCredentialRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

@@ -154,6 +154,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- OpenAPI / Swagger (Controller 用 @Tag/@Operation 必需) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.6.0</version>
+        </dependency>
+
         <!-- 测试 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

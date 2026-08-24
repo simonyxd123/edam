@@ -4,7 +4,7 @@ import com.example.edam.model.DocResource;
 import com.example.edam.model.VideoResource;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.VideoResourceRepository;
-import com.example.edam.security.SsoUserInfo;
+import com.example.edam.security.sso.SsoUserInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

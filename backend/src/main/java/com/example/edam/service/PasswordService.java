@@ -1,6 +1,5 @@
 package com.example.edam.service;
 
-import com.example.edam.exception.IllegalArgumentException;
 import com.example.edam.model.SysPasswordHistory;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysPasswordHistoryRepository;

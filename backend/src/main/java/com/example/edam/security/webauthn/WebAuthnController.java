@@ -2,6 +2,7 @@ package com.example.edam.security.webauthn;
 
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
+import com.example.edam.repository.WebAuthnCredentialRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
