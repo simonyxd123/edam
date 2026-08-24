@@ -101,6 +101,13 @@ edam:
   watermark:
     cache-ttl-seconds: 86400
     cache-max-size-gb: 100
+  hls:
+    # HLS AES-128 密钥获取 URL 模板（%d = videoId）
+    key-url-template: "/api/v1/playback/%d/key"
+    # HLS m3u8 列表 URL 模板
+    playlist-url-template: "/api/v1/video/%d/playlist.m3u8"
+    # 播放 token 默认有效期（秒）
+    token-ttl-seconds: 600
 
 # Actuator + Prometheus
 management:
