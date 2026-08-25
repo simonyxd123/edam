@@ -64,7 +64,7 @@ class VideoProcessor:
             duration_sec = await self._probe_duration(local_path)
 
             # 3. HLS 切片 + AES 加密（含 drawtext 水印）
-            watermark_text = f"EDAM video:{video_id} {time.strtime('%Y-%m-%d %H:%M:%S')}"
+            watermark_text = f"EDAM video:{video_id} {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             hls_dir = await self._hls_transcode(local_path, video_id, watermark_text)
             hls_path = f"videos/{video_id}/hls/playlist.m3u8"
             hls_status = 2  # ready
