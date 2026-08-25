@@ -8,6 +8,7 @@ export interface Document {
   title: string;
   file_type: 'docx' | 'pdf' | 'xlsx' | 'pptx' | 'image';
   file_hash: string;
+  mime_type: string;
   size_bytes: number;
   classification_lv: 'L1' | 'L2' | 'L3' | 'L4';
   uploader_id: number;
