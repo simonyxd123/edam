@@ -3,16 +3,27 @@ package com.example.edam.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.model.DocResource;
 import com.example.edam.repository.DocResourceRepository;
+import com.example.edam.service.AuditService;
 import com.example.edam.service.DocumentService;
+import io.minio.GetObjectArgs;
+import io.minio.MinioClient;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +40,11 @@ public class DocumentController {
 
     private final DocumentService documentService;
     private final DocResourceRepository docRepository;
+    private final MinioClient minioClient;
+    private final AuditService auditService;
+
+    @Value("${minio.bucket.documents}")
+    private String documentsBucket;
 
     @GetMapping
     public Map<String, Object> list(
@@ -115,6 +131,83 @@ public class DocumentController {
     @GetMapping("/{doc_id}")
     public DocResource getById(@PathVariable("doc_id") Long docId) {
         return documentService.getById(docId);
+    }
+
+    /**
+     * 文档预览（流式输出 MinIO 原始字节）
+     *
+     * GET /documents/{doc_id}/preview
+     * - 鉴权：JWT (任意登录用户即可预览，与分发权限解耦)
+     * - 审计：写 operation_log (preview)
+     * - 返回 Content-Type = 文档 mime，前端用浏览器原生 / iframe 渲染
+     *
+     * 安全：文件不离开后端，前端拿不到 MinIO 凭据；
+     * 真正的防泄密要求服务端 PDF.js 水印 / 文本抽取 / 转图片，本期先做"能看"。
+     *
+     * 生产建议：加 Range 支持 / ETag / Cache-Control: private
+     */
+    @GetMapping("/{doc_id}/preview")
+    public void preview(
+            @PathVariable("doc_id") Long docId,
+            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+            jakarta.servlet.http.HttpServletRequest request,
+            HttpServletResponse response
+    ) {
+        DocResource doc = documentService.getById(docId);
+        if (doc.getMinioPath() == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档原文不存在");
+        }
+
+        String mime = doc.getMimeType() != null ? doc.getMimeType() : "application/octet-stream";
+        // Office 文件浏览器无法原生渲染，给 application/octet-stream 让浏览器下载
+        String downloadMime = mime;
+        boolean inlineSupported = mime.startsWith("application/pdf") || mime.startsWith("image/")
+                                 || mime.startsWith("text/");
+        String disposition = inlineSupported ? "inline" : "attachment";
+
+        // 防 XSS：文件名 encode
+        String filename = URLEncoder.encode(doc.getTitle() != null ? doc.getTitle() : "document",
+            StandardCharsets.UTF_8).replace("+", "%20");
+
+        response.setContentType(downloadMime);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+            disposition + "; filename=\"" + filename + "\"");
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "private, max-age=300");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        if (doc.getSizeBytes() != null) {
+            response.setContentLengthLong(doc.getSizeBytes());
+        }
+
+        log.info("doc_preview, doc_id={}, user_id={}, mime={}, size={}",
+            docId, userId, mime, doc.getSizeBytes());
+
+        // 写审计（异步，不阻塞）
+        if (userId != null) {
+            auditService.log(userId, "preview", "Document", docId, "success",
+                "ip=" + request.getRemoteAddr() + ", mime=" + mime,
+                request.getRemoteAddr(),
+                request.getHeader("User-Agent"));
+        }
+
+        // 流式写 MinIO → response
+        try (InputStream in = minioClient.getObject(
+                GetObjectArgs.builder()
+                    .bucket(documentsBucket)
+                    .object(doc.getMinioPath())
+                    .build());
+             OutputStream out = response.getOutputStream()) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            out.flush();
+        } catch (Exception e) {
+            log.error("doc_preview_stream_failed, doc_id={}", docId, e);
+            // response 已经写 header，无法改 status，让前端超时
+            throw new RuntimeException("预览流失败", e);
+        }
     }
 
     @DeleteMapping("/{doc_id}")
