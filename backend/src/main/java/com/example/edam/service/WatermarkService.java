@@ -70,7 +70,8 @@ public class WatermarkService {
 
                     // 1) 对角线 45° 平铺水印
                     cs.setFont(font, 48);
-                    cs.setNonStrokingColor(100, 100, 100);
+                    // PDFBox setNonStrokingColor 接受 0..1 范围浮点（不是 0-255）
+                    cs.setNonStrokingColor(100 / 255f, 100 / 255f, 100 / 255f);
                     cs.beginText();
                     for (float y = 0; y < h + w; y += 120) {
                         cs.setTextMatrix(
@@ -89,7 +90,7 @@ public class WatermarkService {
 
                     // 2) 右下角永久水印（不旋转，肉眼必见）
                     cs.setFont(font, 14);
-                    cs.setNonStrokingColor(80, 80, 80);
+                    cs.setNonStrokingColor(80 / 255f, 80 / 255f, 80 / 255f);
                     cs.beginText();
                     cs.setTextMatrix(new org.apache.pdfbox.util.Matrix(1, 0, 0, 1, 30, 30));
                     cs.showText("EDAM " + employeeNo);

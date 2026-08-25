@@ -211,9 +211,10 @@ public class DocumentController {
                 response.setContentLengthLong(watermarkedBytes.length);
                 out.write(watermarkedBytes);
                 out.flush();
+                double ratio = watermarkedBytes.length / Math.max(1.0, doc.getSizeBytes());
                 log.info("doc_preview_stream_done, doc_id={}, in_size={}, out_size={}, ratio={}x",
                     docId, doc.getSizeBytes(), watermarkedBytes.length,
-                    watermarkedBytes.length / Math.max(1, doc.getSizeBytes()));
+                    String.format("%.2f", ratio));
             } else {
                 log.warn("doc_preview_watermark_empty, doc_id={}, mime={}", docId, mime);
                 out.flush();
