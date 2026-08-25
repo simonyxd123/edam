@@ -52,7 +52,6 @@ public class WatermarkService {
         byte[] original = pdfStream.readAllBytes();
         String text = buildWatermarkText(employeeNo);
 
-        // PDFBox 3.0+ 用 Loader.loadPDF(byte[]) / Loader.loadPDF(InputStream)
         try (PDDocument doc = org.apache.pdfbox.Loader.loadPDF(original)) {
             PDFont font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
 
@@ -64,15 +63,14 @@ public class WatermarkService {
 
                 try (PDPageContentStream cs = new PDPageContentStream(
                         doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                    // 半透明（0.18 alpha = 18%，更明显些）
+                    // 半透明（18% alpha，更明显）
                     PDExtendedGraphicsState gs = new PDExtendedGraphicsState();
                     gs.setNonStrokingAlphaConstant(0.18f);
                     cs.setGraphicsStateParameters(gs);
 
+                    // 1) 对角线 45° 平铺水印
                     cs.setFont(font, 48);
-                    cs.setNonStrokingColor(100, 100, 100);  // 深灰（更明显）
-
-                    // 对角线 45° 平铺
+                    cs.setNonStrokingColor(100, 100, 100);
                     cs.beginText();
                     for (float y = 0; y < h + w; y += 120) {
                         cs.setTextMatrix(
@@ -89,36 +87,15 @@ public class WatermarkService {
                     }
                     cs.endText();
 
-                    // 右下角单独加一个不旋转的水印（更醒目，肉眼必见）
-                    cs.setGraphicsStateParameters(gs);
-                    cs.beginText();
+                    // 2) 右下角永久水印（不旋转，肉眼必见）
                     cs.setFont(font, 14);
                     cs.setNonStrokingColor(80, 80, 80);
+                    cs.beginText();
                     cs.setTextMatrix(new org.apache.pdfbox.util.Matrix(1, 0, 0, 1, 30, 30));
                     cs.showText("EDAM " + employeeNo);
                     cs.endText();
                 } catch (Exception pageEx) {
                     log.warn("pdf_watermark_page_failed, page={}, error={}", i, pageEx.toString());
-                }
-            }
-
-                    // 对角线 45° 平铺
-                    cs.beginText();
-                    for (float y = 0; y < h + w; y += 100) {
-                        // PDF 坐标系：左下角原点，y 向上
-                        cs.setTextMatrix(
-                            new org.apache.pdfbox.util.Matrix(
-                                (float) Math.cos(Math.toRadians(45)),
-                                (float) Math.sin(Math.toRadians(45)),
-                                -(float) Math.sin(Math.toRadians(45)),
-                                (float) Math.cos(Math.toRadians(45)),
-                                -50,
-                                y
-                            )
-                        );
-                        cs.showText(text);
-                    }
-                    cs.endText();
                 }
             }
 
