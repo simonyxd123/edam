@@ -12,7 +12,12 @@ import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
-import java.awt.*;
+import java.awt.AlphaComposite;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -47,7 +52,7 @@ public class WatermarkService {
         byte[] original = pdfStream.readAllBytes();
         String text = buildWatermarkText(employeeNo);
 
-        try (PDDocument doc = PDDocument.load(original)) {
+        try (PDDocument doc = PDDocument.load(new java.io.ByteArrayInputStream(original))) {
             PDFont font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
 
             for (int i = 0; i < doc.getNumberOfPages(); i++) {
