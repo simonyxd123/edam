@@ -170,7 +170,7 @@ onMounted(() => loadData());
   <div class="videos-page">
     <div class="page-header">
       <h2>视频管理</h2>
-      <el-button type="primary" @click="handleUpload">+ 上传视频</el-button>
+      <el-button type="primary" @click="openUploadDialog">+ 上传视频</el-button>
     </div>
 
     <el-card>
