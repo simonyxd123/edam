@@ -66,11 +66,10 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
-  # 关闭全局逻辑删除配置（MP 3.5.7 对 OffsetDateTime deletedAt 有 bug，
-  # 生成 deleted_at= 占位空值导致 SQL 语法错）。
+  # 不配置 global-config.db-config.logic-delete-*：
+  # MP 3.5.7 对 OffsetDateTime deletedAt 有 bug（生成 deleted_at= 空值 SQL 语法错）。
   # 软删除过滤靠各 Repository 在 SQL 里手写 AND deleted_at IS NULL。
-  # 后续升级 MP 到 3.5.9+ 再恢复 global-config.db-config.* 配置。
-  global-config: {}
+  # 后续升级 MP 到 3.5.9+ 再启用全局配置。
 
 # MinIO
 minio:
