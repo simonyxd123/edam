@@ -52,7 +52,8 @@ public class WatermarkService {
         byte[] original = pdfStream.readAllBytes();
         String text = buildWatermarkText(employeeNo);
 
-        try (PDDocument doc = PDDocument.load(new java.io.ByteArrayInputStream(original))) {
+        // PDFBox 3.0+ 用 Loader.loadPDF(byte[]) / Loader.loadPDF(InputStream)
+        try (PDDocument doc = org.apache.pdfbox.Loader.loadPDF(original)) {
             PDFont font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
 
             for (int i = 0; i < doc.getNumberOfPages(); i++) {
