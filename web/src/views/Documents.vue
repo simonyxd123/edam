@@ -31,6 +31,17 @@ const uploadFormRef = ref();
 const uploading = ref(false);
 const uploadProgress = ref(0);
 
+// 预览对话框状态
+const previewDialogVisible = ref(false);
+const previewDoc = ref<Document | null>(null);
+const previewSrc = ref<string>('');
+const previewMime = ref<string>('');
+
+function canPreviewInline(mime: string | undefined): boolean {
+  if (!mime) return false;
+  return mime.startsWith('application/pdf') || mime.startsWith('image/') || mime.startsWith('text/');
+}
+
 async function loadData(page = 1) {
   loading.value = true;
   try {
@@ -106,7 +117,29 @@ async function submitUpload() {
 }
 
 async function handlePreview(doc: Document) {
-  ElMessage.info(`预览文档：${doc.title}（TODO: 接 PDF.js / Office Online）`);
+  previewDoc.value = doc;
+  previewMime.value = doc.mime_type || '';
+  // 后端 /documents/{id}/preview 流式输出；前端 iframe / img 直接显示
+  previewSrc.value = `/api/v1/documents/${doc.id}/preview`;
+  previewDialogVisible.value = true;
+}
+
+function closePreview() {
+  previewDialogVisible.value = false;
+  previewSrc.value = '';
+  previewDoc.value = null;
+}
+
+function downloadPreview() {
+  if (!previewDoc.value) return;
+  // 用 a 标签强制下载
+  const a = document.createElement('a');
+  a.href = previewSrc.value;
+  a.download = previewDoc.value.title || 'document';
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 async function handleDelete(doc: Document) {
@@ -347,5 +380,29 @@ onMounted(() => loadData());
   padding: 12px;
   color: #303133;
   .upload-size { color: #909399; font-size: 12px; }
+}
+.preview-container {
+  width: 100%;
+  height: 70vh;
+  min-height: 500px;
+}
+.preview-frame {
+  width: 100%;
+  height: 100%;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+}
+.preview-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: #606266;
+  h3 { margin: 0; font-size: 18px; }
+  .mime { font-size: 13px; color: #909399; margin: 0; }
+  .hint { font-size: 14px; color: #909399; margin: 0; }
+  .actions { display: flex; gap: 12px; margin-top: 12px; }
 }
 </style>
