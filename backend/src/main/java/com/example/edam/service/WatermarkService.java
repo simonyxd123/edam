@@ -121,7 +121,7 @@ public class WatermarkService {
             g.drawImage(src, 0, 0, null);
 
             // 右下角斜向水印
-            g.setRenderingHint(Rendering.KEYS.KEYS.get(0), Rendering.Hints.VALUE_TEXT);
+            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.18f));
             g.setColor(new Color(128, 128, 128));
             g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, Math.max(14, w / 50)));
