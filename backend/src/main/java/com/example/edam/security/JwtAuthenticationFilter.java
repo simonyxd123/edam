@@ -55,6 +55,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         .parseSignedClaims(token);
 
                 Claims claims = jws.getPayload();
+                // principal 用 subject（= String.valueOf(userId)），便于后续
+                // SecurityContextHolder.getContext().getAuthentication().getName()
+                // 直接拿到 userId 字符串，配合 AuthService 的查询。
+                // user_id_hash 保留在 claims 里用于审计，不暴露明文 PII。
+                String userId = claims.getSubject();
                 String userIdHash = claims.get("user_id_hash", String.class);
                 String sessionId = claims.get("session_id", String.class);
 
@@ -64,8 +69,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     roles.stream().map(SimpleGrantedAuthority::new).collect(Collectors.toList());
 
                 UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(userIdHash, null, authorities);
+                    new UsernamePasswordAuthenticationToken(userId, null, authorities);
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                // 把 hash 挂到 details 里供审计 / 日志使用，不污染 principal
+                authentication.setDetails(Map.of(
+                    "remoteAddress", request.getRemoteAddr(),
+                    "sessionId", sessionId == null ? "" : sessionId,
+                    "userIdHash", userIdHash == null ? "" : userIdHash
+                ));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
 
             } catch (Exception e) {
