@@ -134,6 +134,14 @@ public class VideoService {
             video.setFingerprintStatus(0);
             videoRepository.insert(video);
 
+            // 4.1 防御：INSERT 后立即 SELECT 验证（防止事务回滚时前端拿到 ID 但 DB 没记录）
+            VideoResource verify = videoRepository.selectById(video.getId());
+            if (verify == null) {
+                log.error("video_insert_verify_failed, id={}", video.getId());
+                throw new RuntimeException("INSERT 未持久化，video_id=" + video.getId());
+            }
+            log.info("video_insert_verified, id={}", video.getId());
+
             // 5. 触发异步处理（HLS 转码 + 帧指纹）
             rabbitTemplate.convertAndSend(exchange, videoRouting, java.util.Map.of(
                 "video_id", video.getId(),
