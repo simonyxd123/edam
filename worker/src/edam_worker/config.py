@@ -12,6 +12,9 @@ class Settings:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     HTTP_PORT: int = int(os.getenv("HTTP_PORT", "8001"))
 
+    # 后端 API（Worker 处理完回调）
+    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "http://localhost:8092")
+
     # RabbitMQ
     RABBITMQ_HOST: str = os.getenv("RABBITMQ_HOST", "localhost")
     RABBITMQ_PORT: int = int(os.getenv("RABBITMQ_PORT", "5672"))

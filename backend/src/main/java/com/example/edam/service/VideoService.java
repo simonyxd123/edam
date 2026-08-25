@@ -222,4 +222,27 @@ public class VideoService {
             default -> 1;
         };
     }
+
+    /**
+     * 更新处理状态（Worker 处理完 HLS / 指纹后回调）
+     *
+     * @param videoId           视频 ID
+     * @param hlsStatus         HLS 状态：0=pending 1=processing 2=ready 3=failed
+     * @param hlsPath           HLS 目录在 MinIO 上的路径（e.g. videos/1/hls/playlist.m3u8）
+     * @param fingerprintStatus 指纹状态：0=pending 1=processing 2=ready 3=failed
+     * @param fingerprintPath   指纹 JSON 在 MinIO 上的路径
+     */
+    @Transactional
+    public void updateProcessingStatus(Long videoId,
+                                       Integer hlsStatus, String hlsPath,
+                                       Integer fingerprintStatus, String fingerprintPath) {
+        VideoResource v = getById(videoId);
+        if (hlsStatus != null) v.setHlsStatus(hlsStatus);
+        if (hlsPath != null) v.setHlsPath(hlsPath);
+        if (fingerprintStatus != null) v.setFingerprintStatus(fingerprintStatus);
+        if (fingerprintPath != null) v.setFingerprintPath(fingerprintPath);
+        videoRepository.updateById(v);
+        log.info("video_processing_status_updated, video_id={}, hls={}, fp={}",
+            videoId, hlsStatus, fingerprintStatus);
+    }
 }

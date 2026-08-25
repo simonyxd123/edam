@@ -38,6 +38,9 @@ public class SecurityConfig {
                 .requestMatchers("/health/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 .requestMatchers("/ws/**").permitAll()
+                // Worker 内部回调：Worker → Backend 更新视频状态
+                // 生产应加静态 service token 鉴权（X-Worker-Token）
+                .requestMatchers(HttpMethod.PATCH, "/videos/*/status").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated()
             )

@@ -21,6 +21,8 @@ from PIL import Image
 
 from ..config import settings
 
+import requests
+
 log = structlog.get_logger()
 
 
@@ -44,6 +46,11 @@ class VideoProcessor:
         input_path = payload["input_path"]
         log.info("video_processing_start", video_id=video_id, input_path=input_path)
 
+        hls_status = 3   # 默认 failed
+        fp_status = 3
+        hls_path = None
+        fingerprint_path = None
+
         try:
             # 1. 下载视频到临时目录
             local_path = await self._download_from_minio(
@@ -52,22 +59,63 @@ class VideoProcessor:
 
             # 2. HLS 切片 + AES 加密
             hls_dir = await self._hls_transcode(local_path, video_id)
+            hls_path = f"videos/{video_id}/hls/playlist.m3u8"
+            hls_status = 2  # ready
 
             # 3. 提取帧指纹
-            fingerprint_path = await self._extract_fingerprints(local_path, video_id)
+            local_fp = await self._extract_fingerprints(local_path, video_id)
+            fingerprint_path = f"videos/{video_id}/fingerprint.json"
+            fp_status = 2    # ready
 
             # 4. 上传 HLS 与指纹到 MinIO
             await self._upload_hls(hls_dir, video_id)
-            await self._upload_fingerprint(fingerprint_path, video_id)
+            await self._upload_fingerprint(local_fp, video_id)
 
             log.info("video_processing_complete", video_id=video_id)
 
         except Exception as e:
             log.error("video_processing_failed", video_id=video_id, error=str(e))
-            raise
+            # 出错也继续到 finally，外层 finally 统一回调后端
         finally:
+            # 5. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status
+            #    前端轮询 /videos/{id} 看到 ready/failed 后弹提示
+            await self._notify_backend_status(
+                video_id,
+                hls_status=hls_status, hls_path=hls_path,
+                fingerprint_status=fp_status, fingerprint_path=fingerprint_path,
+            )
             # 清理临时文件
-            self._cleanup_temp(local_path)
+            try:
+                self._cleanup_temp(local_path)  # type: ignore
+            except Exception:
+                pass
+
+    async def _notify_backend_status(self, video_id: int,
+                                       hls_status: int = None, hls_path: str = None,
+                                       fingerprint_status: int = None, fingerprint_path: str = None) -> None:
+        """回调后端 PATCH /videos/{video_id}/status"""
+        url = f"{settings.BACKEND_BASE_URL}/api/v1/videos/{video_id}/status"
+        payload: Dict[str, Any] = {}
+        if hls_status is not None:
+            payload["hls_status"] = hls_status
+        if hls_path:
+            payload["hls_path"] = hls_path
+        if fingerprint_status is not None:
+            payload["fingerprint_status"] = fingerprint_status
+        if fingerprint_path:
+            payload["fingerprint_path"] = fingerprint_path
+
+        try:
+            resp = await asyncio.to_thread(
+                requests.patch, url, json=payload, timeout=10
+            )
+            if resp.status_code >= 400:
+                log.error("notify_backend_failed", video_id=video_id,
+                          status=resp.status_code, body=resp.text[:300])
+            else:
+                log.info("notify_backend_ok", video_id=video_id, status=resp.status_code)
+        except Exception as e:
+            log.error("notify_backend_exception", video_id=video_id, error=str(e))
 
     async def _download_from_minio(self, bucket: str, object_name: str) -> str:
         """从 MinIO 下载到本地临时目录"""

@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.VideoStatusUpdateRequest;
 import com.example.edam.model.VideoResource;
 import com.example.edam.service.VideoService;
 import lombok.Data;
@@ -72,6 +73,34 @@ public class VideoController {
     @GetMapping("/{video_id}")
     public VideoResource getById(@PathVariable("video_id") Long videoId) {
         return videoService.getById(videoId);
+    }
+
+    /**
+     * Worker 处理完后回调更新状态（HLS / 指纹）
+     *
+     * PATCH /videos/{video_id}/status
+     * body: { "hls_status": 2, "hls_path": "videos/1/hls/playlist.m3u8",
+     *         "fingerprint_status": 2, "fingerprint_path": "videos/1/fingerprint.json" }
+     *
+     * 任意字段可单独更新（不传则保持原值）。
+     */
+    @PatchMapping("/{video_id}/status")
+    public ResponseEntity<Map<String, Object>> updateStatus(
+            @PathVariable("video_id") Long videoId,
+            @RequestBody VideoStatusUpdateRequest request
+    ) {
+        log.info("video_status_update_callback, video_id={}, body={}", videoId, request);
+        videoService.updateProcessingStatus(
+            videoId,
+            request.getHlsStatus(), request.getHlsPath(),
+            request.getFingerprintStatus(), request.getFingerprintPath()
+        );
+        VideoResource updated = videoService.getById(videoId);
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("video_id", updated.getId());
+        resp.put("hls_status", statusToString(updated.getHlsStatus()));
+        resp.put("fingerprint_status", statusToString(updated.getFingerprintStatus()));
+        return ResponseEntity.ok(resp);
     }
 
     @DeleteMapping("/{video_id}")
