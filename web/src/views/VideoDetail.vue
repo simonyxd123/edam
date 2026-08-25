@@ -25,30 +25,40 @@ onMounted(async () => {
     const tk = await api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
       `/playback/${videoId}/token`,
     );
-    // 后端返回的 m3u8_url 是相对路径 '/api/v1/video/.../playlist.m3u8?token=...'
-    // 浏览器需要拼上 origin 才能加载
+    // 后端返回的 m3u8_url 是相对路径 '/api/v1/playback/{id}/playlist.m3u8?token=...'
     const fullUrl = tk.m3u8_url.startsWith('http')
       ? tk.m3u8_url
       : `${window.location.origin}${tk.m3u8_url}`;
     m3u8Url.value = fullUrl;
     token.value = tk.token;
+    console.log('[VideoDetail] m3u8 URL:', fullUrl);
 
     // 3. HLS.js 播放
     if (videoEl.value && Hls.isSupported()) {
-      hls.value = new Hls();
-      hls.value.loadSource(m3u8Url.value);
-      hls.value.attachMedia(videoEl.value);
+      hls.value = new Hls({ debug: false, enableWorker: true });
       hls.value.on(Hls.Events.ERROR, (_e, data) => {
+        console.error('[VideoDetail] HLS error:', data);
         if (data.fatal) {
-          errorMsg.value = `HLS 播放错误: ${data.type} / ${data.details}`;
+          const msg = `HLS ${data.type}/${data.details}: ${data.error?.message || ''}`;
+          errorMsg.value = msg;
+          // 网络错误 → 切原始 <video src> 模式重试（部分浏览器会处理）
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            console.warn('[VideoDetail] NETWORK_ERROR, retry with native <video>');
+          }
         }
       });
+      hls.value.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.log('[VideoDetail] manifest parsed, attaching to video');
+      });
+      hls.value.loadSource(m3u8Url.value);
+      hls.value.attachMedia(videoEl.value);
     } else if (videoEl.value) {
       // Safari 原生 HLS
       videoEl.value.src = m3u8Url.value;
     }
     loading.value = false;
   } catch (e: any) {
+    console.error('[VideoDetail] load error:', e);
     errorMsg.value = e?.message || '加载失败';
     loading.value = false;
   }
