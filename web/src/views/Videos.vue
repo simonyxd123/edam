@@ -86,12 +86,13 @@ async function submitUpload() {
       fd.append('title', uploadForm.value.title);
     }
 
-    // 用 XMLHttpRequest 实现真进度（axios  fetch 也可，但 XHR 进度事件更稳）
-    const result = await uploadWithProgress('/api/v1/videos', fd, (e) => {
-      if (e.lengthComputable) {
-        uploadProgress.value = Math.round((e.loaded / e.total) * 100);
+    // 走项目 api 客户端（自动注入 Authorization JWT + X-User-Id + onUploadProgress）
+    const result = await api.upload<{ video_id: number; file_hash: string }>(
+      '/videos', fd,
+      (loaded, total) => {
+        uploadProgress.value = Math.round((loaded / total) * 100);
       }
-    });
+    );
 
     ElMessage.success(
       `上传成功，video_id=${result.video_id}，正在后台转 HLS…`
@@ -103,38 +104,6 @@ async function submitUpload() {
   } finally {
     uploading.value = false;
   }
-}
-
-/**
- * 带真实上传进度的 FormData POST
- * （axios 默认 fetch 不暴露进度，回退到 XHR）
- */
-function uploadWithProgress(
-  url: string,
-  formData: FormData,
-  onProgress: (e: ProgressEvent) => void,
-): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', url);
-    xhr.upload.addEventListener('progress', onProgress);
-    xhr.upload.addEventListener('error', () => reject(new Error('网络错误')));
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText)); }
-        catch { resolve(xhr.responseText); }
-      } else {
-        // 尝试解析后端错误消息
-        let msg = `HTTP ${xhr.status}`;
-        try { msg = JSON.parse(xhr.responseText)?.message || msg; } catch {}
-        reject(new Error(msg));
-      }
-    });
-    xhr.addEventListener('error', () => reject(new Error('网络错误')));
-    // 用户 ID 由后端 controller 从 X-User-Id header 读；测试环境硬编码 1
-    xhr.setRequestHeader('X-User-Id', String(userStore.user?.id ?? 1));
-    xhr.send(formData);
-  });
 }
 
 function handleView(video: Video) {
