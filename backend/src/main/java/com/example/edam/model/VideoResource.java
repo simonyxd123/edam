@@ -46,6 +46,7 @@ public class VideoResource {
     // @TableLogic  // MP 3.5.7 在 OffsetDateTime deletedAt 上生成 WHERE deleted_at=0 永远查不到行；已废弃
     private OffsetDateTime deletedAt;
 
-    @Version
-    private Integer version;
+    /** 乐观锁（MP 3.5.7 updateById bug 暂时注释） */
+    // @Version
+    // private Integer version;
 }
