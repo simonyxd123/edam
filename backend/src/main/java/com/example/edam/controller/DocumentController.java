@@ -2,9 +2,12 @@ package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.model.DocResource;
+import com.example.edam.model.SysUser;
 import com.example.edam.repository.DocResourceRepository;
+import com.example.edam.repository.SysUserRepository;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.DocumentService;
+import com.example.edam.service.WatermarkService;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import jakarta.servlet.http.HttpServletResponse;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLEncoder;
@@ -42,6 +46,8 @@ public class DocumentController {
     private final DocResourceRepository docRepository;
     private final MinioClient minioClient;
     private final AuditService auditService;
+    private final WatermarkService watermarkService;
+    private final SysUserRepository sysUserRepository;
 
     @Value("${minio.bucket.documents}")
     private String documentsBucket;
@@ -159,54 +165,68 @@ public class DocumentController {
         }
 
         String mime = doc.getMimeType() != null ? doc.getMimeType() : "application/octet-stream";
-        // Office 文件浏览器无法原生渲染，给 application/octet-stream 让浏览器下载
-        String downloadMime = mime;
         boolean inlineSupported = mime.startsWith("application/pdf") || mime.startsWith("image/")
                                  || mime.startsWith("text/");
         String disposition = inlineSupported ? "inline" : "attachment";
 
-        // 防 XSS：文件名 encode
         String filename = URLEncoder.encode(doc.getTitle() != null ? doc.getTitle() : "document",
             StandardCharsets.UTF_8).replace("+", "%20");
 
-        response.setContentType(downloadMime);
+        // 拉水印文本（用员工号；查不到就降级）
+        String watermarkText = lookupEmployeeNo(userId);
+        if (watermarkText == null || watermarkText.isBlank()) {
+            watermarkText = "ANONYMOUS";
+        }
+
+        response.setContentType(mime);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
             disposition + "; filename=\"" + filename + "\"");
         response.setHeader(HttpHeaders.CACHE_CONTROL, "private, max-age=300");
         response.setHeader("X-Content-Type-Options", "nosniff");
-        if (doc.getSizeBytes() != null) {
-            response.setContentLengthLong(doc.getSizeBytes());
-        }
+        // 防 iframe 劫持：只允许同源页面嵌入
+        response.setHeader("X-Frame-Options", "SAMEORIGIN");
 
-        log.info("doc_preview, doc_id={}, user_id={}, mime={}, size={}",
+        log.info("doc_preview, doc_id={}, user_id={}, mime={}, size={}, watermark=true",
             docId, userId, mime, doc.getSizeBytes());
 
-        // 写审计（异步，不阻塞）
+        // 写审计
         if (userId != null) {
             auditService.log(userId, "preview", "Document", docId, "success",
-                "ip=" + request.getRemoteAddr() + ", mime=" + mime,
+                "ip=" + request.getRemoteAddr() + ", mime=" + mime + ", watermark=on",
                 request.getRemoteAddr(),
                 request.getHeader("User-Agent"));
         }
 
-        // 流式写 MinIO → response
-        try (InputStream in = minioClient.getObject(
+        // 从 MinIO 读 → 加水印 → 流式写 response
+        try (InputStream minioIn = minioClient.getObject(
                 GetObjectArgs.builder()
                     .bucket(documentsBucket)
                     .object(doc.getMinioPath())
                     .build());
              OutputStream out = response.getOutputStream()) {
-            byte[] buf = new byte[64 * 1024];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
+
+            byte[] watermarkedBytes = watermarkService.applyWatermark(minioIn, mime, watermarkText);
+            if (watermarkedBytes != null) {
+                response.setContentLengthLong(watermarkedBytes.length);
+                out.write(watermarkedBytes);
+                out.flush();
             }
-            out.flush();
         } catch (Exception e) {
             log.error("doc_preview_stream_failed, doc_id={}", docId, e);
-            // response 已经写 header，无法改 status，让前端超时
             throw new RuntimeException("预览流失败", e);
+        }
+    }
+
+    /** 用 userId 查员工号，水印里用 */
+    private String lookupEmployeeNo(Long userId) {
+        if (userId == null) return null;
+        try {
+            SysUser u = sysUserRepository.selectById(userId);
+            return u != null ? u.getEmployeeNo() : null;
+        } catch (Exception e) {
+            log.warn("employee_no_lookup_failed, userId={}", userId);
+            return null;
         }
     }
 

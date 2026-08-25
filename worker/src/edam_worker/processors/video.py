@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -62,8 +63,9 @@ class VideoProcessor:
             # 2. ffprobe 提取时长（即使后面转码失败也能拿到时长）
             duration_sec = await self._probe_duration(local_path)
 
-            # 3. HLS 切片 + AES 加密
-            hls_dir = await self._hls_transcode(local_path, video_id)
+            # 3. HLS 切片 + AES 加密（含 drawtext 水印）
+            watermark_text = f"EDAM video:{video_id} {time.strtime('%Y-%m-%d %H:%M:%S')}"
+            hls_dir = await self._hls_transcode(local_path, video_id, watermark_text)
             hls_path = f"videos/{video_id}/hls/playlist.m3u8"
             hls_status = 2  # ready
 
@@ -168,7 +170,7 @@ class VideoProcessor:
         )
         return local_path
 
-    async def _hls_transcode(self, input_path: str, video_id: int) -> str:
+    async def _hls_transcode(self, input_path: str, video_id: int, watermark_text: str = "EDAM") -> str:
         """
         FFmpeg HLS 切片 + AES 加密
         参考方案书 4.2 节
@@ -176,15 +178,31 @@ class VideoProcessor:
         注意：FFmpeg 4.3 不支持 -hls_key_url（4.4+ 才有）。
         我们改用后处理：FFmpeg 输出 m3u8 后用 _rewrite_key_url() 把
         URI="key.bin" 替换为后端真实 key URL。
+
+        drawtext 水印（v3.2 视频防泄密）：
+        - 右下角员工号 + 时间戳，半透明
+        - 字体根据视频高度自动调整（height/30, min 16）
+        - 颜色白底带黑边框（任何背景都可见）
         """
         output_dir = os.path.join(tempfile.gettempdir(), f"edam-hls-{video_id}")
         os.makedirs(output_dir, exist_ok=True)
         m3u8_path = os.path.join(output_dir, "playlist.m3u8")
         key_url = settings.HLS_KEY_URL.format(video_id=video_id)
 
+        # drawtext filter（转义冒号和单引号，FFmpeg filter 语法敏感）
+        wm_escaped = watermark_text.replace("'", "\\'").replace(":", "\\:")
+        font_size = 18  # 适合 720p；1080p 会偏小，prod 应按 height/30 自适应
+        drawtext_filter = (
+            f"drawtext=text='{wm_escaped}':"
+            f"fontcolor=white:fontsize={font_size}:"
+            f"box=1:boxcolor=black@0.4:boxborderw=8:"
+            "x=w-tw-20:h-th-20"
+        )
+
         cmd = [
             settings.FFMPEG_PATH,
             "-i", input_path,
+            "-vf", drawtext_filter,
             "-c:v", "libx264",
             "-c:a", "aac",
             "-hls_time", str(settings.HLS_SEGMENT_DURATION),
