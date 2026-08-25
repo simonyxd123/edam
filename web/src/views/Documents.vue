@@ -151,7 +151,11 @@ onMounted(() => loadData());
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="上传时间" width="180" />
+        <el-table-column label="上传时间" width="180">
+          <template #default="{ row }">
+            {{ $fmt(row.upload_time) }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handlePreview(row)">预览</el-button>

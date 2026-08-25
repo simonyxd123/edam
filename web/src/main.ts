@@ -10,6 +10,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue';
 import App from './App.vue';
 import router from './router';
 import './styles/main.scss';
+import { formatDateTime, formatDate, formatTime } from './utils/date';
 
 const app = createApp(App);
 
@@ -21,6 +22,11 @@ app.use(router);
 
 // Element Plus UI
 app.use(ElementPlus);
+
+// 全局日期格式化函数（模板里直接用：{{ $fmt(row.upload_time) }}）
+app.config.globalProperties.$fmt = formatDateTime;
+app.config.globalProperties.$fmtDate = formatDate;
+app.config.globalProperties.$fmtTime = formatTime;
 
 // 注册所有 Element Plus 图标
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {

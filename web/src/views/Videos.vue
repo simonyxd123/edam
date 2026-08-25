@@ -106,7 +106,11 @@ onMounted(() => loadData());
             {{ (row.size_bytes / 1024 / 1024).toFixed(2) }} MB
           </template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="上传时间" width="180" />
+        <el-table-column label="上传时间" width="180">
+          <template #default="{ row }">
+            {{ $fmt(row.upload_time) }}
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="row.hls_status === 'ready' ? 'success' : 'warning'" size="small">

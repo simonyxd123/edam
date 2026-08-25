@@ -155,7 +155,11 @@ onMounted(() => loadData());
             {{ row.current_open_count }} / {{ row.max_open_count }}
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="180" />
+        <el-table-column label="创建时间" width="180">
+          <template #default="{ row }">
+            {{ $fmt(row.created_at) }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'pending'">

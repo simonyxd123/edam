@@ -83,7 +83,7 @@ function goBack() {
         <el-descriptions-item label="时长">{{ video?.duration_sec }}s</el-descriptions-item>
         <el-descriptions-item label="大小">{{ video?.size_bytes }} bytes</el-descriptions-item>
         <el-descriptions-item label="密级">L{{ video?.classification_lv }}</el-descriptions-item>
-        <el-descriptions-item label="上传时间">{{ video?.upload_time }}</el-descriptions-item>
+        <el-descriptions-item label="上传时间">{{ $fmt(video?.upload_time) }}</el-descriptions-item>
         <el-descriptions-item label="上传者">{{ video?.uploader_id }}</el-descriptions-item>
       </el-descriptions>
     </div>

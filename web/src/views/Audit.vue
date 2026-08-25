@@ -85,7 +85,11 @@ onMounted(loadLogs);
       <el-table-column prop="resource_type" label="资源" width="80" />
       <el-table-column prop="resource_id" label="资源ID" width="80" />
       <el-table-column prop="ip_address" label="IP" width="120" />
-      <el-table-column prop="timestamp" label="时间" />
+      <el-table-column label="时间" min-width="160">
+          <template #default="{ row }">
+            {{ $fmt(row.timestamp) }}
+          </template>
+        </el-table-column>
       <el-table-column label="结果" width="80">
         <template #default="{ row }">
           <el-tag :type="colorOfResult(row.result)" size="small">{{ row.result }}</el-tag>
