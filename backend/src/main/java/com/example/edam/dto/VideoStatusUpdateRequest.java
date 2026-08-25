@@ -28,4 +28,8 @@ public class VideoStatusUpdateRequest {
     /** 指纹 JSON 在 MinIO 上的路径 */
     @JsonProperty("fingerprint_path")
     private String fingerprintPath;
+
+    /** 视频时长（秒，Worker 用 ffprobe 提取） */
+    @JsonProperty("duration_sec")
+    private Long durationSec;
 }

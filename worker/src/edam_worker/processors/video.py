@@ -50,6 +50,7 @@ class VideoProcessor:
         fp_status = 3
         hls_path = None
         fingerprint_path = None
+        duration_sec: int = None
 
         try:
             # 1. 下载视频到临时目录
@@ -57,32 +58,36 @@ class VideoProcessor:
                 settings.MINIO_BUCKET_VIDEOS, input_path
             )
 
-            # 2. HLS 切片 + AES 加密
+            # 2. ffprobe 提取时长（即使后面转码失败也能拿到时长）
+            duration_sec = await self._probe_duration(local_path)
+
+            # 3. HLS 切片 + AES 加密
             hls_dir = await self._hls_transcode(local_path, video_id)
             hls_path = f"videos/{video_id}/hls/playlist.m3u8"
             hls_status = 2  # ready
 
-            # 3. 提取帧指纹
+            # 4. 提取帧指纹
             local_fp = await self._extract_fingerprints(local_path, video_id)
             fingerprint_path = f"videos/{video_id}/fingerprint.json"
             fp_status = 2    # ready
 
-            # 4. 上传 HLS 与指纹到 MinIO
+            # 5. 上传 HLS 与指纹到 MinIO
             await self._upload_hls(hls_dir, video_id)
             await self._upload_fingerprint(local_fp, video_id)
 
-            log.info("video_processing_complete", video_id=video_id)
+            log.info("video_processing_complete", video_id=video_id, duration_sec=duration_sec)
 
         except Exception as e:
             log.error("video_processing_failed", video_id=video_id, error=str(e))
             # 出错也继续到 finally，外层 finally 统一回调后端
         finally:
-            # 5. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status
+            # 6. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status / duration_sec
             #    前端轮询 /videos/{id} 看到 ready/failed 后弹提示
             await self._notify_backend_status(
                 video_id,
                 hls_status=hls_status, hls_path=hls_path,
                 fingerprint_status=fp_status, fingerprint_path=fingerprint_path,
+                duration_sec=duration_sec,
             )
             # 清理临时文件
             try:
@@ -90,9 +95,43 @@ class VideoProcessor:
             except Exception:
                 pass
 
+    async def _probe_duration(self, input_path: str) -> int | None:
+        """
+        用 ffprobe 提取视频时长（秒）
+
+        返回 int 秒数；失败返回 None（不抛错，让上层用 fallback）。
+        """
+        cmd = [
+            settings.FFPROBE_PATH,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                log.warning("ffprobe_failed",
+                            returncode=proc.returncode,
+                            stderr=stderr.decode()[:200])
+                return None
+            text = stdout.decode().strip()
+            if not text:
+                return None
+            return int(float(text))
+        except Exception as e:
+            log.warning("ffprobe_exception", error=str(e))
+            return None
+
     async def _notify_backend_status(self, video_id: int,
                                        hls_status: int = None, hls_path: str = None,
-                                       fingerprint_status: int = None, fingerprint_path: str = None) -> None:
+                                       fingerprint_status: int = None, fingerprint_path: str = None,
+                                       duration_sec: int = None) -> None:
         """回调后端 PATCH /videos/{video_id}/status"""
         url = f"{settings.BACKEND_BASE_URL}/api/v1/videos/{video_id}/status"
         payload: Dict[str, Any] = {}
@@ -104,6 +143,8 @@ class VideoProcessor:
             payload["fingerprint_status"] = fingerprint_status
         if fingerprint_path:
             payload["fingerprint_path"] = fingerprint_path
+        if duration_sec is not None:
+            payload["duration_sec"] = duration_sec
 
         try:
             resp = await asyncio.to_thread(

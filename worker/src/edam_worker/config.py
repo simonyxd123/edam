@@ -33,6 +33,7 @@ class Settings:
     # FFmpeg
     FFMPEG_PATH: str = os.getenv("FFMPEG_PATH", "/usr/bin/ffmpeg")
     FFMPEG_THREADS: int = int(os.getenv("FFMPEG_THREADS", "4"))
+    FFPROBE_PATH: str = os.getenv("FFPROBE_PATH", "/usr/bin/ffprobe")
 
     # HLS
     HLS_SEGMENT_DURATION: int = int(os.getenv("HLS_SEGMENT_DURATION", "10"))

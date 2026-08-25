@@ -93,7 +93,8 @@ public class VideoController {
         videoService.updateProcessingStatus(
             videoId,
             request.getHlsStatus(), request.getHlsPath(),
-            request.getFingerprintStatus(), request.getFingerprintPath()
+            request.getFingerprintStatus(), request.getFingerprintPath(),
+            request.getDurationSec()
         );
         VideoResource updated = videoService.getById(videoId);
         Map<String, Object> resp = new HashMap<>();
