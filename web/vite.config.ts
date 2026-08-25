@@ -29,11 +29,13 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: process.env.VITE_API_BASE_URL || 'http://localhost:8080',
+        // 与后端 server.port=8092 + dev profile 默认 MySQL 3307 配套
+        // 设环境变量 VITE_API_BASE_URL=http://your.host:port 可覆盖
+        target: process.env.VITE_API_BASE_URL || 'http://localhost:8092',
         changeOrigin: true,
       },
       '/ws': {
-        target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8080',
+        target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8092',
         ws: true,
       },
     },
