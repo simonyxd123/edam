@@ -104,8 +104,10 @@ public class AuditService {
             .map(OperationLog::getUserId)
             .filter(java.util.Objects::nonNull)
             .collect(Collectors.toSet());
-        Map<Long, String> empNoMap = Collections.emptyMap();
-        if (!userIds.isEmpty()) {
+        final Map<Long, String> empNoMap;
+        if (userIds.isEmpty()) {
+            empNoMap = Collections.emptyMap();
+        } else {
             List<SysUser> users = sysUserRepository.selectBatchIds(userIds);
             empNoMap = users.stream()
                 .collect(Collectors.toMap(SysUser::getId, SysUser::getEmployeeNo, (a, b) -> a, HashMap::new));
