@@ -270,6 +270,43 @@ onMounted(() => loadData());
       />
     </el-card>
 
+    <!-- 文档预览对话框 -->
+    <el-dialog
+      v-model="previewDialogVisible"
+      :title="`预览 — ${previewDoc?.title ?? ''}`"
+      width="80%"
+      :close-on-click-modal="false"
+      top="5vh"
+      @close="closePreview"
+    >
+      <div v-if="previewDoc" class="preview-container">
+        <iframe
+          v-if="canPreviewInline(previewMime)"
+          :src="previewSrc"
+          class="preview-frame"
+          :title="previewDoc.title"
+        ></iframe>
+        <div v-else class="preview-fallback">
+          <el-icon :size="64"><DocIcon /></el-icon>
+          <h3>{{ previewDoc.title }}</h3>
+          <p class="mime">文件类型：{{ previewMime || '未知' }}</p>
+          <p class="hint">浏览器无法直接预览此格式</p>
+          <div class="actions">
+            <el-button type="primary" @click="downloadPreview">下载文件</el-button>
+            <el-button @click="window.open(previewSrc, '_blank')">在新窗口打开</el-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="closePreview">关闭</el-button>
+        <el-button
+          v-if="previewDoc && !canPreviewInline(previewMime)"
+          type="primary"
+          @click="downloadPreview"
+        >下载</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 上传文档对话框 -->
     <el-dialog
       v-model="uploadDialogVisible"
