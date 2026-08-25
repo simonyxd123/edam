@@ -74,6 +74,107 @@ public class PlaybackController {
     }
 
     /**
+     * 获取 HLS playlist.m3u8（流式输出 MinIO 中的 m3u8，并把 segment 路径改写为后端代理路径）
+     *
+     * Hls.js 不能直接拉 MinIO 的 HLS（缺少 X-User-Id / Authorization），
+     * 所以后端代理出 m3u8 + segments，URL 里带 token。
+     *
+     * 鉴权：dev 阶段 permitAll + 方法内校验 JWT（防止 Hls.js 自动请求时不带 Authorization）。
+     * 生产：建议换 presigned MinIO URL（5 分钟过期），无需后端代理。
+     */
+    @GetMapping(value = "/{video_id}/playlist.m3u8", produces = "application/vnd.apple.mpegurl")
+    public ResponseEntity<byte[]> getPlaylist(
+            @PathVariable("video_id") Long videoId,
+            @RequestParam("token") String token) {
+        // 1. 验证 token（不依赖 Spring Security context，query string 取）
+        try {
+            jwtTokenProvider.parseAndValidate(token);
+        } catch (Exception e) {
+            log.warn("m3u8_token_invalid, video_id={}, error={}", videoId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        try {
+            String objectName = String.format("videos/%d/hls/playlist.m3u8", videoId);
+            InputStream stream = minioClient.getObject(
+                GetObjectArgs.builder().bucket(videosBucket).object(objectName).build());
+
+            byte[] content = stream.readAllBytes();
+            stream.close();
+
+            // 把 segment_001.ts 等相对路径改写为后端代理路径（带 token）
+            String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+            String rewritten = rewriteM3u8Segments(text, videoId, token);
+
+            log.info("m3u8_served, video_id={}, segments_count={}, in_size={}",
+                videoId, countLines(text, ".ts"), content.length);
+
+            return ResponseEntity.ok()
+                .header("Content-Type", "application/vnd.apple.mpegurl")
+                .header("Cache-Control", "no-store, max-age=0")
+                .body(rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.error("m3u8_serve_failed, video_id={}", videoId, e);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+    }
+
+    /**
+     * HLS segment（.ts）代理
+     */
+    @GetMapping(value = "/{video_id}/segment/{filename:.+}", produces = "video/mp2t")
+    public ResponseEntity<byte[]> getSegment(
+            @PathVariable("video_id") Long videoId,
+            @PathVariable("filename") String filename,
+            @RequestParam("token") String token) {
+        // 1. 验证 token
+        try {
+            jwtTokenProvider.parseAndValidate(token);
+        } catch (Exception e) {
+            log.warn("segment_token_invalid, video_id={}, file={}, error={}",
+                videoId, filename, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        // 安全检查：filename 只能包含 segment_*.ts 这种
+        if (!filename.matches("segment_\\d+\\.ts")) {
+            log.warn("segment_filename_invalid, video_id={}, filename={}", videoId, filename);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+
+        try {
+            String objectName = String.format("videos/%d/hls/%s", videoId, filename);
+            InputStream stream = minioClient.getObject(
+                GetObjectArgs.builder().bucket(videosBucket).object(objectName).build());
+            byte[] content = stream.readAllBytes();
+            stream.close();
+            return ResponseEntity.ok()
+                .header("Content-Type", "video/mp2t")
+                .header("Cache-Control", "public, max-age=300")
+                .body(content);
+        } catch (Exception e) {
+            log.error("segment_serve_failed, video_id={}, file={}", videoId, filename, e);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+    }
+
+    /**
+     * 把 m3u8 里 segment_001.ts 等相对路径改为后端代理路径（带 token）
+     */
+    private String rewriteM3u8Segments(String m3u8, long videoId, String token) {
+        // 匹配 segment_xxx.ts 整行（不含 #EXTINF / #EXT-X-*）
+        return m3u8.replaceAll(
+            "(?m)^(segment_\\d+\\.ts)$",
+            String.format("/api/v1/playback/%d/segment/$1?token=%s", videoId, token));
+    }
+
+    private int countLines(String text, String ext) {
+        return (int) java.util.Arrays.stream(text.split("\n"))
+            .filter(l -> l.trim().endsWith(ext))
+            .count();
+    }
+
+    /**
      * 获取 HLS AES 密钥
      */
     @GetMapping("/{video_id}/key")
