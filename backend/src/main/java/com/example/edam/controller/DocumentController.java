@@ -207,9 +207,15 @@ public class DocumentController {
              OutputStream out = response.getOutputStream()) {
 
             byte[] watermarkedBytes = watermarkService.applyWatermark(minioIn, mime, watermarkText);
-            if (watermarkedBytes != null) {
+            if (watermarkedBytes != null && watermarkedBytes.length > 0) {
                 response.setContentLengthLong(watermarkedBytes.length);
                 out.write(watermarkedBytes);
+                out.flush();
+                log.info("doc_preview_stream_done, doc_id={}, in_size={}, out_size={}, ratio={}x",
+                    docId, doc.getSizeBytes(), watermarkedBytes.length,
+                    watermarkedBytes.length / Math.max(1, doc.getSizeBytes()));
+            } else {
+                log.warn("doc_preview_watermark_empty, doc_id={}, mime={}", docId, mime);
                 out.flush();
             }
         } catch (Exception e) {
