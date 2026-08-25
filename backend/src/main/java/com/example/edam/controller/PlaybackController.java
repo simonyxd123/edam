@@ -3,14 +3,18 @@ package com.example.edam.controller;
 import com.example.edam.model.VideoResource;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.VideoService;
+import io.minio.GetObjectArgs;
+import io.minio.MinioClient;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.InputStream;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
