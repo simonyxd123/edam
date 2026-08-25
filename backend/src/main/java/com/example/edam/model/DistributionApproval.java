@@ -38,6 +38,7 @@ public class DistributionApproval {
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;
 
-    @Version
-    private Integer version;
+    /** 乐观锁（MP 3.5.7 updateById bug 暂时注释） */
+    // @Version
+    // private Integer version;
 }
