@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +49,23 @@ public class DocumentController {
         @RequestParam(value = "enable_watermark", defaultValue = "true") Boolean enableWatermark,
         @RequestHeader("X-User-Id") Long uploaderId
     ) {
+        // 文件类型校验：仅接受 office / pdf / image
+        String contentType = file.getContentType();
+        String originalName = file.getOriginalFilename();
+        if (!isAllowedDocumentType(contentType, originalName)) {
+            throw new DocumentExceptionException(
+                "仅支持 Office (Word/Excel/PowerPoint) / PDF / 图片，当前: "
+                    + contentType + " / " + originalName);
+        }
+        if (file.isEmpty()) {
+            throw new DocumentExceptionException("文件为空");
+        }
+        // 50 MB 上限（前端 / 后端兜底）
+        long MAX = 50L * 1024 * 1024;
+        if (file.getSize() > MAX) {
+            throw new DocumentExceptionException("文档不能超过 50 MB");
+        }
+
         DocResource doc = documentService.upload(file, classificationLv, title, enableWatermark, uploaderId);
         Map<String, Object> response = new HashMap<>();
         response.put("doc_id", doc.getId());
@@ -55,6 +73,43 @@ public class DocumentController {
         response.put("watermark_status", statusToString(doc.getWatermarkStatus()));
         response.put("preview_status", statusToString(doc.getPreviewStatus()));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    private boolean isAllowedDocumentType(String contentType, String filename) {
+        // MIME 白名单
+        if (contentType != null) {
+            String c = contentType.toLowerCase();
+            if (c.contains("officedocument") || c.contains("pdf") ||
+                c.contains("image/") || c.contains("msword") ||
+                c.contains("excel") || c.contains("powerpoint")) {
+                return true;
+            }
+        }
+        // 文件后缀白名单（兜底）
+        if (filename != null) {
+            String f = filename.toLowerCase();
+            if (f.endsWith(".pdf") || f.endsWith(".docx") || f.endsWith(".doc") ||
+                f.endsWith(".xlsx") || f.endsWith(".xls") ||
+                f.endsWith(".pptx") || f.endsWith(".ppt") ||
+                f.endsWith(".png") || f.endsWith(".jpg") || f.endsWith(".jpeg") ||
+                f.endsWith(".gif") || f.endsWith(".bmp")) {
+                return true;
+        }
+        }
+        return false;
+    }
+
+    /** 文件类型非法时抛 415（实际是 400，类型简单就不开新异常类了） */
+    static class DocumentExceptionException extends RuntimeException {
+        DocumentExceptionException(String msg) { super(msg); }
+    }
+
+    @ExceptionHandler(DocumentExceptionException.class)
+    public ResponseEntity<Map<String, Object>> handleDocException(DocumentExceptionException ex) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "bad_request");
+        body.put("detail", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
     @GetMapping("/{doc_id}")

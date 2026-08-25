@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { useUserStore } from '@/stores/user';
+import { api } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
+import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
 
 const loading = ref(false);
 const documents = ref<Document[]>([]);
@@ -11,6 +14,22 @@ const searchForm = ref({
   file_type: '',
   keyword: '',
 });
+
+// 上传对话框状态
+const uploadDialogVisible = ref(false);
+const uploadForm = ref({
+  file: null as File | null,
+  title: '',
+  classification_lv: 'L2',
+  enable_watermark: true,
+});
+const uploadRules = {
+  file: [{ required: true, message: '请选择文档', trigger: 'change' }],
+  classification_lv: [{ required: true, message: '请选择密级', trigger: 'change' }],
+};
+const uploadFormRef = ref();
+const uploading = ref(false);
+const uploadProgress = ref(0);
 
 async function loadData(page = 1) {
   loading.value = true;
@@ -30,12 +49,64 @@ async function loadData(page = 1) {
   }
 }
 
-function handleUpload() {
-  ElMessage.info('文档上传功能待实现');
+function openUploadDialog() {
+  uploadForm.value = { file: null, title: '', classification_lv: 'L2', enable_watermark: true };
+  uploadProgress.value = 0;
+  uploadDialogVisible.value = true;
+}
+
+function onFileChange(file: any) {
+  uploadForm.value.file = file?.raw ?? null;
+  // 默认标题 = 文件名（去后缀）
+  if (!uploadForm.value.title && file?.name) {
+    uploadForm.value.title = file.name.replace(/\.[^.]+$/, '');
+  }
+}
+
+async function submitUpload() {
+  if (!uploadForm.value.file) {
+    ElMessage.warning('请选择文档');
+    return;
+  }
+  const MAX = 50 * 1024 * 1024;
+  if (uploadForm.value.file.size > MAX) {
+    ElMessage.error('文档不能超过 50 MB');
+    return;
+  }
+
+  uploading.value = true;
+  uploadProgress.value = 0;
+  try {
+    const fd = new FormData();
+    fd.append('file', uploadForm.value.file);
+    fd.append('classification_lv', uploadForm.value.classification_lv);
+    if (uploadForm.value.title) {
+      fd.append('title', uploadForm.value.title);
+    }
+    fd.append('enable_watermark', String(uploadForm.value.enable_watermark));
+
+    // 用项目 api 客户端（自动注入 JWT + X-User-Id + 真实进度）
+    const result = await api.upload<{ doc_id: number; file_hash: string }>(
+      '/documents', fd,
+      (loaded, total) => {
+        uploadProgress.value = Math.round((loaded / total) * 100);
+      }
+    );
+
+    ElMessage.success(
+      `上传成功，doc_id=${result.doc_id}，正在后台处理水印 + 预览…`
+    );
+    uploadDialogVisible.value = false;
+    loadData();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '上传失败');
+  } finally {
+    uploading.value = false;
+  }
 }
 
 async function handlePreview(doc: Document) {
-  ElMessage.info(`预览文档：${doc.title}`);
+  ElMessage.info(`预览文档：${doc.title}（TODO: 接 PDF.js / Office Online）`);
 }
 
 async function handleDelete(doc: Document) {
@@ -52,29 +123,18 @@ async function handleDelete(doc: Document) {
 }
 
 function handleDistribute(doc: Document) {
-  ElMessage.info(`外发文档：${doc.title}`);
+  ElMessage.info(`外发文档：${doc.title}（TODO: 接外发审批流程）`);
 }
 
 function getFileTypeLabel(type: string) {
-  const map: Record<string, string> = {
-    docx: 'Word',
-    pdf: 'PDF',
-    xlsx: 'Excel',
-    pptx: 'PowerPoint',
-    image: '图片',
+  const map: Record<string, { label: string; type: string }> = {
+    docx: { label: 'Word', type: 'primary' },
+    pdf: { label: 'PDF', type: 'danger' },
+    xlsx: { label: 'Excel', type: 'success' },
+    pptx: { label: 'PowerPoint', type: 'warning' },
+    image: { label: '图片', type: 'info' },
   };
-  return map[type] || type;
-}
-
-function getFileTypeColor(type: string) {
-  const map: Record<string, string> = {
-    docx: 'primary',
-    pdf: 'danger',
-    xlsx: 'success',
-    pptx: 'warning',
-    image: 'info',
-  };
-  return map[type] || '';
+  return map[type] || { label: type, type: '' };
 }
 
 function getStatusType(status: string) {
@@ -95,7 +155,7 @@ onMounted(() => loadData());
   <div class="documents-page">
     <div class="page-header">
       <h2>文档管理</h2>
-      <el-button type="primary" @click="handleUpload">+ 上传文档</el-button>
+      <el-button type="primary" @click="openUploadDialog">+ 上传文档</el-button>
     </div>
 
     <el-card>
@@ -127,8 +187,8 @@ onMounted(() => loadData());
         <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
         <el-table-column label="类型" width="120">
           <template #default="{ row }">
-            <el-tag :type="getFileTypeColor(row.file_type) as any" size="small">
-              {{ getFileTypeLabel(row.file_type) }}
+            <el-tag :type="getFileTypeLabel(row.file_type).type as any" size="small">
+              {{ getFileTypeLabel(row.file_type).label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -141,7 +201,10 @@ onMounted(() => loadData());
         </el-table-column>
         <el-table-column label="大小" width="120">
           <template #default="{ row }">
-            {{ (row.size_bytes / 1024 / 1024).toFixed(2) }} MB
+            <template v-if="row.size_bytes != null">
+              {{ (row.size_bytes / 1024 / 1024).toFixed(2) }} MB
+            </template>
+            <template v-else>—</template>
           </template>
         </el-table-column>
         <el-table-column label="水印" width="100">
@@ -173,6 +236,84 @@ onMounted(() => loadData());
         class="pagination"
       />
     </el-card>
+
+    <!-- 上传文档对话框 -->
+    <el-dialog
+      v-model="uploadDialogVisible"
+      title="上传文档"
+      width="540px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!uploading"
+    >
+      <el-form
+        ref="uploadFormRef"
+        :model="uploadForm"
+        :rules="uploadRules"
+        label-width="100px"
+      >
+        <el-form-item label="文档" prop="file">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            :on-change="onFileChange"
+            :on-exceed="() => ElMessage.warning('只能选 1 个文件')"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.bmp"
+            drag
+          >
+            <div v-if="!uploadForm.file" class="upload-placeholder">
+              <el-icon :size="48"><UploadFilled /></el-icon>
+              <div>点击或拖拽文档到此处</div>
+              <div class="upload-hint">PDF / Word / Excel / PPT / 图片，最大 50 MB</div>
+            </div>
+            <div v-else class="upload-selected">
+              <el-icon :size="32"><DocIcon /></el-icon>
+              <span>{{ uploadForm.file.name }}</span>
+              <span class="upload-size">
+                ({{ (uploadForm.file.size / 1024 / 1024).toFixed(2) }} MB)
+              </span>
+            </div>
+          </el-upload>
+        </el-form-item>
+
+        <el-form-item label="标题" prop="title">
+          <el-input
+            v-model="uploadForm.title"
+            placeholder="留空则用文件名"
+            maxlength="200"
+            show-word-limit
+          />
+        </el-form-item>
+
+        <el-form-item label="密级" prop="classification_lv">
+          <el-select v-model="uploadForm.classification_lv" style="width:100%">
+            <el-option label="L1 公开" value="L1" />
+            <el-option label="L2 内部" value="L2" />
+            <el-option label="L3 机密" value="L3" />
+            <el-option label="L4 绝密" value="L4" />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="动态水印">
+          <el-switch v-model="uploadForm.enable_watermark" />
+        </el-form-item>
+
+        <el-form-item v-if="uploading" label="上传中">
+          <el-progress :percentage="uploadProgress" :stroke-width="14" />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="uploadDialogVisible = false" :disabled="uploading">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="uploading"
+          :disabled="!uploadForm.file"
+          @click="submitUpload"
+        >
+          {{ uploading ? `上传中 ${uploadProgress}%` : '开始上传' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -189,5 +330,22 @@ onMounted(() => loadData());
   margin-top: 20px;
   justify-content: flex-end;
   display: flex;
+}
+.upload-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: #909399;
+  .upload-hint { font-size: 12px; color: #c0c4cc; }
+}
+.upload-selected {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  color: #303133;
+  .upload-size { color: #909399; font-size: 12px; }
 }
 </style>
