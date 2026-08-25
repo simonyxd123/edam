@@ -6,9 +6,10 @@
 import asyncio
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import cv2
@@ -18,7 +19,6 @@ import structlog
 from minio import Minio
 from minio.error import S3Error
 from PIL import Image
-from typing import Any, Dict, Optional
 
 from ..config import settings
 
@@ -172,6 +172,10 @@ class VideoProcessor:
         """
         FFmpeg HLS 切片 + AES 加密
         参考方案书 4.2 节
+
+        注意：FFmpeg 4.3 不支持 -hls_key_url（4.4+ 才有）。
+        我们改用后处理：FFmpeg 输出 m3u8 后用 _rewrite_key_url() 把
+        URI="key.bin" 替换为后端真实 key URL。
         """
         output_dir = os.path.join(tempfile.gettempdir(), f"edam-hls-{video_id}")
         os.makedirs(output_dir, exist_ok=True)
@@ -185,11 +189,50 @@ class VideoProcessor:
             "-c:a", "aac",
             "-hls_time", str(settings.HLS_SEGMENT_DURATION),
             "-hls_playlist_type", settings.HLS_PLAYLIST_TYPE,
-            "-hls_key_url", key_url,
             "-hls_segment_filename", os.path.join(output_dir, "segment_%03d.ts"),
             "-threads", str(settings.FFMPEG_THREADS),
             m3u8_path,
         ]
+
+        # 异步执行 FFmpeg
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            log.error("ffmpeg_failed",
+                       returncode=proc.returncode,
+                       cmd=" ".join(cmd),
+                       stderr=stderr.decode("utf-8", errors="replace"))
+            raise RuntimeError(f"FFmpeg HLS 转码失败: {video_id}")
+
+        # 后处理：把 m3u8 里的 URI="key.bin" 改为真实 key URL
+        await self._rewrite_key_url(m3u8_path, key_url)
+
+        log.info("hls_transcode_complete", video_id=video_id, output_dir=output_dir)
+        return output_dir
+
+    async def _rewrite_key_url(self, m3u8_path: str, key_url: str) -> None:
+        """把 m3u8 里的 URI=\"key.bin\" 替换为真实 key URL"""
+        def _do_replace():
+            with open(m3u8_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # 替换 EXT-X-KEY 行里的 URI
+            # 形如: #EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=...
+            new_content = re.sub(
+                r'URI="[^"]*"',
+                f'URI="{key_url}"',
+                content,
+                count=1,
+            )
+            with open(m3u8_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+        await asyncio.to_thread(_do_replace)
+        log.info("m3u8_key_url_rewritten", path=m3u8_path, key_url=key_url)
 
         # 异步执行 FFmpeg
         proc = await asyncio.create_subprocess_exec(
