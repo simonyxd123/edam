@@ -1,19 +1,20 @@
 package com.example.edam.config;
 
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
-import com.fasterxml.jackson.datatype.jsr310.ser.OffsetDateTimeSerializer;
-import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
-import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 /**
@@ -22,43 +23,70 @@ import java.time.format.DateTimeFormatter;
  * 全局覆盖 JavaTimeModule 默认的 ISO 8601 输出格式。
  * 前端 Vue 直接拿字符串展示，无需再二次格式化。
  *
- * 注意：
- * - 时区写死在 CST（Asia/Shanghai）。多时区场景应改用 @JsonFormat(timezone=...) 按字段配置。
- * - 若 DB 返回的 OffsetDateTime 已经带 +08:00 偏移，这里序列化后会是该偏移对应的时间；
- *   DB 存的是 UTC（DATETIME(3) 不带时区，约定 UTC），所以序列化后会转成 CST 显示。
+ * 设计：
+ * - 时区写死 Asia/Shanghai（UTC+8）。多时区场景应改用 @JsonFormat(timezone=...) 按字段配置。
+ * - DB 存 UTC（DATETIME(3) 不带时区），OffsetDateTime 入参也按 UTC 解析，输出统一转 CST。
+ * - Jackson 2.17 的 OffsetDateTimeSerializer 不接受单参 DateTimeFormatter，
+ *   故直接写 StdSerializer 子类，最干净。
  */
 @Configuration
 public class JacksonConfig {
 
-    /** 前端展示格式：yyyy-MM-dd HH:mm:ss.SS */
+    private static final String TIME_ZONE = "Asia/Shanghai";
+    private static final ZoneId ZONE_ID = ZoneId.of(TIME_ZONE);
+
+    /** 前端展示格式 */
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SS");
     private static final DateTimeFormatter DATE_FMT     = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter TIME_FMT     = DateTimeFormatter.ofPattern("HH:mm:ss");
 
-    private static final String TIME_ZONE = "Asia/Shanghai";
-
     @Bean
     public Jackson2ObjectMapperBuilderCustomizer jsonCustomizer() {
         return builder -> {
-            // 关掉 timestamps，改用字符串
             builder.featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-            // 替换 JavaTimeModule 内部的默认序列化器
             JavaTimeModule module = new JavaTimeModule();
-
-            module.addSerializer(OffsetDateTime.class,
-                new OffsetDateTimeSerializer(DATE_TIME_FMT));
-            module.addSerializer(LocalDateTime.class,
-                new LocalDateTimeSerializer(DATE_TIME_FMT));
-            module.addSerializer(LocalDate.class,
-                new LocalDateSerializer(DATE_FMT));
-            module.addSerializer(LocalTime.class,
-                new LocalTimeSerializer(TIME_FMT));
-
+            module.addSerializer(OffsetDateTime.class, new OffsetDateTimeSerializer());
+            module.addSerializer(LocalDateTime.class,  new LocalDateTimeSerializer());
+            module.addSerializer(LocalDate.class,      new LocalDateSerializer());
+            module.addSerializer(LocalTime.class,      new LocalTimeSerializer());
             builder.modulesToInstall(module);
 
-            // 时区
             builder.timeZone(TIME_ZONE);
         };
+    }
+
+    /** OffsetDateTime → 转 CST 后格式化 */
+    static class OffsetDateTimeSerializer extends StdSerializer<OffsetDateTime> {
+        OffsetDateTimeSerializer() { super(OffsetDateTime.class); }
+        @Override public void serialize(OffsetDateTime v, JsonGenerator g, SerializerProvider p) throws IOException {
+            if (v == null) { g.writeNull(); return; }
+            g.writeString(v.atZoneSameInstant(ZONE_ID).format(DATE_TIME_FMT));
+        }
+    }
+
+    /** LocalDateTime → 当作 CST 时间直接格式化 */
+    static class LocalDateTimeSerializer extends StdSerializer<LocalDateTime> {
+        LocalDateTimeSerializer() { super(LocalDateTime.class); }
+        @Override public void serialize(LocalDateTime v, JsonGenerator g, SerializerProvider p) throws IOException {
+            if (v == null) { g.writeNull(); return; }
+            g.writeString(v.atZone(ZONE_ID).format(DATE_TIME_FMT));
+        }
+    }
+
+    static class LocalDateSerializer extends StdSerializer<LocalDate> {
+        LocalDateSerializer() { super(LocalDate.class); }
+        @Override public void serialize(LocalDate v, JsonGenerator g, SerializerProvider p) throws IOException {
+            if (v == null) { g.writeNull(); return; }
+            g.writeString(v.format(DATE_FMT));
+        }
+    }
+
+    static class LocalTimeSerializer extends StdSerializer<LocalTime> {
+        LocalTimeSerializer() { super(LocalTime.class); }
+        @Override public void serialize(LocalTime v, JsonGenerator g, SerializerProvider p) throws IOException {
+            if (v == null) { g.writeNull(); return; }
+            g.writeString(v.format(TIME_FMT));
+        }
     }
 }
