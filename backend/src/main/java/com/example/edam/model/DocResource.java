@@ -39,7 +39,7 @@ public class DocResource {
     private Long keyId;
     private Long viewCount;
 
-    @TableLogic
+    // @TableLogic  // MP 3.5.7 在 OffsetDateTime deletedAt 上生成 WHERE deleted_at=0；已废弃
     private OffsetDateTime deletedAt;
 
     @Version

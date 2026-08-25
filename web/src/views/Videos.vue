@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
+import axios from 'axios';
 import { videoApi, type Video } from '@/api/video';
 import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
@@ -50,7 +51,9 @@ function startHlsPolling(videoId: number) {
       return;
     }
     try {
-      const v = await videoApi.get(videoId);
+      // 用原始 axios（不走 api 客户端）→ 404 不会弹"视频不存在"toast
+      const resp = await axios.get<Video>(`/videos/${videoId}`);
+      const v = resp.data;
       const status = v.hls_status;
       if (status === 'ready') {
         stopHlsPolling(videoId);
@@ -67,8 +70,11 @@ function startHlsPolling(videoId: number) {
       // pending / processing → 继续轮询
       const t = window.setTimeout(tick, 3000);
       pollTimers.set(videoId, t);
-    } catch (e) {
-      stopHlsPolling(videoId);
+    } catch (e: any) {
+      // 404 / 500 都静默处理（不弹"视频不存在"toast）
+      // 短间隔重试，避免长期阻塞 UI
+      const t = window.setTimeout(tick, 3000);
+      pollTimers.set(videoId, t);
     }
   };
   const t = window.setTimeout(tick, 3000);

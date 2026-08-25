@@ -43,7 +43,7 @@ public class VideoResource {
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private OffsetDateTime updatedAt;
 
-    @TableLogic
+    // @TableLogic  // MP 3.5.7 在 OffsetDateTime deletedAt 上生成 WHERE deleted_at=0 永远查不到行；已废弃
     private OffsetDateTime deletedAt;
 
     @Version

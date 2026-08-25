@@ -37,7 +37,7 @@ public class SysRole {
     private LocalDateTime createdAt;
 
     /** 软删除时间（v3.2 V-5 新增） */
-    @TableLogic
+    // @TableLogic  // 改手写 AND deleted_at IS NULL（SysRole 还没自定义查询，先放开）
     private LocalDateTime deletedAt;
 
     /** 乐观锁版本号（v3.2 V-5 新增） */

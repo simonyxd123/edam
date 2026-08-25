@@ -46,7 +46,7 @@ public class SysUser {
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private OffsetDateTime updatedAt;
 
-    @TableLogic
+    // @TableLogic  // MP 3.5.7 在 OffsetDateTime deletedAt 上生成 WHERE deleted_at=0 永远查不到行；已废弃，全部改手写 AND deleted_at IS NULL
     private OffsetDateTime deletedAt;
 
     /** 乐观锁（MP 3.5.7 在 updateById 上有 bug，临时注释；后续可升级 MP 或写自定义 update） */
