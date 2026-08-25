@@ -93,13 +93,17 @@ public class AuthController {
 
     @Data
     public static class LoginRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("employee_no")
         private String employeeNo;
+        @com.fasterxml.jackson.annotation.JsonProperty("password")
         private String password;
+        @com.fasterxml.jackson.annotation.JsonProperty("mfa_code")
         private String mfaCode;
     }
 
     @Data
     public static class RefreshRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("refresh_token")
         private String refreshToken;
     }
 }
