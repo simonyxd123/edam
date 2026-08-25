@@ -29,9 +29,11 @@ public class MinioConfig {
 
     @Bean
     public MinioClient minioClient() {
-        boolean secure = endpoint.startsWith("https://");
-        String host = endpoint.replace("http://", "").replace("https://", "");
-        log.info("minio_client_init endpoint={}, secure={}", host, secure);
-        return new MinioClient(host, accessKey, secretKey, secure);
+        log.info("minio_client_init endpoint={}", endpoint);
+        // MinIO 8.5.x 推荐用 builder，不用 new MinioClient(host, key, secret, secure) 老构造
+        return MinioClient.builder()
+            .endpoint(endpoint)
+            .credentials(accessKey, secretKey)
+            .build();
     }
 }
