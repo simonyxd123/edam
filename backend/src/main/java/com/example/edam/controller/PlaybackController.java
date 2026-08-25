@@ -33,6 +33,10 @@ public class PlaybackController {
 
     private final VideoService videoService;
     private final JwtTokenProvider jwtTokenProvider;
+    private final MinioClient minioClient;
+
+    @Value("${minio.bucket.videos}")
+    private String videosBucket;
 
     @Value("${edam.hls.key-url-template}")
     private String keyUrlTemplate;
@@ -53,8 +57,10 @@ public class PlaybackController {
 
         // 2. 生成签名 URL
         long expires = Instant.now().getEpochSecond() + 600;  // 10 分钟
-        String m3u8Url = String.format("/api/v1/video/%d/playlist.m3u8?token=%s&expires=%d",
-            videoId, token, expires);
+        String m3u8Url = String.format("/api/v1/playback/%d/playlist.m3u8?token=%s",
+            videoId, token);
+        // segment URL 模板（给前端展示用，实际由 m3u8 内容决定）
+        String keyUrl = String.format(keyUrlTemplate, videoId);
 
         Map<String, Object> response = new HashMap<>();
         response.put("session_id", sessionId);
