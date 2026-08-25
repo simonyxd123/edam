@@ -200,7 +200,10 @@ class VideoProcessor:
         stdout, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            log.error("ffmpeg_failed", returncode=proc.returncode, stderr=stderr.decode()[:500])
+            log.error("ffmpeg_failed",
+                       returncode=proc.returncode,
+                       cmd=" ".join(cmd),
+                       stderr=stderr.decode("utf-8", errors="replace"))
             raise RuntimeError(f"FFmpeg HLS 转码失败: {video_id}")
 
         log.info("hls_transcode_complete", video_id=video_id, output_dir=output_dir)
