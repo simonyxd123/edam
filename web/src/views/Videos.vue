@@ -234,12 +234,18 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="时长" width="100">
           <template #default="{ row }">
-            {{ Math.floor(row.duration_sec / 60) }}:{{ String(row.duration_sec % 60).padStart(2, '0') }}
+            <template v-if="row.duration_sec != null">
+              {{ Math.floor(row.duration_sec / 60) }}:{{ String(row.duration_sec % 60).padStart(2, '0') }}
+            </template>
+            <template v-else>—</template>
           </template>
         </el-table-column>
         <el-table-column label="大小" width="100">
           <template #default="{ row }">
-            {{ (row.size_bytes / 1024 / 1024).toFixed(2) }} MB
+            <template v-if="row.size_bytes != null">
+              {{ (row.size_bytes / 1024 / 1024).toFixed(2) }} MB
+            </template>
+            <template v-else>—</template>
           </template>
         </el-table-column>
         <el-table-column label="上传时间" width="180">
