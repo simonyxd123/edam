@@ -142,6 +142,30 @@ function downloadPreview() {
   document.body.removeChild(a);
 }
 
+function openInNewTab() {
+  // 后端 /preview 需要 JWT，但新标签页不能继承当前 Authorization 头，
+  // 直接 window.open 会 401。
+  // 解决：fetch 拿到字节流 → 转 Blob URL → window.open(blob URL)
+  // Blob URL 浏览器本地渲染，不需要 JWT。
+  const token = localStorage.getItem('access_token');
+  fetch(previewSrc.value, {
+    headers: { Authorization: 'Bearer ' + token },
+  })
+    .then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    })
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    })
+    .catch((e) => {
+      console.error('open_in_new_tab_failed:', e);
+      ElMessage.error('打开失败，请用「下载文件」保存到本地后再查看');
+    });
+}
+
 async function handleDelete(doc: Document) {
   try {
     await ElMessageBox.confirm(`确认删除文档「${doc.title}」？`, '提示', { type: 'warning' });
@@ -293,7 +317,7 @@ onMounted(() => loadData());
           <p class="hint">浏览器无法直接预览此格式</p>
           <div class="actions">
             <el-button type="primary" @click="downloadPreview">下载文件</el-button>
-            <el-button @click="window.open(previewSrc, '_blank')">在新窗口打开</el-button>
+            <el-button @click="openInNewTab">在新窗口打开</el-button>
           </div>
         </div>
       </div>
