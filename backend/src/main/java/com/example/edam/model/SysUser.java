@@ -49,6 +49,7 @@ public class SysUser {
     @TableLogic
     private OffsetDateTime deletedAt;
 
-    @Version
-    private Integer version;
+    /** 乐观锁（MP 3.5.7 在 updateById 上有 bug，临时注释；后续可升级 MP 或写自定义 update） */
+    // @Version
+    // private Integer version;
 }
