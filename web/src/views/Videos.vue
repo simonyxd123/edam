@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { videoApi, type Video } from '@/api/video';
+import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
 import { UploadFilled, VideoCamera } from '@element-plus/icons-vue';
 

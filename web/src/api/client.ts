@@ -65,6 +65,28 @@ class ApiClient {
     return (await this.instance.post(url, data)).data;
   }
 
+  /**
+   * multipart/form-data 上传（带真实进度）
+   * - 自动复用 JWT / X-User-Id 拦截器
+   * - onUploadProgress 在 axios 0.27+ 上传进度事件中触发（load/total 是字节数）
+   */
+  async upload<T = any>(
+    url: string,
+    formData: FormData,
+    onUploadProgress?: (loaded: number, total: number) => void,
+  ): Promise<T> {
+    return (
+      await this.instance.post(url, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (e) => {
+          if (onUploadProgress && e.total) {
+            onUploadProgress(e.loaded, e.total);
+          }
+        },
+      })
+    ).data;
+  }
+
   async put<T = any>(url: string, data?: any): Promise<T> {
     return (await this.instance.put(url, data)).data;
   }
