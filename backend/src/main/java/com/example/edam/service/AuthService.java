@@ -41,6 +41,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final StringRedisTemplate redisTemplate;
+    private final AuditService auditService;
 
     /**
      * 登录
@@ -102,6 +103,9 @@ public class AuthService {
         );
 
         log.info("用户登录成功: employee_no={}, session_id={}", employeeNo, sessionId);
+
+        // 写审计日志（异步）
+        auditService.log(user.getId(), "login", "auth", null, "success");
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", accessToken);

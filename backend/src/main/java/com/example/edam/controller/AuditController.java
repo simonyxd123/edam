@@ -1,15 +1,18 @@
 package com.example.edam.controller;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.AuditLogDTO;
 import com.example.edam.model.OperationLog;
 import com.example.edam.repository.OperationLogRepository;
+import com.example.edam.service.AuditService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -24,33 +27,26 @@ import java.util.UUID;
 public class AuditController {
 
     private final OperationLogRepository operationLogRepository;
+    private final AuditService auditService;
 
+    /**
+     * 列表（分页 + 过滤），返回 AuditLogDTO（含 employee_no）
+     *
+     * 时间参数格式：yyyy-MM-dd HH:mm:ss（与 JacksonConfig 一致）
+     */
     @GetMapping
     public Map<String, Object> list(
-        @RequestParam(defaultValue = "1") int page,
-        @RequestParam(defaultValue = "20") int page_size,
-        @RequestParam(required = false) Long user_id,
-        @RequestParam(required = false) String operation_type,
-        @RequestParam(required = false) String start_time,
-        @RequestParam(required = false) String end_time
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int page_size,
+            @RequestParam(required = false) Long user_id,
+            @RequestParam(required = false) String operation_type,
+            @RequestParam(required = false)
+            @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime start_time,
+            @RequestParam(required = false)
+            @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime end_time
     ) {
-        LambdaQueryWrapper<OperationLog> wrapper = new LambdaQueryWrapper<>();
-        if (user_id != null) {
-            wrapper.eq(OperationLog::getUserId, user_id);
-        }
-        if (operation_type != null) {
-            wrapper.eq(OperationLog::getOperationType, operation_type);
-        }
-        if (start_time != null) {
-            wrapper.ge(OperationLog::getTimestamp, java.time.OffsetDateTime.parse(start_time));
-        }
-        if (end_time != null) {
-            wrapper.le(OperationLog::getTimestamp, java.time.OffsetDateTime.parse(end_time));
-        }
-        wrapper.orderByDesc(OperationLog::getTimestamp);
-
-        Page<OperationLog> result = operationLogRepository.selectPage(
-            new Page<>(page, page_size), wrapper);
+        Page<AuditLogDTO> result = auditService.list(
+            page, page_size, user_id, operation_type, start_time, end_time);
 
         Map<String, Object> response = new HashMap<>();
         response.put("items", result.getRecords());
@@ -70,10 +66,9 @@ public class AuditController {
 
     @PostMapping("/export")
     public ResponseEntity<Map<String, Object>> export(
-        @RequestBody ExportRequest request,
-        @RequestHeader("X-User-Id") Long operatorId
+            @RequestBody ExportRequest request,
+            @RequestHeader("X-User-Id") Long operatorId
     ) {
-        // 实际生产：触发异步导出任务 + 写入 download URL
         String taskId = UUID.randomUUID().toString();
         String downloadUrl = String.format(
             "https://api.example.com/api/v1/audit/exports/%s/download?token=%s",
