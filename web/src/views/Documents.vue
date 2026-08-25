@@ -148,8 +148,12 @@ function openInNewTab() {
   // 解决：fetch 拿到字节流 → 转 Blob URL → window.open(blob URL)
   // Blob URL 浏览器本地渲染，不需要 JWT。
   const token = localStorage.getItem('access_token');
+  const userId = localStorage.getItem('user_id');
   fetch(previewSrc.value, {
-    headers: { Authorization: 'Bearer ' + token },
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'X-User-Id': userId || '',
+    },
   })
     .then((r) => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
