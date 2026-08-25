@@ -234,24 +234,6 @@ class VideoProcessor:
         await asyncio.to_thread(_do_replace)
         log.info("m3u8_key_url_rewritten", path=m3u8_path, key_url=key_url)
 
-        # 异步执行 FFmpeg
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            log.error("ffmpeg_failed",
-                       returncode=proc.returncode,
-                       cmd=" ".join(cmd),
-                       stderr=stderr.decode("utf-8", errors="replace"))
-            raise RuntimeError(f"FFmpeg HLS 转码失败: {video_id}")
-
-        log.info("hls_transcode_complete", video_id=video_id, output_dir=output_dir)
-        return output_dir
-
     async def _extract_fingerprints(self, input_path: str, video_id: int) -> str:
         """
         提取视频帧指纹
