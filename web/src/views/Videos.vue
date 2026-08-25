@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { videoApi, type Video } from '@/api/video';
@@ -31,6 +31,58 @@ const uploadRules = {
 const uploadFormRef = ref();
 const uploading = ref(false);
 const uploadProgress = ref(0);
+
+// HLS 后台处理状态轮询
+const pollingVideoIds = ref<Set<number>>(new Set());
+const pollTimers = new Map<number, number>();
+const MAX_POLL_SECONDS = 600;  // 最多轮询 10 分钟
+
+function startHlsPolling(videoId: number) {
+  if (pollingVideoIds.value.has(videoId)) return;
+  pollingVideoIds.value.add(videoId);
+
+  const start = Date.now();
+  const tick = async () => {
+    if (Date.now() - start > MAX_POLL_SECONDS * 1000) {
+      stopHlsPolling(videoId);
+      ElMessage.warning(`video_id=${videoId} HLS 处理超时，请手动查看列表`);
+      loadData();
+      return;
+    }
+    try {
+      const v = await videoApi.get(videoId);
+      const status = v.hls_status;
+      if (status === 'ready') {
+        stopHlsPolling(videoId);
+        ElMessage.success(`video_id=${videoId} HLS 转码完成，可播放`);
+        loadData();
+        return;
+      }
+      if (status === 'failed') {
+        stopHlsPolling(videoId);
+        ElMessage.error(`video_id=${videoId} HLS 转码失败`);
+        loadData();
+        return;
+      }
+      // pending / processing → 继续轮询
+      const t = window.setTimeout(tick, 3000);
+      pollTimers.set(videoId, t);
+    } catch (e) {
+      stopHlsPolling(videoId);
+    }
+  };
+  const t = window.setTimeout(tick, 3000);
+  pollTimers.set(videoId, t);
+}
+
+function stopHlsPolling(videoId: number) {
+  const t = pollTimers.get(videoId);
+  if (t) {
+    clearTimeout(t);
+    pollTimers.delete(videoId);
+  }
+  pollingVideoIds.value.delete(videoId);
+}
 
 async function loadData(page = 1) {
   loading.value = true;
@@ -99,6 +151,8 @@ async function submitUpload() {
     );
     uploadDialogVisible.value = false;
     loadData();
+    // 启动 HLS 后台轮询，转码完成 / 失败再弹一条提示
+    startHlsPolling(result.video_id);
   } catch (e: any) {
     ElMessage.error(e?.message || '上传失败');
   } finally {
@@ -134,6 +188,10 @@ function getClassificationTag(lv: string) {
 }
 
 onMounted(() => loadData());
+onBeforeUnmount(() => {
+  // 清理所有轮询
+  for (const id of Array.from(pollTimers.keys())) stopHlsPolling(id);
+});
 </script>
 
 <template>
