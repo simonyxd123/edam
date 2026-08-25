@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import axios from 'axios';
+import { api, apiBase } from '@/api/client';
 import Hls from 'hls.js';
 
 const route = useRoute();
@@ -18,16 +18,20 @@ const errorMsg = ref('');
 
 onMounted(async () => {
   try {
-    // 1. 加载视频元数据
-    const meta = await axios.get(`/api/v1/videos/${videoId}`);
-    video.value = meta.data;
+    // 走项目 api 客户端（自动注入 JWT + X-User-Id）
+    const meta = await api.get<any>(`/videos/${videoId}`);
+    video.value = meta;
 
-    // 2. 申请播放 token
-    const tk = await axios.post(`/api/v1/playback/${videoId}/token`, null, {
-      headers: { 'X-User-Id': '1' },
-    });
-    m3u8Url.value = tk.data.m3u8_url;
-    token.value = tk.data.token;
+    const tk = await api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
+      `/playback/${videoId}/token`,
+    );
+    // 后端返回的 m3u8_url 是相对路径 '/api/v1/video/.../playlist.m3u8?token=...'
+    // 浏览器需要拼上 origin 才能加载
+    const fullUrl = tk.m3u8_url.startsWith('http')
+      ? tk.m3u8_url
+      : `${window.location.origin}${tk.m3u8_url}`;
+    m3u8Url.value = fullUrl;
+    token.value = tk.token;
 
     // 3. HLS.js 播放
     if (videoEl.value && Hls.isSupported()) {
