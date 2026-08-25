@@ -17,6 +17,7 @@ import numpy as np
 import structlog
 from minio import Minio
 from minio.error import S3Error
+from PIL import Image
 
 from ..config import settings
 
@@ -126,7 +127,7 @@ class VideoProcessor:
         """
         cap = cv2.VideoCapture(input_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_interval = int(fps * settings.FINGERPRINT_KEYFRAME_INTERVAL)
+        frame_interval = max(1, int(fps * settings.FINGERPRINT_KEYFRAME_INTERVAL))
         fingerprints: List[str] = []
 
         frame_idx = 0
@@ -138,12 +139,9 @@ class VideoProcessor:
                 # 缩小到 32x32 用于 pHash
                 small = cv2.resize(frame, (32, 32))
                 rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                pil_img = type('PIL', (), {})()
-                # 简化为使用 imagehash
-                h = imagehash.phash(
-                    type('Image', (), {'size': (32, 32), 'convert': lambda self, mode: rgb_frame})(),
-                    hash_size=8
-                )
+                # 正确：cv2 ndarray → PIL.Image → imagehash.phash
+                pil_img = Image.fromarray(rgb_frame)
+                h = imagehash.phash(pil_img, hash_size=8)
                 fingerprints.append(str(h))
             frame_idx += 1
         cap.release()
@@ -157,12 +155,13 @@ class VideoProcessor:
         # 持久化（追加 employee_id + timestamp 在按需嵌入时）
         output_path = os.path.join(tempfile.gettempdir(), f"edam-fp-{video_id}.json")
         import json
+        import datetime
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump({
                 "video_id": video_id,
                 "fingerprint_count": len(fingerprints),
                 "fingerprints": fingerprints,
-                "extracted_at": "2026-08-12T14:00:00Z",
+                "extracted_at": datetime.datetime.utcnow().isoformat() + "Z",
             }, f, ensure_ascii=False, indent=2)
         return output_path
 

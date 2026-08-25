@@ -15,6 +15,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.web.server.ResponseStatusException;
+
 /**
  * 视频资源 Controller
  * 对应 openapi.yaml tag: videos
@@ -45,6 +47,18 @@ public class VideoController {
         @RequestParam(value = "title", required = false) String title,
         @RequestHeader("X-User-Id") Long uploaderId
     ) {
+        // MIME / 文件类型校验：必须以 video/ 开头
+        String contentType = file.getContentType();
+        if (contentType == null || !contentType.toLowerCase().startsWith("video/")) {
+            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                "仅支持 video/* 类型的文件，当前: " + contentType);
+        }
+
+        // 大小校验（前端 MAX=2GB，这里兜底）
+        if (file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件为空");
+        }
+
         VideoResource video = videoService.upload(file, classificationLv, title, uploaderId);
         Map<String, Object> response = new HashMap<>();
         response.put("video_id", video.getId());

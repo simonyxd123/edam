@@ -5,6 +5,11 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.VideoResource;
 import com.example.edam.repository.VideoResourceRepository;
+import io.minio.MinioClient;
+import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
+import io.minio.BucketExistsArgs;
+import io.minio.MakeBucketArgs;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -13,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.UUID;
@@ -27,6 +33,7 @@ public class VideoService {
 
     private final VideoResourceRepository videoRepository;
     private final RabbitTemplate rabbitTemplate;
+    private final MinioClient minioClient;
 
     @Value("${edam.rabbitmq.exchange:edam.tasks}")
     private String exchange;
@@ -104,8 +111,15 @@ public class VideoService {
                 return existing;
             }
 
-            // 3. 保存到 MinIO（实际实现）
-            String minioPath = String.format("uploads/%s/%s.mp4", uploaderId, UUID.randomUUID());
+            // 3. 真实上传到 MinIO（先确保 bucket 存在）
+            String minioPath = String.format("uploads/%d/%s.%s",
+                uploaderId, UUID.randomUUID(),
+                file.getContentType() != null && file.getContentType().contains("/")
+                    ? file.getContentType().substring(file.getContentType().indexOf('/') + 1)
+                    : "mp4");
+
+            ensureBucketExists(videosBucket);
+            uploadToMinio(videosBucket, minioPath, file);
 
             // 4. 创建数据库记录
             VideoResource video = new VideoResource();
@@ -120,7 +134,7 @@ public class VideoService {
             video.setFingerprintStatus(0);
             videoRepository.insert(video);
 
-            // 5. 触发异步处理
+            // 5. 触发异步处理（HLS 转码 + 帧指纹）
             rabbitTemplate.convertAndSend(exchange, videoRouting, java.util.Map.of(
                 "video_id", video.getId(),
                 "input_path", minioPath,
@@ -128,11 +142,48 @@ public class VideoService {
                 "uploader_id", uploaderId
             ));
 
-            log.info("video_uploaded, video_id={}, size={}", video.getId(), file.getSize());
+            log.info("video_uploaded, video_id={}, size={}, minio={}",
+                video.getId(), file.getSize(), minioPath);
             return video;
         } catch (Exception e) {
             log.error("video_upload_failed", e);
             throw new RuntimeException("视频上传失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 确保 MinIO bucket 存在（不存在则创建）
+     */
+    private void ensureBucketExists(String bucket) {
+        try {
+            boolean exists = minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
+            if (!exists) {
+                minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucket).build());
+                log.info("minio_bucket_created, bucket={}", bucket);
+            }
+        } catch (Exception e) {
+            log.error("minio_bucket_check_failed, bucket={}", bucket, e);
+            throw new RuntimeException("MinIO bucket 检查/创建失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 上传文件到 MinIO
+     */
+    private void uploadToMinio(String bucket, String objectName, MultipartFile file) throws Exception {
+        try (InputStream is = file.getInputStream()) {
+            minioClient.putObject(
+                PutObjectArgs.builder()
+                    .bucket(bucket)
+                    .object(objectName)
+                    .stream(is, file.getSize(), -1)
+                    .contentType(file.getContentType() != null ? file.getContentType() : "application/octet-stream")
+                    .build()
+            );
+            log.info("minio_upload_ok, bucket={}, object={}, size={}", bucket, objectName, file.getSize());
+        } catch (Exception e) {
+            log.error("minio_upload_failed, bucket={}, object={}", bucket, objectName, e);
+            throw  e;
         }
     }
 
