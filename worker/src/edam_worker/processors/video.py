@@ -18,6 +18,7 @@ import structlog
 from minio import Minio
 from minio.error import S3Error
 from PIL import Image
+from typing import Any, Dict, Optional
 
 from ..config import settings
 
@@ -50,7 +51,7 @@ class VideoProcessor:
         fp_status = 3
         hls_path = None
         fingerprint_path = None
-        duration_sec: int = None
+        duration_sec: Optional[int] = None
 
         try:
             # 1. 下载视频到临时目录
@@ -95,7 +96,7 @@ class VideoProcessor:
             except Exception:
                 pass
 
-    async def _probe_duration(self, input_path: str) -> int | None:
+    async def _probe_duration(self, input_path: str) -> Optional[int]:
         """
         用 ffprobe 提取视频时长（秒）
 
@@ -129,9 +130,9 @@ class VideoProcessor:
             return None
 
     async def _notify_backend_status(self, video_id: int,
-                                       hls_status: int = None, hls_path: str = None,
-                                       fingerprint_status: int = None, fingerprint_path: str = None,
-                                       duration_sec: int = None) -> None:
+                                       hls_status: Optional[int] = None, hls_path: Optional[str] = None,
+                                       fingerprint_status: Optional[int] = None, fingerprint_path: Optional[str] = None,
+                                       duration_sec: Optional[int] = None) -> None:
         """回调后端 PATCH /videos/{video_id}/status"""
         url = f"{settings.BACKEND_BASE_URL}/api/v1/videos/{video_id}/status"
         payload: Dict[str, Any] = {}
