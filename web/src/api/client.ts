@@ -5,10 +5,7 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
 import { ElMessage } from 'element-plus';
 
-// 默认直连后端 8092，避开 Vite dev proxy（proxy 转发 multipart 时偶尔会改 Content-Type）
-// ⚠️ localhost = 用户本机，不是 PVE。局域网访问必须用 PVE 的实际 IP。
-// 生产环境用 nginx 反代时设 VITE_API_BASE_URL=/api/v1
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://192.168.10.2:8092/api/v1';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 class ApiClient {
   private instance: AxiosInstance;
@@ -80,8 +77,7 @@ class ApiClient {
   ): Promise<T> {
     return (
       await this.instance.post(url, formData, {
-        // 不手设 Content-Type，axios 会自动设置 multipart/form-data; boundary=xxx
-        // 手设 Content-Type 但缺 boundary 会导致后端 MultipartException
+        headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (e) => {
           if (onUploadProgress && e.total) {
             onUploadProgress(e.loaded, e.total);
