@@ -192,7 +192,8 @@ class VideoProcessor:
 
         # drawtext filter（转义冒号和单引号，FFmpeg filter 语法敏感）
         wm_escaped = watermark_text.replace("'", "\\'").replace(":", "\\:")
-        font_size = 18  # 适合 720p；1080p 会偏小，prod 应按 height/30 自适应
+        # 大字 + 红色，确保视频里能看到（开发阶段）
+        font_size = 48  # 720p 高度 720 → 字号 48 ≈ 6.7%，明显可见
 
         # 显式指定 fontfile（容器没装字体时 drawtext 会静默失败）
         # 候选路径按概率从高到低
@@ -217,9 +218,9 @@ class VideoProcessor:
         drawtext_filter = (
             f"drawtext=text='{wm_escaped}':"
             f"{font_part}"
-            f"fontcolor=white:fontsize={font_size}:"
-            f"box=1:boxcolor=black@0.4:boxborderw=8:"
-            "x=w-tw-20:h-th-20"
+            f"fontcolor=yellow:fontsize={font_size}:"
+            f"box=1:boxcolor=red@0.6:boxborderw=12:"
+            "x=(w-text_w)/2:y=h-th-40"
         )
 
         cmd = [
