@@ -77,7 +77,8 @@ class ApiClient {
   ): Promise<T> {
     return (
       await this.instance.post(url, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+        // 不手设 Content-Type，axios 会自动设置 multipart/form-data; boundary=xxx
+        // 手设 Content-Type 但缺 boundary 会导致后端 MultipartException
         onUploadProgress: (e) => {
           if (onUploadProgress && e.total) {
             onUploadProgress(e.loaded, e.total);
