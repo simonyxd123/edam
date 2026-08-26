@@ -85,7 +85,8 @@ public class PlaybackController {
     @GetMapping(value = "/{video_id}/playlist.m3u8", produces = "application/vnd.apple.mpegurl")
     public ResponseEntity<byte[]> getPlaylist(
             @PathVariable("video_id") Long videoId,
-            @RequestParam("token") String token) {
+            @RequestParam("token") String token,
+            jakarta.servlet.http.HttpServletRequest request) {
         // 1. 验证 token（不依赖 Spring Security context，query string 取）
         try {
             jwtTokenProvider.parseAndValidate(token);
@@ -102,12 +103,23 @@ public class PlaybackController {
             byte[] content = stream.readAllBytes();
             stream.close();
 
-            // 把 segment_001.ts 等相对路径改写为后端代理路径（带 token）
-            String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
-            String rewritten = rewriteM3u8Segments(text, videoId, token);
+            // 推断 segment URL 的 base（从 request URL 拿 scheme + host + port）
+            // 反向代理 / 内网穿透场景下，request.getRequestURL() 是后端实际接收的
+            // (比如 http://localhost:8092/api/v1/.../playlist.m3u8)
+            // 但浏览器实际访问的是 https://218.4.173.194:65173/...
+            // 所以用 X-Forwarded-* 或 Origin / Referer 来推断浏览器侧 base
+            String browserBase = inferBrowserBase(request);
+            log.info("m3u8_rewrite_origin, video_id={}, browser_base={}, request_url={}",
+                videoId, browserBase, request.getRequestURL());
 
-            log.info("m3u8_served, video_id={}, segments_count={}, in_size={}",
-                videoId, countLines(text, ".ts"), content.length);
+            // 把 segment_001.ts 等相对路径改写为**绝对路径**（含浏览器侧 origin + token）
+            // 这样 Hls.js 解析时不会因为 base URL 拼接错位而失败
+            String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+            String rewritten = rewriteM3u8Segments(text, videoId, token, browserBase);
+
+            log.info("m3u8_served, video_id={}, segments_count={}, in_size={}, out_size={}",
+                videoId, countLines(text, ".ts"), content.length,
+                rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
 
             return ResponseEntity.ok()
                 .header("Content-Type", "application/vnd.apple.mpegurl")
@@ -117,6 +129,43 @@ public class PlaybackController {
             log.error("m3u8_serve_failed, video_id={}", videoId, e);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
+    }
+
+    /**
+     * 推断浏览器侧的 base URL（scheme + host + port）
+     * 优先级：
+     *   1. X-Forwarded-Proto + X-Forwarded-Host（反向代理标准头）
+     *   2. Origin（浏览器跨域时带）
+     *   3. Referer（去掉 path）
+     *   4. request.getRequestURL()（最后兜底）
+     */
+    private String inferBrowserBase(jakarta.servlet.http.HttpServletRequest request) {
+        String proto = request.getHeader("X-Forwarded-Proto");
+        String host = request.getHeader("X-Forwarded-Host");
+        if (proto == null) proto = request.getHeader("X-Forwarded-Scheme");
+        if (host == null) host = request.getHeader("X-Forwarded-Server");
+
+        if (proto == null || host == null) {
+            // 退化用 Origin / Referer
+            String origin = request.getHeader("Origin");
+            if (origin != null && !origin.isBlank()) {
+                return origin;  // Origin 形如 https://host:port
+            }
+            String referer = request.getHeader("Referer");
+            if (referer != null && !referer.isBlank()) {
+                int pathStart = referer.indexOf("/", referer.indexOf("//") + 2);
+                if (pathStart > 0) return referer.substring(0, pathStart);
+                return referer;
+            }
+        } else {
+            return proto + "://" + host;
+        }
+
+        // 最后兜底：用 request URL
+        String url = request.getRequestURL().toString();
+        int pathStart = url.indexOf("/", url.indexOf("//") + 2);
+        if (pathStart > 0) return url.substring(0, pathStart);
+        return url;
     }
 
     /**
@@ -159,13 +208,20 @@ public class PlaybackController {
     }
 
     /**
-     * 把 m3u8 里 segment_001.ts 等相对路径改为后端代理路径（带 token）
+     * 把 m3u8 里 segment_001.ts 等相对路径改为**绝对路径**（含浏览器侧 origin + token）
+     *
+     * 关键修复：之前用 `/api/v1/playback/{id}/segment/...` 相对路径，
+     * Hls.js 用 m3u8 的 base URL 拼接，相对路径解析容易出错（特别是反向代理场景下
+     * m3u8 URL 端口和实际访问端口不一致）。
+     *
+     * 改用绝对路径后，Hls.js 直接拉完整 URL，不会做 base URL 拼接。
      */
-    private String rewriteM3u8Segments(String m3u8, long videoId, String token) {
+    private String rewriteM3u8Segments(String m3u8, long videoId, String token, String browserBase) {
+        String base = browserBase.endsWith("/") ? browserBase.substring(0, browserBase.length() - 1) : browserBase;
         // 匹配 segment_xxx.ts 整行（不含 #EXTINF / #EXT-X-*）
         return m3u8.replaceAll(
             "(?m)^(segment_\\d+\\.ts)$",
-            String.format("/api/v1/playback/%d/segment/$1?token=%s", videoId, token));
+            String.format("%s/api/v1/playback/%d/segment/$1?token=%s", base, videoId, token));
     }
 
     private int countLines(String text, String ext) {
