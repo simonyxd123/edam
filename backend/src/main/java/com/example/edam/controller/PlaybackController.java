@@ -87,6 +87,8 @@ public class PlaybackController {
             @PathVariable("video_id") Long videoId,
             @RequestParam("token") String token,
             jakarta.servlet.http.HttpServletRequest request) {
+        log.info("m3u8_endpoint_hit, video_id={}, token_len={}, remote_addr={}, x-forwarded-host={}",
+            videoId, token.length(), request.getRemoteAddr(), request.getHeader("X-Forwarded-Host"));
         // 1. 验证 token（不依赖 Spring Security context，query string 取）
         try {
             jwtTokenProvider.parseAndValidate(token);
