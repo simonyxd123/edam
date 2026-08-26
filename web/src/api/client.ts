@@ -5,7 +5,9 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
 import { ElMessage } from 'element-plus';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+// 默认直连后端 8092，避开 Vite dev proxy（proxy 转发 multipart 时偶尔会改 Content-Type）
+// 生产环境用 nginx 反代时设 VITE_API_BASE_URL=/api/v1
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8092/api/v1';
 
 class ApiClient {
   private instance: AxiosInstance;
