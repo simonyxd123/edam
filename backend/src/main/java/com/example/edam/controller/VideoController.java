@@ -46,8 +46,13 @@ public class VideoController {
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
         @RequestParam(value = "title", required = false) String title,
-        @RequestHeader("X-User-Id") Long uploaderId
+        @RequestHeader("X-User-Id") Long uploaderId,
+        jakarta.servlet.http.HttpServletRequest request
     ) {
+        log.info("upload_endpoint_hit, content_type={}, multipart={}, content_length={}",
+            request.getContentType(),
+            request.getContentType() != null && request.getContentType().toLowerCase().contains("multipart"),
+            request.getContentLength());
         // MIME / 文件类型校验：必须以 video/ 开头
         String contentType = file.getContentType();
         if (contentType == null || !contentType.toLowerCase().startsWith("video/")) {
