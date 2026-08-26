@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, apiBase } from '@/api/client';
 import Hls from 'hls.js';
@@ -34,14 +34,15 @@ onMounted(async () => {
     console.log('[VideoDetail] m3u8 URL:', fullUrl);
 
     // 3. HLS.js 播放
+    console.log('[VideoDetail] checking videoEl.value=', !!videoEl.value, 'hls supported=', Hls.isSupported());
+    // 等 DOM 更新（video 标签在 v-if 里，loading.value = false 后才渲染）
+    await nextTick();
+    console.log('[VideoDetail] after nextTick videoEl.value=', !!videoEl.value);
     if (videoEl.value && Hls.isSupported()) {
       hls.value = new Hls({
         debug: false,
         enableWorker: true,
-        // 让 segment 请求带 query 参数（m3u8_url 里带 token 后会传到 segment）
-        xhrSetup: (xhr) => {
-          // 不在这里手动设 header（Hls.js 内部会把 m3u8 URL 上的 query 继承）
-        },
+        xhrSetup: (xhr) => {},
       });
       // 监听全部生命周期事件，定位卡哪一步
       const log = (e: string, d?: any) => console.log('[VideoDetail] HLS', e, d || '');
