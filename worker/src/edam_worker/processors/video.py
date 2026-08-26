@@ -192,11 +192,10 @@ class VideoProcessor:
 
         # drawtext filter（转义冒号和单引号，FFmpeg filter 语法敏感）
         wm_escaped = watermark_text.replace("'", "\\'").replace(":", "\\:")
-        # 大字 + 红色，确保视频里能看到（开发阶段）
-        font_size = 48  # 720p 高度 720 → 字号 48 ≈ 6.7%，明显可见
+        # 小字 + 白色 + 半透明背景 → 不挡视频字幕，视野边缘低调
+        font_size = 20  # 720p 高度 720 → 字号 20 ≈ 2.8%
 
         # 显式指定 fontfile（容器没装字体时 drawtext 会静默失败）
-        # 候选路径按概率从高到低
         font_candidates = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -211,16 +210,16 @@ class VideoProcessor:
         if font_path:
             font_part = f"fontfile='{font_path}':"
         else:
-            # fallback：用 font= 让 ffmpeg 自己找
             font_part = "font='DejaVu Sans':"
             log.warn("drawtext_font_not_found, falling_back_to_font_name, candidates={}", font_candidates)
 
+        # 右下角（不挡字幕）+ 白字 + 半透明黑底保证可读 + 低调不抢眼
         drawtext_filter = (
             f"drawtext=text='{wm_escaped}':"
             f"{font_part}"
-            f"fontcolor=yellow:fontsize={font_size}:"
-            f"box=1:boxcolor=red@0.6:boxborderw=12:"
-            "x=(w-text_w)/2:y=h-th-40"
+            f"fontcolor=white@0.75:fontsize={font_size}:"
+            f"box=1:boxcolor=black@0.35:boxborderw=4:"
+            "x=w-tw-12:y=h-th-12"
         )
 
         cmd = [
