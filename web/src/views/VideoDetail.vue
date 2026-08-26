@@ -103,26 +103,33 @@ function goBack() {
       </template>
     </el-page-header>
 
+    <!-- 始终渲染 video 标签（用 v-show 控制可见），
+         让 ref=\"videoEl\" 在 onMounted 里立即可用 -->
     <div v-if="loading" v-loading="true" class="loading">加载中…</div>
     <div v-else-if="errorMsg" class="error">{{ errorMsg }}</div>
-    <div v-else>
-      <video
-        ref="videoEl"
-        controls
-        autoplay
-        muted
-        style="width:100%;max-height:60vh;background:#000;"
-      ></video>
 
-      <el-descriptions :column="2" border style="margin-top:24px">
-        <el-descriptions-item label="视频 ID">{{ videoId }}</el-descriptions-item>
-        <el-descriptions-item label="时长">{{ video?.duration_sec }}s</el-descriptions-item>
-        <el-descriptions-item label="大小">{{ video?.size_bytes }} bytes</el-descriptions-item>
-        <el-descriptions-item label="密级">L{{ video?.classification_lv }}</el-descriptions-item>
-        <el-descriptions-item label="上传时间">{{ $fmt(video?.upload_time) }}</el-descriptions-item>
-        <el-descriptions-item label="上传者">{{ video?.uploader_id }}</el-descriptions-item>
-      </el-descriptions>
-    </div>
+    <video
+      v-show="!loading && !errorMsg && !!m3u8Url"
+      ref="videoEl"
+      controls
+      autoplay
+      muted
+      style="width:100%;max-height:60vh;background:#000;"
+    ></video>
+
+    <el-descriptions
+      v-show="!loading && !errorMsg"
+      :column="2"
+      border
+      style="margin-top:24px"
+    >
+      <el-descriptions-item label="视频 ID">{{ videoId }}</el-descriptions-item>
+      <el-descriptions-item label="时长">{{ video?.duration_sec }}s</el-descriptions-item>
+      <el-descriptions-item label="大小">{{ video?.size_bytes }} bytes</el-descriptions-item>
+      <el-descriptions-item label="密级">L{{ video?.classification_lv }}</el-descriptions-item>
+      <el-descriptions-item label="上传时间">{{ $fmt(video?.upload_time) }}</el-descriptions-item>
+      <el-descriptions-item label="上传者">{{ video?.uploader_id }}</el-descriptions-item>
+    </el-descriptions>
   </div>
 </template>
 
