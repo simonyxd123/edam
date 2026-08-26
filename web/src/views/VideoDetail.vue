@@ -35,26 +35,47 @@ onMounted(async () => {
 
     // 3. HLS.js 播放
     if (videoEl.value && Hls.isSupported()) {
-      hls.value = new Hls({ debug: false, enableWorker: true });
+      hls.value = new Hls({
+        debug: false,
+        enableWorker: true,
+        // 让 segment 请求带 query 参数（m3u8_url 里带 token 后会传到 segment）
+        xhrSetup: (xhr) => {
+          // 不在这里手动设 header（Hls.js 内部会把 m3u8 URL 上的 query 继承）
+        },
+      });
+      // 监听全部生命周期事件，定位卡哪一步
+      const log = (e: string, d?: any) => console.log('[VideoDetail] HLS', e, d || '');
+      [
+        'MANIFEST_LOADING', 'MANIFEST_LOADED', 'MANIFEST_PARSED',
+        'LEVEL_LOADING', 'LEVEL_LOADED', 'LEVEL_SWITCHED',
+        'FRAG_LOADING', 'FRAG_LOADED', 'FRAG_PARSED_INIT_SEGMENT',
+        'BUFFER_APPENDING', 'BUFFER_EOS',
+        'VIDEO_ATTACHING', 'VIDEO_ATTACHED',
+      ].forEach((evt) => hls.value?.on((Hls.Events as any)[evt], () => log(evt)));
       hls.value.on(Hls.Events.ERROR, (_e, data) => {
-        console.error('[VideoDetail] HLS error:', data);
+        console.error('[VideoDetail] HLS error details:', JSON.stringify({
+          type: data.type, details: data.details,
+          fatal: data.fatal, error: data.error?.message,
+          response: data.response, networkDetails: data.networkDetails,
+        }));
         if (data.fatal) {
-          const msg = `HLS ${data.type}/${data.details}: ${data.error?.message || ''}`;
-          errorMsg.value = msg;
-          // 网络错误 → 切原始 <video src> 模式重试（部分浏览器会处理）
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            console.warn('[VideoDetail] NETWORK_ERROR, retry with native <video>');
-          }
+          errorMsg.value = `HLS ${data.type}/${data.details}: ${data.error?.message || ''}`;
+          // 致命错误 → 切原生 <video> 模式重试
+          try {
+            if (videoEl.value) videoEl.value.src = m3u8Url.value;
+            console.warn('[VideoDetail] fell back to native <video src>');
+          } catch (e) {}
         }
       });
-      hls.value.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('[VideoDetail] manifest parsed, attaching to video');
-      });
+      console.log('[VideoDetail] calling hls.loadSource...');
       hls.value.loadSource(m3u8Url.value);
+      console.log('[VideoDetail] calling hls.attachMedia...');
       hls.value.attachMedia(videoEl.value);
+      console.log('[VideoDetail] hls.init done');
     } else if (videoEl.value) {
       // Safari 原生 HLS
       videoEl.value.src = m3u8Url.value;
+      console.log('[VideoDetail] using native HLS (Safari path)');
     }
     loading.value = false;
   } catch (e: any) {
