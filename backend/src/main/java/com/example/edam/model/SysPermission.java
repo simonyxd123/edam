@@ -1,5 +1,6 @@
 package com.example.edam.model;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -38,6 +39,6 @@ public class SysPermission {
     @TableField("is_system")
     private Integer isSystem;
 
-    @TableField(fill = TableFieldFill.INSERT)
+    @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 }
