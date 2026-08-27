@@ -35,6 +35,7 @@ public class AdminController {
     }
 
     @PostMapping("/backups")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('admin:backup')")
     @Operation(summary = "触发备份（高危，需 MFA）")
     public ResponseEntity<Map<String, Object>> triggerBackup(
             @RequestBody BackupRequest request,
@@ -57,6 +58,7 @@ public class AdminController {
     }
 
     @PostMapping("/backups/{backup_id}/restore")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('admin:restore')")
     @Operation(summary = "从备份恢复（高危 + 二级审批）")
     public ResponseEntity<Map<String, Object>> restoreBackup(
             @PathVariable("backup_id") String backupId,

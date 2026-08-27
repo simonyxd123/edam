@@ -65,6 +65,7 @@ public class AuditController {
     }
 
     @PostMapping("/export")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('audit:audit_export')")
     public ResponseEntity<Map<String, Object>> export(
             @RequestBody ExportRequest request,
             @RequestHeader("X-User-Id") Long operatorId

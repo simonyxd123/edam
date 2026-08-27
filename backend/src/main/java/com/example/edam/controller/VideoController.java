@@ -42,6 +42,7 @@ public class VideoController {
     }
 
     @PostMapping
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:upload')")
     public ResponseEntity<Map<String, Object>> upload(
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
@@ -105,6 +106,7 @@ public class VideoController {
     }
 
     @DeleteMapping("/{video_id}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
     public ResponseEntity<Void> delete(
         @PathVariable("video_id") Long videoId,
         @RequestHeader("X-User-Id") Long currentUserId
@@ -114,6 +116,7 @@ public class VideoController {
     }
 
     @PostMapping("/batch-delete")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
     public ResponseEntity<Map<String, Object>> batchDelete(
         @RequestBody BatchDeleteRequest request,
         @RequestHeader("X-User-Id") Long operatorId
@@ -134,6 +137,7 @@ public class VideoController {
     }
 
     @PostMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
     public ResponseEntity<Map<String, Object>> batchPermission(
         @RequestBody BatchPermissionRequest request
     ) {

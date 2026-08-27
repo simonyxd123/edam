@@ -56,6 +56,7 @@ public class UserController {
 
     @PostMapping
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<SysUser> create(
         @RequestBody CreateUserRequest request,
         @RequestHeader("X-User-Id") Long operatorId
@@ -86,6 +87,7 @@ public class UserController {
 
     @PutMapping("/{user_id}")
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public SysUser update(
         @PathVariable("user_id") Long userId,
         @RequestBody UpdateUserRequest request,
@@ -106,6 +108,7 @@ public class UserController {
 
     @DeleteMapping("/{user_id}")
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<Void> delete(
         @PathVariable("user_id") Long userId,
         @RequestHeader("X-User-Id") Long operatorId
@@ -125,6 +128,7 @@ public class UserController {
      * 立即吊销用户所有密钥（紧急场景）
      */
     @PostMapping("/{user_id}/revoke-keys")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<Void> revokeKeys(
         @PathVariable("user_id") Long userId,
         @RequestHeader("X-User-Id") Long operatorId

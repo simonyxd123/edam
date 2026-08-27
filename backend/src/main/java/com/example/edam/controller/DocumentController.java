@@ -64,6 +64,7 @@ public class DocumentController {
     }
 
     @PostMapping
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:upload')")
     public ResponseEntity<Map<String, Object>> upload(
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
@@ -238,6 +239,7 @@ public class DocumentController {
     }
 
     @DeleteMapping("/{doc_id}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:delete')")
     public ResponseEntity<Void> delete(
         @PathVariable("doc_id") Long docId,
         @RequestHeader("X-User-Id") Long currentUserId
