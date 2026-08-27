@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.VideoResource;
+import com.example.edam.model.SysUser;
+import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.VideoResourceRepository;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
@@ -32,6 +34,7 @@ import java.util.UUID;
 public class VideoService {
 
     private final VideoResourceRepository videoRepository;
+    private final SysUserRepository sysUserRepository;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
 
@@ -143,11 +146,17 @@ public class VideoService {
             log.info("video_insert_verified, id={}", video.getId());
 
             // 5. 触发异步处理（HLS 转码 + 帧指纹）
+            //    查 employee_no 让 Worker 把工号烧进 HLS 水印
+            String employeeNo = lookupEmployeeNo(uploaderId);
+            if (employeeNo == null || employeeNo.isBlank()) {
+                employeeNo = "U" + uploaderId;  // 查不到时降级
+            }
             rabbitTemplate.convertAndSend(exchange, videoRouting, java.util.Map.of(
                 "video_id", video.getId(),
                 "input_path", minioPath,
                 "classification_lv", classificationLv,
-                "uploader_id", uploaderId
+                "uploader_id", uploaderId,
+                "employee_no", employeeNo
             ));
 
             log.info("video_uploaded, video_id={}, size={}, minio={}",
@@ -229,6 +238,20 @@ public class VideoService {
             case "L4" -> 4;
             default -> 1;
         };
+    }
+
+    /**
+     * 用 userId 查 employee_no（WatermarkService 同样逻辑）
+     */
+    private String lookupEmployeeNo(Long userId) {
+        if (userId == null) return null;
+        try {
+            SysUser u = sysUserRepository.selectById(userId);
+            return u != null ? u.getEmployeeNo() : null;
+        } catch (Exception e) {
+            log.warn("employee_no_lookup_failed, userId={}", userId);
+            return null;
+        }
     }
 
     /**
