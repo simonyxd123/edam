@@ -1,5 +1,5 @@
 /**
- * 用户状态管理
+ * 用户状态管理（v3.2 V-1 RBAC：roles + permissions 已落 CurrentUser）
  */
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
@@ -12,14 +12,33 @@ export const useUserStore = defineStore('user', () => {
 
   const isLoggedIn = computed(() => !!token.value);
 
+  // 角色 codes（含 admin 时也有 admin 字符串）
+  const roles = computed(() => user.value?.roles ?? []);
+
+  // 是否超级管理员（含 admin 角色 → 短路 *:* 权限）
+  const isAdmin = computed(() => roles.value.includes('admin'));
+
+  /**
+   * 权限检查（带通配）
+   * - 拥有 *:* → 所有权限通过
+   * - 拥有 *:<action> → 该 action 所有资源通过
+   * - 否则查 code 精确匹配
+   */
+  function hasPermission(code: string): boolean {
+    if (!code) return false;
+    const perms = user.value?.permissions ?? [];
+    if (perms.includes('*:*')) return true;
+    const colon = code.indexOf(':');
+    if (colon > 0 && perms.includes('*:' + code.substring(colon + 1))) return true;
+    return perms.includes(code);
+  }
+
   async function login(employeeNo: string, password: string) {
     const resp = await authApi.login({ employee_no: employeeNo, password });
     token.value = resp.access_token;
     refreshToken.value = resp.refresh_token;
     localStorage.setItem('access_token', resp.access_token);
     localStorage.setItem('refresh_token', resp.refresh_token);
-
-    // 获取用户信息（同时获得 user_id 写入 user_id header）
     await fetchMe();
   }
 
@@ -43,10 +62,7 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function tryRestore() {
-    // 启动时尝试从 localStorage 恢复 session
-    if (token.value) {
-      fetchMe();
-    }
+    if (token.value) fetchMe();
   }
 
   return {
@@ -54,6 +70,9 @@ export const useUserStore = defineStore('user', () => {
     refreshToken,
     user,
     isLoggedIn,
+    roles,
+    isAdmin,
+    hasPermission,
     login,
     logout,
     fetchMe,

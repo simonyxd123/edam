@@ -9,15 +9,30 @@ const userStore = useUserStore();
 
 const activeMenu = computed(() => route.path);
 
-const menuItems = [
-  { path: '/', icon: 'Odometer', label: '仪表板' },
-  { path: '/videos', icon: 'VideoCamera', label: '视频' },
-  { path: '/documents', icon: 'Document', label: '文档' },
-  { path: '/distribution', icon: 'Promotion', label: '外发审批' },
-  { path: '/watermark', icon: 'Brush', label: '水印溯源' },
-  { path: '/audit', icon: 'Tickets', label: '审计日志' },
-  { path: '/settings', icon: 'Setting', label: '设置' },
+interface MenuItem {
+  path: string;
+  icon: string;
+  label: string;
+  permission?: string;     // 必须有此权限才显示
+  isAdminOnly?: boolean;   // 仅 admin 显示
+}
+
+const allMenuItems: MenuItem[] = [
+  { path: '/',             icon: 'Odometer',   label: '仪表板' },
+  { path: '/videos',       icon: 'VideoCamera', label: '视频',    permission: 'video:read' },
+  { path: '/documents',    icon: 'Document',   label: '文档',    permission: 'document:read' },
+  { path: '/distribution', icon: 'Promotion',  label: '外发审批', permission: 'distribution:read' },
+  { path: '/watermark',    icon: 'Brush',      label: '水印溯源', permission: 'watermark:read' },
+  { path: '/audit',        icon: 'Tickets',    label: '审计日志', permission: 'audit:read' },
+  { path: '/rbac',         icon: 'UserFilled', label: '角色权限', isAdminOnly: true },
+  { path: '/settings',     icon: 'Setting',    label: '设置',    permission: 'system:read' },
 ];
+
+const menuItems = computed(() => allMenuItems.filter(item => {
+  if (item.isAdminOnly) return userStore.isAdmin;
+  if (item.permission) return userStore.hasPermission(item.permission);
+  return true;  // 无要求 → 所有登录用户可见
+}));
 
 function handleLogout() {
   userStore.logout();

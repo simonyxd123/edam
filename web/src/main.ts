@@ -11,6 +11,7 @@ import App from './App.vue';
 import router from './router';
 import './styles/main.scss';
 import { formatDateTime, formatDate, formatTime } from './utils/date';
+import { permission } from './utils/permission';
 
 const app = createApp(App);
 
@@ -32,5 +33,8 @@ app.config.globalProperties.$fmtTime = formatTime;
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component as any);
 }
+
+// v3.2 V-1 RBAC：注册全局权限指令 v-permission="'video:upload'"
+app.directive('permission', permission);
 
 app.mount('#app');
