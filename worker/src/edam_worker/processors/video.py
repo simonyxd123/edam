@@ -43,11 +43,12 @@ class VideoProcessor:
     async def process(self, payload: Dict[str, Any]) -> None:
         """
         视频处理流水线
-        :param payload: {video_id, input_path, classification_lv, uploader_id}
+        :param payload: {video_id, input_path, classification_lv, uploader_id, employee_no}
         """
         video_id = payload["video_id"]
         input_path = payload["input_path"]
-        log.info("video_processing_start", video_id=video_id, input_path=input_path)
+        employee_no = payload.get("employee_no") or f"U{video_id}"
+        log.info("video_processing_start", video_id=video_id, input_path=input_path, employee_no=employee_no)
 
         hls_status = 3   # 默认 failed
         fp_status = 3
@@ -65,7 +66,7 @@ class VideoProcessor:
             duration_sec = await self._probe_duration(local_path)
 
             # 3. HLS 切片 + AES 加密（含 drawtext 水印）
-            watermark_text = f"EDAM video:{video_id} {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            watermark_text = f"EDAM {employee_no} video:{video_id} {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             hls_dir = await self._hls_transcode(local_path, video_id, watermark_text)
             hls_path = f"videos/{video_id}/hls/playlist.m3u8"
             hls_status = 2  # ready
