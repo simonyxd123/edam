@@ -41,6 +41,7 @@ public class MyMetaObjectHandler implements MetaObjectHandler {
         "expireAt", "expire_at",
         "accessTokenExpireAt", "access_token_expire_at",
         "lastActiveAt", "last_active_at",
+        "grantedAt", "granted_at",   // v3.2 V-1 RBAC: sys_user_role.granted_at
         "created", "updated",
     };
 

@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +28,7 @@ import java.util.UUID;
  * - 登出（撤销 refresh_token）
  * - 当前用户
  *
- * v3.2 V-3：限流已迁移到 LoginRateLimiter（IP + 工号双维度）
+ * v3.2 V-1 RBAC：login/refresh 从 DB 读真实角色；getCurrentUser 返回 roles+permissions
  */
 @Slf4j
 @Service
@@ -42,14 +43,11 @@ public class AuthService {
     private final JwtTokenProvider jwtTokenProvider;
     private final StringRedisTemplate redisTemplate;
     private final AuditService auditService;
+    private final PermissionService permissionService;
+    private final UserRoleService userRoleService;
 
     /**
      * 登录
-     *
-     * @param employeeNo 工号
-     * @param password   密码（明文）
-     * @param mfaCode    MFA 验证码（可选，L3+ 资源必填）
-     * @return 登录响应（access_token + refresh_token）
      */
     @Transactional
     public Map<String, Object> login(String employeeNo, String password, String mfaCode) {
@@ -78,8 +76,6 @@ public class AuthService {
             if (mfaCode == null || mfaCode.isBlank()) {
                 throw new IllegalArgumentException("MFA 验证码必填");
             }
-            // TODO: 接入 TOTP 校验（v3.2 二期）
-            // 当前简单占位：长度校验
             if (mfaCode.length() != 6 || !mfaCode.matches("\\d{6}")) {
                 throw new IllegalArgumentException("MFA 验证码格式错误（6 位数字）");
             }
@@ -89,10 +85,15 @@ public class AuthService {
         user.setFailedLoginCount(0);
         userRepository.updateById(user);
 
-        // 6. 签发 token
+        // 6. 签发 token（角色从 DB 读真实角色，不再写死 ROLE_USER）
         String sessionId = UUID.randomUUID().toString();
+        List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
+        if (roleCodes.isEmpty()) {
+            // 兜底：新用户还没分配任何角色时给个 ROLE_USER 防止完全没权限
+            roleCodes.add("employee");
+        }
         String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, List.of("ROLE_USER"));
+            user.getId(), sessionId, roleCodes);
         String refreshToken = jwtTokenProvider.createRefreshToken();
 
         // 7. 存储 refresh_token 到 Redis
@@ -102,7 +103,8 @@ public class AuthService {
             Duration.ofDays(7)
         );
 
-        log.info("用户登录成功: employee_no={}, session_id={}", employeeNo, sessionId);
+        log.info("用户登录成功: employee_no={}, session_id={}, roles={}",
+            employeeNo, sessionId, roleCodes);
 
         // 写审计日志（异步）
         auditService.log(user.getId(), "login", "auth", null, "success");
@@ -128,8 +130,13 @@ public class AuthService {
             throw new ResourceNotFoundException("用户不存在");
         }
 
+        // 从 DB 读真实角色，不再写死 ROLE_USER
+        List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
+        if (roleCodes.isEmpty()) {
+            roleCodes.add("employee");
+        }
         String newAccessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), UUID.randomUUID().toString(), List.of("ROLE_USER"));
+            user.getId(), UUID.randomUUID().toString(), roleCodes);
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", newAccessToken);
@@ -148,7 +155,7 @@ public class AuthService {
     }
 
     /**
-     * 获取当前登录用户信息
+     * 获取当前登录用户信息（含 roles + permissions 供前端 CurrentUser）
      */
     public Map<String, Object> getCurrentUser() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -170,19 +177,20 @@ public class AuthService {
         response.put("dept_id", user.getDeptId());
         response.put("status", user.getStatus());
         response.put("last_login_at", user.getLastLoginAt());
+        // v3.2 V-1 RBAC：返回角色和权限供前端用
+        response.put("roles", userRoleService.getRoleCodes(userId));
+        response.put("permissions", permissionService.getUserPermissionCodes(userId));
         return response;
     }
 
     /**
      * 处理登录失败
-     * - 累计失败次数
-     * - 连续 5 次失败 → 锁定账号 30 分钟
      */
     private void handleFailedLogin(SysUser user) {
         int failedCount = user.getFailedLoginCount() + 1;
         user.setFailedLoginCount(failedCount);
         if (failedCount >= MAX_FAILED_ATTEMPTS) {
-            user.setStatus(3); // 锁定
+            user.setStatus(3);
             log.warn("账号锁定: employee_no={} failed_count={}",
                 user.getEmployeeNo(), failedCount);
         }
