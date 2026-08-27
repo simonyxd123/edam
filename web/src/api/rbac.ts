@@ -3,6 +3,31 @@
  */
 import { api } from './client';
 
+// 用户列表（来自后端 /users 分页接口）
+export interface User {
+  id: number;
+  username: string;
+  employee_no: string;
+  real_name?: string;
+  email?: string;
+  dept_id?: number;
+  status: number;        // 1=active 2=disabled 3=locked
+  mfa_enabled: number;
+  failed_login_count: number;
+  must_change_password: boolean;
+  last_login_at?: string;
+}
+
+export interface UserPage {
+  items: User[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total: number;
+    total_pages: number;
+  };
+}
+
 export interface Permission {
   id: number;
   code: string;
@@ -51,4 +76,7 @@ export const rbacApi = {
 
   assignRolesToUser: (userId: number, role_ids: number[]) =>
     api.post<{ user_id: number; assigned_count: number }>(`/rbac/users/${userId}/roles`, { role_ids }),
+
+  listUsers: (params?: { page?: number; page_size?: number; status?: number }) =>
+    api.get<UserPage>('/users', params),
 };
