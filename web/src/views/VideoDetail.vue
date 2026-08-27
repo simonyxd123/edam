@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, apiBase } from '@/api/client';
+import { useUserStore } from '@/stores/user';
 import Hls from 'hls.js';
 
 const route = useRoute();
 const router = useRouter();
+const userStore = useUserStore();
 const videoId = route.params.id as string;
+
+// 当前用户的工号（用于视频水印，按预览者动态显示）
+const currentEmployeeNo = computed(() => userStore.user?.employee_no || 'anonymous');
 
 const video = ref<any>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
@@ -108,14 +113,23 @@ function goBack() {
     <div v-if="loading" v-loading="true" class="loading">加载中…</div>
     <div v-else-if="errorMsg" class="error">{{ errorMsg }}</div>
 
-    <video
+    <!-- 视频容器：相对定位以便动态水印 absolute 浮在上面 -->
+    <div
       v-show="!loading && !errorMsg && !!m3u8Url"
-      ref="videoEl"
-      controls
-      autoplay
-      muted
-      style="width:100%;max-height:60vh;background:#000;"
-    ></video>
+      style="position:relative;width:100%;max-height:60vh;background:#000;"
+    >
+      <video
+        ref="videoEl"
+        controls
+        autoplay
+        muted
+        style="width:100%;max-height:60vh;background:#000;display:block;"
+      ></video>
+      <!-- 客户端动态水印：显示当前预览者的 employee_no（按用户切换） -->
+      <div class="video-watermark">
+        EDAM {{ currentEmployeeNo }} · 视频 {{ videoId }} · {{ new Date().toLocaleString('zh-CN') }}
+      </div>
+    </div>
 
     <el-descriptions
       v-show="!loading && !errorMsg"
@@ -137,5 +151,22 @@ function goBack() {
 .video-detail { padding: 16px; }
 .title { font-size: 18px; font-weight: 600; }
 .loading { height: 400px; }
+
+/* 视频水印：固定在右下角，半透明白色小字，不挡视频控件点击 */
+.video-watermark {
+  position: absolute;
+  right: 20px;
+  bottom: 50px;  /* 略高于 controls bar */
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  font-family: monospace;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
+  pointer-events: none;  /* 不挡视频控件点击 */
+  z-index: 999;
+  user-select: none;
+  white-space: nowrap;
+}
 .error { color: #f56c6c; padding: 16px; }
 </style>
