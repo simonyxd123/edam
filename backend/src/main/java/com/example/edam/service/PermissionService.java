@@ -7,7 +7,9 @@ import com.example.edam.repository.SysPermissionRepository;
 import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.SysUserRoleRepository;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,7 +25,13 @@ import java.util.stream.Collectors;
  * - getUserPermissionCodes(userId): 聚合用户所有角色的权限 code 集合
  * - hasPermission(userId, code): 单一权限检查
  * - getCurrentUserRoleCodes(userId): 用户的角色 code 集合（含 admin 短路）
+ *
+ * 注意：admin 用户返回「全部 45 个权限码」而非通配符 "*:*"。
+ * 因为 Spring Security 的 hasAuthority() 是精确匹配字符串，
+ * "*:*" 不会匹配 "role:read"，所以 admin 必须实际拥有全部权限码
+ * 才能通过所有 @PreAuthorize 校验。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class PermissionService {
@@ -33,9 +41,20 @@ public class PermissionService {
     private final SysRolePermissionRepository rolePermRepository;
     private final SysPermissionRepository permissionRepository;
 
+    /** 全部权限 code（启动时一次性加载，用于 admin 短路返回全部权限） */
+    private Set<String> allPermissionCodes = Set.of();
+
+    @PostConstruct
+    public void init() {
+        allPermissionCodes = permissionRepository.selectList(null).stream()
+            .map(SysPermission::getCode)
+            .collect(Collectors.toSet());
+        log.info("PermissionService init: loaded {} permission codes", allPermissionCodes.size());
+    }
+
     /**
      * 用户的全部权限 code 集合（去重）。
-     * 如果用户属于 admin 角色 → 返回 ["*:*"]，调用方需短路处理。
+     * 如果用户属于 admin 角色 → 返回「全部 45 个权限码」（不是 "*:*" 通配符）。
      * expires_at < now 的角色会被过滤。
      */
     @Transactional(readOnly = true)
@@ -47,12 +66,12 @@ public class PermissionService {
         List<Long> roleIds = userRoleRepository.findRoleIdsByUserId(userId);
         if (roleIds.isEmpty()) return Set.of();
 
-        // admin 短路：只要有 admin 角色就给 *:*
+        // admin 短路：返回全部权限码（让 hasAuthority 精确匹配全部通过）
         Set<String> roleCodes = userRoleRepository.findRolesByUserId(userId).stream()
             .map(r -> r.getCode())
             .collect(Collectors.toSet());
         if (roleCodes.contains("admin")) {
-            return Set.of("*:*");
+            return new HashSet<>(allPermissionCodes);
         }
 
         Set<String> codes = new HashSet<>();
