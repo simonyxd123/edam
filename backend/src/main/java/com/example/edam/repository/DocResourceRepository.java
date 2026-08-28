@@ -10,4 +10,7 @@ public interface DocResourceRepository extends BaseMapper<DocResource> {
 
     @Select("SELECT * FROM doc_resource WHERE file_hash = #{fileHash} AND deleted_at IS NULL LIMIT 1")
     DocResource findByFileHash(String fileHash);
+
+    @Select("SELECT COUNT(*) FROM doc_resource WHERE deleted_at IS NULL")
+    long countActive();
 }

@@ -1,28 +1,43 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, reactive } from 'vue';
+import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
 
 const userStore = useUserStore();
-const stats = ref({
+
+const stats = reactive({
   total_videos: 0,
   total_documents: 0,
   pending_approvals: 0,
   recent_logins: 0,
 });
 
+const loading = ref(false);
+
+async function loadStats() {
+  loading.value = true;
+  try {
+    const data = await api.get<{
+      total_videos: number;
+      total_documents: number;
+      pending_approvals: number;
+      recent_logins: number;
+    }>('/dashboard/stats');
+    Object.assign(stats, data);
+  } catch (e: any) {
+    console.error('load dashboard stats failed', e);
+  } finally {
+    loading.value = false;
+  }
+}
+
 onMounted(() => {
-  // TODO: 从 API 加载统计数据
-  stats.value = {
-    total_videos: 124,
-    total_documents: 567,
-    pending_approvals: 8,
-    recent_logins: 42,
-  };
+  loadStats();
 });
 </script>
 
 <template>
-  <div class="dashboard">
+  <div class="dashboard" v-loading="loading">
     <h2 class="page-title">仪表板</h2>
 
     <el-row :gutter="20" class="stat-row">
