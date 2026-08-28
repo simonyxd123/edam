@@ -237,6 +237,7 @@ public class RbacController {
                 ur.setUserId(userId);
                 ur.setRoleId(rid);
                 ur.setGrantedBy(operatorId);
+                ur.setGrantedAt(java.time.LocalDateTime.now());  // 手动填：MetaObjectHandler 不可靠
                 userRoleRepository.insert(ur);
                 n++;
             }
