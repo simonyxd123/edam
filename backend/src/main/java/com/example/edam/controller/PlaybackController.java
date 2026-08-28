@@ -53,7 +53,8 @@ public class PlaybackController {
 
         // 1. 签发短时 JWT
         String sessionId = UUID.randomUUID().toString();
-        String token = jwtTokenProvider.createAccessToken(userId, sessionId, List.of("ROLE_VIEWER"));
+        String token = jwtTokenProvider.createAccessToken(userId, sessionId,
+                List.of("ROLE_VIEWER"), List.of("video:read", "playback:read"));
 
         // 2. 生成签名 URL
         long expires = Instant.now().getEpochSecond() + 600;  // 10 分钟

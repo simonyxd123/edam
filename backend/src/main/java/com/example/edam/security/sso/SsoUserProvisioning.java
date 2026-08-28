@@ -80,11 +80,11 @@ public class SsoUserProvisioning {
         // 1. 创建 session_id
         String sessionId = UUID.randomUUID().toString();
 
-        // 2. 创建 JWT Token
+        // 2. 创建 JWT Token（角色 + 最小权限列表，保证 SSO 登录后能用 /auth/me）
         List<String> roles = userInfo.getRoles() != null ? userInfo.getRoles()
             : List.of("ROLE_" + defaultRoleCode.toUpperCase());
         String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, roles);
+            user.getId(), sessionId, roles, List.of("dashboard:read", "video:read", "document:read"));
         String refreshToken = jwtTokenProvider.createRefreshToken();
 
         // 3. 存储 session（Redis）

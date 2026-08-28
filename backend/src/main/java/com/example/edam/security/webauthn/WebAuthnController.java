@@ -195,7 +195,8 @@ public class WebAuthnController {
         // 3. 签发 JWT Token
         String sessionId = UUID.randomUUID().toString();
         String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, List.of("ROLE_EMPLOYEE"));
+            user.getId(), sessionId, List.of("ROLE_EMPLOYEE"),
+                List.of("dashboard:read", "video:read", "document:read"));
         String refreshToken = jwtTokenProvider.createRefreshToken();
 
         log.info("webauthn_login_success user_id={} employee_no={}",
