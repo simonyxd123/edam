@@ -79,4 +79,44 @@ export const rbacApi = {
 
   listUsers: (params?: { page?: number; page_size?: number; status?: number }) =>
     api.get<UserPage>('/users', params),
+
+  createUser: (data: {
+    username: string;
+    password: string;
+    employee_no: string;
+    real_name?: string;
+    email?: string;
+    dept_id?: number;
+    mfa_enabled?: number;
+  }) => api.post<SysUserView>('/users', data),
+
+  updateUser: (id: number, data: {
+    real_name?: string;
+    email?: string;
+    dept_id?: number;
+    status?: 'active' | 'disabled' | 'locked';
+  }) => api.put<SysUserView>(`/users/${id}`, data),
+
+  resetPassword: (id: number, password: string) =>
+    api.put<void>(`/users/${id}/password`, { password }),
+
+  deleteUser: (id: number) =>
+    api.delete<void>(`/users/${id}`),
 };
+
+// SysUserView 类型（与后端 SysUserView DTO 对齐）
+export interface SysUserView {
+  id: number;
+  username: string;
+  employee_no: string;
+  real_name?: string;
+  email?: string;
+  dept_id?: number;
+  status: number;
+  mfa_enabled: number;
+  failed_login_count?: number;
+  must_change_password?: boolean;
+  last_login_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}

@@ -1,32 +1,60 @@
 <script setup lang="ts">
 /**
- * 角色权限管理页（v3.2 V-1 RBAC — Phase 4 完整版）
+ * 角色权限管理页（v3.2 V-1 RBAC — 完整版）
  *
- * Tab 1：用户管理（assignRoles 弹窗）
- * Tab 2：角色管理（CRUD + 分配权限弹窗）
+ * Tab 1：用户管理（CRUD + 分配角色）
+ * Tab 2：角色管理（CRUD + 分配权限）
  * Tab 3：权限目录（只读）
+ * Tab 4：我的角色（只读）
  */
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus';
-import { rbacApi, type Permission, type Role, type UserRole, type User as UserDoc } from '@/api/rbac';
+import {
+  rbacApi,
+  type Permission,
+  type Role,
+  type UserRole,
+  type SysUserView,
+} from '@/api/rbac';
 import { useUserStore } from '@/stores/user';
 
 const userStore = useUserStore();
 
 const activeTab = ref('users');
 
-const users = ref<UserDoc[]>([]);
+const users = ref<SysUserView[]>([]);
 const roles = ref<Role[]>([]);
 const permissions = ref<Permission[]>([]);
 const myRoles = ref<UserRole[]>([]);
 const loading = ref(false);
 
-// ============== 用户列表 + 分配角色弹窗 ==============
-const userAssignDialog = ref(false);
-const userAssignForm = ref<{ user: UserDoc | null; roleIds: number[] }>({
-  user: null,
-  roleIds: [],
+// ============== 用户列表 + 增删改弹窗 ==============
+const userDialog = ref(false);
+const userDialogMode = ref<'create' | 'edit' | 'password'>('create');
+const userFormRef = ref<FormInstance>();
+const userForm = ref<{
+  id?: number;
+  username: string;
+  password: string;
+  employeeNo: string;
+  realName: string;
+  email: string;
+  mfaEnabled: number;
+}>({
+  username: '', password: '', employeeNo: '', realName: '', email: '', mfaEnabled: 0,
 });
+
+const userFormRules = {
+  username: [{ required: true, message: '用户名必填', trigger: 'blur' }],
+  employeeNo: [
+    { required: true, message: '工号必填', trigger: 'blur' },
+    { pattern: /^[A-Z]\d+$/, message: '格式如 E000001', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, message: '密码至少 6 位', trigger: 'blur' },
+    { min: 6, message: '至少 6 位', trigger: 'blur' },
+  ],
+};
 
 async function loadUsers() {
   try {
@@ -37,7 +65,125 @@ async function loadUsers() {
   }
 }
 
-async function openAssignRoles(user: UserDoc) {
+function openCreateUser() {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  userForm.value = {
+    username: '', password: 'changeme123', employeeNo: '', realName: '', email: '', mfaEnabled: 0,
+  };
+  userDialogMode.value = 'create';
+  userDialog.value = true;
+}
+
+function openEditUser(u: SysUserView) {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  userForm.value = {
+    id: u.id,
+    username: u.username,
+    password: '',
+    employeeNo: u.employee_no,
+    realName: u.real_name ?? '',
+    email: u.email ?? '',
+    mfaEnabled: u.mfa_enabled,
+  };
+  userDialogMode.value = 'edit';
+  userDialog.value = true;
+}
+
+function openResetPassword(u: SysUserView) {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  userForm.value = {
+    id: u.id,
+    username: u.username,
+    password: 'changeme123',
+    employeeNo: u.employee_no,
+    realName: u.real_name ?? '',
+    email: '',
+    mfaEnabled: 0,
+  };
+  userDialogMode.value = 'password';
+  userDialog.value = true;
+}
+
+async function saveUser() {
+  if (!userFormRef.value) return;
+  const valid = await userFormRef.value.validate().catch(() => false);
+  if (!valid) return;
+
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+
+  try {
+    if (userDialogMode.value === 'create') {
+      await rbacApi.createUser({
+        username: userForm.value.username,
+        password: userForm.value.password,
+        employee_no: userForm.value.employeeNo,
+        real_name: userForm.value.realName,
+        email: userForm.value.email || undefined,
+        mfa_enabled: userForm.value.mfaEnabled,
+      });
+      ElMessage.success(`用户 ${userForm.value.username} 已创建`);
+    } else if (userDialogMode.value === 'edit' && userForm.value.id) {
+      await rbacApi.updateUser(userForm.value.id, {
+        real_name: userForm.value.realName,
+        email: userForm.value.email || undefined,
+      });
+      ElMessage.success(`用户 ${userForm.value.username} 已更新`);
+    } else if (userDialogMode.value === 'password' && userForm.value.id) {
+      await rbacApi.resetPassword(userForm.value.id, userForm.value.password);
+      ElMessage.success(`用户 ${userForm.value.username} 密码已重置`);
+    }
+    userDialog.value = false;
+    await loadUsers();
+  } catch (e: any) {
+    ElMessage.error('保存失败：' + (e?.message || '未知'));
+  }
+}
+
+async function deleteUser(u: SysUserView) {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  if (u.id === 1) {
+    ElMessage.warning('默认 admin 账号不可删除');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除（禁用）用户 "${u.real_name ?? u.username}" (${u.employee_no})？`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '禁用', cancelButtonText: '取消' }
+    );
+    await rbacApi.deleteUser(u.id);
+    ElMessage.success('用户已禁用（status=2）');
+    await loadUsers();
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败：' + (e?.message || '未知'));
+    }
+  }
+}
+
+// ============== 用户分配角色弹窗 ==============
+const userAssignDialog = ref(false);
+const userAssignForm = ref<{ user: SysUserView | null; roleIds: number[] }>({
+  user: null,
+  roleIds: [],
+});
+
+async function openAssignRoles(user: SysUserView) {
   if (!userStore.hasPermission('user:manage')) {
     ElMessage.warning('没有 user:manage 权限');
     return;
@@ -62,7 +208,6 @@ async function saveAssignRoles() {
     );
     ElMessage.success(`已分配 ${resp.assigned_count} 个角色给 ${userAssignForm.value.user.employee_no}`);
     userAssignDialog.value = false;
-    loadUsers();
   } catch (e: any) {
     ElMessage.error('分配失败：' + (e?.message || '未知'));
   }
@@ -70,6 +215,7 @@ async function saveAssignRoles() {
 
 // ============== 角色 CRUD ==============
 const roleDialog = ref(false);
+const roleDialogMode = ref<'create' | 'edit'>('create');
 const roleFormRef = ref<FormInstance>();
 const roleForm = ref<{
   id?: number;
@@ -78,11 +224,13 @@ const roleForm = ref<{
   description: string;
   permissionIds: number[];
 }>({
-  code: '',
-  name: '',
-  description: '',
-  permissionIds: [],
+  code: '', name: '', description: '', permissionIds: [],
 });
+
+const roleFormRules = {
+  code: [{ required: true, message: '角色代码必填', trigger: 'blur' }],
+  name: [{ required: true, message: '角色名必填', trigger: 'blur' }],
+};
 
 function openCreateRole() {
   if (!userStore.hasPermission('role:manage')) {
@@ -90,6 +238,7 @@ function openCreateRole() {
     return;
   }
   roleForm.value = { code: '', name: '', description: '', permissionIds: [] };
+  roleDialogMode.value = 'create';
   roleDialog.value = true;
 }
 
@@ -103,12 +252,12 @@ async function openEditRole(role: Role) {
     code: role.code,
     name: role.name,
     description: role.description ?? '',
-    permissionIds: [],  // 暂时不能从 Role.permissions 拿 id，需要后端 listRoles 时返回 permission_ids
+    permissionIds: [],
   };
-  // 简化：从 role.permissions 的 code 反查 permission_id
   roleForm.value.permissionIds = permissions.value
     .filter(p => role.permissions.includes(p.code))
     .map(p => p.id);
+  roleDialogMode.value = 'edit';
   roleDialog.value = true;
 }
 
@@ -121,7 +270,7 @@ async function saveRole() {
     return;
   }
   try {
-    if (roleForm.value.id) {
+    if (roleDialogMode.value === 'edit' && roleForm.value.id) {
       await rbacApi.updateRole(roleForm.value.id, {
         name: roleForm.value.name,
         description: roleForm.value.description,
@@ -176,7 +325,6 @@ async function loadRoles() {
   }
 }
 
-// ============== 权限目录 ==============
 async function loadPermissions() {
   loading.value = true;
   try {
@@ -188,7 +336,6 @@ async function loadPermissions() {
   }
 }
 
-// 按资源类型分组（弹窗里分组显示）
 const permissionsByResource = computed(() => {
   const map = new Map<string, Permission[]>();
   for (const p of permissions.value) {
@@ -198,7 +345,6 @@ const permissionsByResource = computed(() => {
   return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
 });
 
-// ============== 我的角色 ==============
 async function loadMyRoles() {
   if (!userStore.user?.user_id) return;
   try {
@@ -221,29 +367,42 @@ onMounted(async () => {
 
       <!-- Tab 1: 用户管理 -->
       <el-tab-pane label="用户管理" name="users">
-        <el-button
-          v-if="userStore.hasPermission('user:read')"
-          type="primary"
-          :icon="'Plus'"
-          @click="loadUsers"
-          style="margin-bottom:12px"
-        >
-          刷新
-        </el-button>
+        <el-space style="margin-bottom:12px">
+          <el-button
+            v-permission="'user:read'"
+            type="primary"
+            :icon="'Refresh'"
+            @click="loadUsers"
+          >
+            刷新
+          </el-button>
+          <el-button
+            v-permission="'user:manage'"
+            type="success"
+            :icon="'Plus'"
+            @click="openCreateUser"
+          >
+            新增用户
+          </el-button>
+        </el-space>
+
         <el-table :data="users" v-loading="loading" stripe border>
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column prop="username" label="用户名" width="140" />
-          <el-table-column prop="employee_no" label="工号" width="120" />
+          <el-table-column prop="employee_no" label="工号" width="140" />
           <el-table-column prop="real_name" label="姓名" width="140" />
           <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip />
-          <el-table-column label="状态" width="80">
+          <el-table-column label="状态" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
-                {{ row.status === 1 ? 'active' : 'disabled' }}
+              <el-tag
+                :type="row.status === 1 ? 'success' : row.status === 2 ? 'danger' : 'warning'"
+                size="small"
+              >
+                {{ row.status === 1 ? 'active' : row.status === 2 ? 'disabled' : 'locked' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="320" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-permission="'user:manage'"
@@ -252,6 +411,31 @@ onMounted(async () => {
                 @click="openAssignRoles(row)"
               >
                 分配角色
+              </el-button>
+              <el-button
+                v-permission="'user:manage'"
+                link
+                type="primary"
+                @click="openEditUser(row)"
+              >
+                编辑
+              </el-button>
+              <el-button
+                v-permission="'user:manage'"
+                link
+                type="warning"
+                @click="openResetPassword(row)"
+              >
+                重置密码
+              </el-button>
+              <el-button
+                v-permission="'user:manage'"
+                link
+                type="danger"
+                @click="deleteUser(row)"
+                :disabled="row.id === 1"
+              >
+                删除
               </el-button>
             </template>
           </el-table-column>
@@ -262,7 +446,7 @@ onMounted(async () => {
       <el-tab-pane label="角色管理" name="roles">
         <el-button
           v-permission="'role:manage'"
-          type="primary"
+          type="success"
           :icon="'Plus'"
           @click="openCreateRole"
           style="margin-bottom:12px"
@@ -285,7 +469,7 @@ onMounted(async () => {
           </el-table-column>
           <el-table-column label="权限代码">
             <template #default="{ row }">
-              <span class="code-list">
+              <div class="code-list">
                 <el-tag
                   v-for="p in row.permissions?.slice(0, 5)"
                   :key="p"
@@ -299,10 +483,10 @@ onMounted(async () => {
                 <el-tag v-if="(row.permissions?.length ?? 0) > 5" size="small">
                   +{{ (row.permissions?.length ?? 0) - 5 }}
                 </el-tag>
-              </span>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-permission="'role:manage'"
@@ -347,6 +531,55 @@ onMounted(async () => {
       </el-tab-pane>
     </el-tabs>
 
+    <!-- 用户增/改/重置密码弹窗 -->
+    <el-dialog
+      v-model="userDialog"
+      :title="userDialogMode === 'create' ? '新增用户'
+              : userDialogMode === 'edit' ? '编辑用户'
+              : '重置密码'"
+      width="520px"
+    >
+      <el-form ref="userFormRef" :model="userForm" :rules="userFormRules" label-width="100px">
+        <el-form-item label="用户名" prop="username">
+          <el-input v-model="userForm.username" :disabled="userDialogMode !== 'create'" />
+        </el-form-item>
+        <el-form-item label="工号" prop="employeeNo">
+          <el-input v-model="userForm.employeeNo" :disabled="userDialogMode !== 'create'" placeholder="如 E000002" />
+        </el-form-item>
+        <el-form-item
+          v-if="userDialogMode !== 'edit'"
+          label="密码"
+          prop="password"
+        >
+          <el-input v-model="userForm.password" type="password" show-password />
+        </el-form-item>
+        <el-form-item
+          v-if="userDialogMode === 'edit'"
+          label="新密码"
+        >
+          <el-input
+            v-model="userForm.password"
+            type="password"
+            show-password
+            placeholder="不修改则留空"
+          />
+        </el-form-item>
+        <el-form-item label="姓名">
+          <el-input v-model="userForm.realName" />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="userForm.email" />
+        </el-form-item>
+        <el-form-item label="启用 MFA">
+          <el-switch v-model="userForm.mfaEnabled" :active-value="1" :inactive-value="0" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="userDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveUser">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 用户分配角色弹窗 -->
     <el-dialog
       v-model="userAssignDialog"
@@ -385,12 +618,12 @@ onMounted(async () => {
     <!-- 角色编辑弹窗 -->
     <el-dialog
       v-model="roleDialog"
-      :title="roleForm.id ? '编辑角色' : '新建角色'"
+      :title="roleDialogMode === 'create' ? '新建角色' : '编辑角色'"
       width="780px"
     >
       <el-form ref="roleFormRef" :model="roleForm" :rules="roleFormRules" label-width="100px">
         <el-form-item label="角色代码" prop="code">
-          <el-input v-model="roleForm.code" :disabled="!!roleForm.id" placeholder="如 dept_manager" />
+          <el-input v-model="roleForm.code" :disabled="roleDialogMode === 'edit'" placeholder="如 dept_manager" />
         </el-form-item>
         <el-form-item label="角色名" prop="name">
           <el-input v-model="roleForm.name" placeholder="如 部门管理员" />
