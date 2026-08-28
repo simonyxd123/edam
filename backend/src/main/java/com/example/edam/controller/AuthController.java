@@ -77,9 +77,11 @@ public class AuthController {
 
     @PostMapping("/logout")
     @Operation(summary = "登出")
-    public ResponseEntity<Void> logout(@RequestBody(required = false) RefreshRequest request) {
+    public ResponseEntity<Void> logout(
+            @RequestBody(required = false) RefreshRequest request,
+            @RequestHeader(value = "X-User-Id", required = false) Long userId) {
         if (request != null && request.getRefreshToken() != null) {
-            authService.logout(request.getRefreshToken());
+            authService.logout(request.getRefreshToken(), userId);
         }
         return ResponseEntity.noContent().build();
     }
