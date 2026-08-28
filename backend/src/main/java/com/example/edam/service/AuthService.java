@@ -85,15 +85,16 @@ public class AuthService {
         user.setFailedLoginCount(0);
         userRepository.updateById(user);
 
-        // 6. 签发 token（角色从 DB 读真实角色，不再写死 ROLE_USER）
+        // 6. 签发 token（角色 + 权限码 都写进 claims，让 @PreAuthorize 能校验）
         String sessionId = UUID.randomUUID().toString();
         List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
         if (roleCodes.isEmpty()) {
-            // 兜底：新用户还没分配任何角色时给个 ROLE_USER 防止完全没权限
-            roleCodes.add("employee");
+            roleCodes.add("employee");  // 兜底
         }
+        List<String> permissionCodes = new ArrayList<>(
+            permissionService.getUserPermissionCodes(user.getId()));
         String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, roleCodes);
+            user.getId(), sessionId, roleCodes, permissionCodes);
         String refreshToken = jwtTokenProvider.createRefreshToken();
 
         // 7. 存储 refresh_token 到 Redis
@@ -130,13 +131,15 @@ public class AuthService {
             throw new ResourceNotFoundException("用户不存在");
         }
 
-        // 从 DB 读真实角色，不再写死 ROLE_USER
+        // 从 DB 读真实角色 + 权限码，写进 token
         List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
         if (roleCodes.isEmpty()) {
             roleCodes.add("employee");
         }
+        List<String> permissionCodes = new ArrayList<>(
+            permissionService.getUserPermissionCodes(user.getId()));
         String newAccessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), UUID.randomUUID().toString(), roleCodes);
+            user.getId(), UUID.randomUUID().toString(), roleCodes, permissionCodes);
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", newAccessToken);

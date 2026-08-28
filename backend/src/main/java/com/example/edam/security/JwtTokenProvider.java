@@ -45,8 +45,11 @@ public class JwtTokenProvider {
 
     /**
      * 签发 access_token
+     * @param roles      角色 code 列表（如 ['admin', 'employee']）
+     * @param permissions 权限 code 列表（如 ['*:*'] 或 ['video:read', 'document:read', ...]）
      */
-    public String createAccessToken(Long userId, String sessionId, List<String> roles) {
+    public String createAccessToken(Long userId, String sessionId,
+                                   List<String> roles, List<String> permissions) {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + accessTokenTtlSeconds * 1000);
 
@@ -55,7 +58,8 @@ public class JwtTokenProvider {
                 .claims(Map.of(
                     "user_id_hash", hashUserId(userId),
                     "session_id", sessionId,
-                    "roles", roles
+                    "roles", roles,
+                    "permissions", permissions != null ? permissions : List.of()
                 ))
                 .issuedAt(now)
                 .expiration(expiry)
