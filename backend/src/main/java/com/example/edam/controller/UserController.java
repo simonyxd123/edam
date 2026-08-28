@@ -8,6 +8,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -207,18 +208,32 @@ public class UserController {
     public static class CreateUserRequest {
         private String username;
         private String password;
+
+        @JsonProperty("employee_no")
         private String employeeNo;
+
+        @JsonProperty("real_name")
         private String realName;
+
         private String email;
+
+        @JsonProperty("dept_id")
         private Long deptId;
+
+        @JsonProperty("mfa_enabled")
         private Integer mfaEnabled;
     }
 
     @Data
     public static class UpdateUserRequest {
+        @JsonProperty("real_name")
         private String realName;
+
         private String email;
+
+        @JsonProperty("dept_id")
         private Long deptId;
+
         private String status;
     }
 
