@@ -2,9 +2,11 @@ package com.example.edam.controller;
 
 import com.example.edam.model.VideoResource;
 import com.example.edam.security.JwtTokenProvider;
+import com.example.edam.service.AuditService;
 import com.example.edam.service.VideoService;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +36,7 @@ public class PlaybackController {
     private final VideoService videoService;
     private final JwtTokenProvider jwtTokenProvider;
     private final MinioClient minioClient;
+    private final AuditService auditService;
 
     @Value("${minio.bucket.videos}")
     private String videosBucket;
@@ -47,9 +50,15 @@ public class PlaybackController {
     @PostMapping("/{video_id}/token")
     public ResponseEntity<Map<String, Object>> getToken(
         @PathVariable("video_id") Long videoId,
-        @RequestHeader("X-User-Id") Long userId
+        @RequestHeader("X-User-Id") Long userId,
+        HttpServletRequest request
     ) {
         VideoResource video = videoService.getById(videoId);
+
+        // 写审计日志：视频预览
+        auditService.log(userId, "preview", "video", videoId, "success",
+            "ip=" + request.getRemoteAddr() + ", title=" + video.getTitle(),
+            request.getRemoteAddr(), request.getHeader("User-Agent"));
 
         // 1. 签发短时 JWT
         String sessionId = UUID.randomUUID().toString();
