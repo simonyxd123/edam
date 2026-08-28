@@ -48,6 +48,7 @@ public class UserRoleService {
                 ur.setUserId(userId);
                 ur.setRoleId(rid);
                 ur.setGrantedBy(operatorId);
+                ur.setGrantedAt(java.time.LocalDateTime.now());  // 手动填：MetaObjectHandler 在某些场景下不触发（覆盖已有 grantedAt）
                 userRoleRepository.insert(ur);
                 added++;
             }
