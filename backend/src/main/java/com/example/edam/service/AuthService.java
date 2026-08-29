@@ -45,6 +45,7 @@ public class AuthService {
     private final AuditService auditService;
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
+    private final com.example.edam.util.AuditHelper auditHelper;
 
     /**
      * 登录
@@ -107,12 +108,7 @@ public class AuthService {
         log.info("用户登录成功: employee_no={}, session_id={}, roles={}",
             employeeNo, sessionId, roleCodes);
 
-        // 写审计日志（异步，含 IP + UA）
-        // 注：IP/UA 实际是 controller 传进来的 clientIp/Request，AuthService 里用
-        //     "unknown" 兜底；Controller 层在调用 login 前先取 IP/UA 传进来更准
-        auditService.log(user.getId(), "login", "auth", null, "success",
-            "employee_no=" + employeeNo + ", session_id=" + sessionId,
-            "unknown", "unknown");
+        // 审计日志在 Controller 层调 auditHelper.logAudit 写（带真实 IP）
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", accessToken);
@@ -153,22 +149,13 @@ public class AuthService {
     }
 
     /**
-     * 登出（撤销 refresh_token + 写审计）
+     * 登出（撤销 refresh_token）
+     * 审计日志在 Controller 层调 auditHelper.logAudit 写（带真实 IP）
      */
-    public void logout(String refreshToken, Long userId) {
+    public void logout(String refreshToken) {
         if (refreshToken != null) {
             redisTemplate.delete("refresh:" + refreshToken);
         }
-        // 写审计日志：登出事件（用户主动登出）
-        if (userId != null) {
-            auditService.log(userId, "logout", "auth", null, "success",
-                "refresh_token cleared", "unknown", "unknown");
-        }
-    }
-
-    /** 兼容旧调用：无 userId（前端在 userStore 拿不到 userId 时走这条） */
-    public void logout(String refreshToken) {
-        logout(refreshToken, null);
     }
 
     /**

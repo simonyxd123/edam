@@ -4,6 +4,7 @@ import com.example.edam.exception.RateLimitExceededException;
 import com.example.edam.security.ClientIpResolver;
 import com.example.edam.security.LoginRateLimiter;
 import com.example.edam.service.AuthService;
+import com.example.edam.util.AuditHelper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
