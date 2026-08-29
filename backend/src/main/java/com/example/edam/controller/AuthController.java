@@ -34,6 +34,7 @@ public class AuthController {
     private final AuthService authService;
     private final LoginRateLimiter loginRateLimiter;
     private final ClientIpResolver clientIpResolver;
+    private final AuditHelper auditHelper;
 
     @PostMapping("/login")
     @Operation(summary = "用户登录", description = "工号 + 密码登录。限流策略：IP 5/min、工号 3/min；连续 5 次密码错误锁定 30 分钟")
