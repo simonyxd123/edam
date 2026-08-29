@@ -115,6 +115,7 @@ public class AuthService {
         response.put("refresh_token", refreshToken);
         response.put("token_type", "Bearer");
         response.put("expires_in", 600);
+        response.put("user_id", user.getId());  // v3.2 V-1 RBAC：审计日志需要 user_id
         return response;
     }
 

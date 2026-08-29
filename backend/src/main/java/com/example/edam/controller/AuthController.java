@@ -64,6 +64,12 @@ public class AuthController {
             request.getMfaCode()
         );
 
+        // 写审计日志：用 auditHelper 解析真实 IP/UA
+        Long userId = ((Number) response.get("user_id")).longValue();
+        auditHelper.logAudit(
+            userId, "login", "auth", null, "success",
+            "employee_no=" + request.getEmployeeNo(), httpRequest);
+
         return ResponseEntity.ok()
             .header("X-RateLimit-Remaining", String.valueOf(result.getRemainingTokens()))
             .body(response);
