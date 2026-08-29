@@ -6,6 +6,9 @@ server:
     max-threads: 400
     accept-count: 200
     connection-timeout: 20s
+  # v3.2 V-1 RBAC：让 Spring 自动从反向代理头解析真实 IP
+  # 需要反向代理至少传 X-Forwarded-For / X-Real-IP 之一
+  forward-headers-strategy: framework
 
 spring:
   application:
