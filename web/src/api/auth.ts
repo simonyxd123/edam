@@ -30,6 +30,6 @@ export interface CurrentUser {
 export const authApi = {
   login: (data: LoginRequest) => api.post<LoginResponse>('/auth/login', data),
   refresh: (refresh_token: string) => api.post<LoginResponse>('/auth/refresh', { refresh_token }),
-  logout: () => api.post<void>('/auth/logout'),
+  logout: (userId?: number) => api.post<void>('/auth/logout', { user_id: userId }),
   me: () => api.get<CurrentUser>('/auth/me'),
 };

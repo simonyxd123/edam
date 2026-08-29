@@ -53,12 +53,15 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function logout() {
-    token.value = null;
-    refreshToken.value = null;
-    user.value = null;
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('user_id');
+    const uid = user.value?.user_id;
+    authApi.logout(uid).finally(() => {
+      token.value = null;
+      refreshToken.value = null;
+      user.value = null;
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_id');
+    });
   }
 
   function tryRestore() {

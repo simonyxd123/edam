@@ -86,13 +86,13 @@ public class AuthController {
     @PostMapping("/logout")
     @Operation(summary = "登出")
     public ResponseEntity<Void> logout(
-            @RequestBody(required = false) RefreshRequest request,
-            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+            @RequestBody(required = false) LogoutRequest request,
             HttpServletRequest httpRequest) {
         if (request != null && request.getRefreshToken() != null) {
             authService.logout(request.getRefreshToken());
         }
-        // 写审计日志（IP/UA 用 auditHelper 解析真实地址）
+        // 写审计日志：从 body 取 user_id（前端在 user store 拿到 user_id 后塞进 body）
+        Long userId = request != null ? request.getUserId() : null;
         if (userId != null) {
             auditHelper.logAudit(userId, "logout", "auth", null, "success",
                 "refresh_token cleared", httpRequest);
@@ -121,5 +121,14 @@ public class AuthController {
     public static class RefreshRequest {
         @com.fasterxml.jackson.annotation.JsonProperty("refresh_token")
         private String refreshToken;
+    }
+
+    @Data
+    public static class LogoutRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("refresh_token")
+        private String refreshToken;
+
+        @com.fasterxml.jackson.annotation.JsonProperty("user_id")
+        private Long userId;
     }
 }
