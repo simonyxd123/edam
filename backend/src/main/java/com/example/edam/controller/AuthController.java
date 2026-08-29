@@ -80,9 +80,15 @@ public class AuthController {
     @Operation(summary = "登出")
     public ResponseEntity<Void> logout(
             @RequestBody(required = false) RefreshRequest request,
-            @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+            HttpServletRequest httpRequest) {
         if (request != null && request.getRefreshToken() != null) {
-            authService.logout(request.getRefreshToken(), userId);
+            authService.logout(request.getRefreshToken());
+        }
+        // 写审计日志（IP/UA 用 auditHelper 解析真实地址）
+        if (userId != null) {
+            auditHelper.logAudit(userId, "logout", "auth", null, "success",
+                "refresh_token cleared", httpRequest);
         }
         return ResponseEntity.noContent().build();
     }
