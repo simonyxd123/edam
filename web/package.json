@@ -22,7 +22,8 @@
     "dplayer": "^1.27.1",
     "video.js": "^8.17.4",
     "@vueuse/core": "^11.1.0",
-    "dayjs": "^1.11.13"
+    "dayjs": "^1.11.13",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

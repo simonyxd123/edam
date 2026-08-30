@@ -8,6 +8,7 @@
  * Tab 4：我的角色（只读）
  */
 import { ref, computed, onMounted } from 'vue';
+import * as XLSX from 'xlsx';
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus';
 import {
   rbacApi,
@@ -27,6 +28,131 @@ const roles = ref<Role[]>([]);
 const permissions = ref<Permission[]>([]);
 const myRoles = ref<UserRole[]>([]);
 const loading = ref(false);
+
+// ============== Excel 导入 ==============
+const importDialog = ref(false);
+const importFile = ref<File | null>(null);
+const importPreview = ref<Array<{
+  username: string;
+  employee_no: string;
+  real_name: string;
+  email: string;
+  password: string;
+  valid: boolean;
+  reason: string;
+}>>([]);
+const importing = ref(false);
+const importResult = ref<{ total: number; success: number; failed: number; errors: string[] } | null>(null);
+
+function openImportDialog() {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  importFile.value = null;
+  importPreview.value = [];
+  importResult.value = null;
+  importDialog.value = true;
+}
+
+function downloadTemplate() {
+  // 模板示例：4 条不同角色
+  const data = [
+    ['username', 'employee_no', 'real_name', 'email', 'password'],
+    ['zhangsan',     'E000010', '张三',  'zhangsan@example.com', 'Init@123'],
+    ['lisi',         'E000011', '李四',  'lisi@example.com',     'Init@123'],
+    ['wangwu',       'E000012', '王五',  'wangwu@example.com',   'Init@123'],
+    ['admin02',      'E000099', '副管理', 'admin02@example.com',  'Init@123'],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '用户导入模板');
+  XLSX.writeFile(wb, 'edam_user_template.xlsx');
+  ElMessage.success('模板已下载，请按格式填写后重新上传');
+}
+
+function handleFileChange(file: any) {
+  importFile.value = file?.raw ?? null;
+  importPreview.value = [];
+  if (!importFile.value) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target?.result as ArrayBuffer);
+      const wb = XLSX.read(data, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+      const header = rows[0] || [];
+      const colIdx = (name: string) => header.findIndex((h: string) => h?.trim() === name);
+      const uIdx = colIdx('username');
+      const eIdx = colIdx('employee_no');
+      const rIdx = colIdx('real_name');
+      const mIdx = colIdx('email');
+      const pIdx = colIdx('password');
+
+      const preview: typeof importPreview.value = [];
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i] || [];
+        if (row.every((c: any) => c == null || c === '')) continue;
+        const username = String(row[uIdx] ?? '').trim();
+        const employee_no = String(row[eIdx] ?? '').trim();
+        const real_name = String(row[rIdx] ?? '').trim();
+        const email = String(row[mIdx] ?? '').trim();
+        const password = String(row[pIdx] ?? 'Init@123').trim();
+        const issues: string[] = [];
+        if (!username) issues.push('缺 username');
+        if (!/^[A-Z]\d+$/.test(employee_no)) issues.push('工号格式错（E000001）');
+        if (password.length < 6) issues.push('密码 < 6 位');
+        preview.push({
+          username, employee_no, real_name, email, password,
+          valid: issues.length === 0,
+          reason: issues.length ? issues.join('; ') : '✓',
+        });
+      }
+      importPreview.value = preview;
+      if (preview.length === 0) {
+        ElMessage.warning('文件没有有效数据行');
+      } else {
+        ElMessage.success(`已解析 ${preview.length} 行（${preview.filter(p => p.valid).length} 行可导入）`);
+      }
+    } catch (err: any) {
+      ElMessage.error('文件解析失败：' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(importFile.value);
+}
+
+async function doImport() {
+  const validRows = importPreview.value.filter(r => r.valid);
+  if (validRows.length === 0) {
+    ElMessage.warning('没有可导入的有效行');
+    return;
+  }
+  importing.value = true;
+  importResult.value = { total: validRows.length, success: 0, failed: 0, errors: [] };
+  for (const row of validRows) {
+    try {
+      await rbacApi.createUser({
+        username: row.username,
+        password: row.password,
+        employee_no: row.employee_no,
+        real_name: row.real_name || undefined,
+        email: row.email || undefined,
+        mfa_enabled: 0,
+      });
+      importResult.value!.success++;
+    } catch (e: any) {
+      importResult.value!.failed++;
+      const msg = e?.response?.data?.detail || e?.message || '未知错误';
+      importResult.value!.errors.push(`${row.username}: ${msg}`);
+    }
+  }
+  importing.value = false;
+  ElMessage[importResult.value.failed === 0 ? 'success' : 'warning'](
+    `导入完成：成功 ${importResult.value.success}，失败 ${importResult.value.failed}`
+  );
+  await loadUsers();
+}
 
 // ============== 用户列表 + 增删改弹窗 ==============
 const userDialog = ref(false);
@@ -384,6 +510,14 @@ onMounted(async () => {
           >
             新增用户
           </el-button>
+          <el-button
+            v-permission="'user:manage'"
+            type="warning"
+            :icon="'Upload'"
+            @click="openImportDialog"
+          >
+            Excel 导入
+          </el-button>
         </el-space>
 
         <el-table :data="users" v-loading="loading" stripe border>
@@ -659,12 +793,104 @@ onMounted(async () => {
         <el-button type="primary" @click="saveRole">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- Excel 导入用户 -->
+    <el-dialog v-model="importDialog" title="批量导入用户" width="780px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom:12px"
+      >
+        <template #title>
+          Excel 格式：username / employee_no / real_name / email / password
+        </template>
+        <div style="margin-top:4px">
+          第一行为表头，username 必填、employee_no 格式 E000001、password ≥ 6 位
+        </div>
+      </el-alert>
+
+      <el-space style="margin-bottom:12px">
+        <el-button :icon="'Download'" @click="downloadTemplate">
+          下载导入模板
+        </el-button>
+        <el-upload
+          :auto-upload="false"
+          :show-file-list="false"
+          :accept="'.xlsx,.xls'"
+          :on-change="handleFileChange"
+        >
+          <el-button type="primary" :icon="'Upload'">
+            选择 Excel 文件
+          </el-button>
+        </el-upload>
+        <span v-if="importFile" class="file-tip">
+          已选：{{ importFile.name }}（{{ importPreview.length }} 行数据）
+        </span>
+      </el-space>
+
+      <el-table
+        v-if="importPreview.length"
+        :data="importPreview"
+        :max-height="320"
+        border
+        size="small"
+      >
+        <el-table-column prop="username" label="用户名" width="120" />
+        <el-table-column prop="employee_no" label="工号" width="120" />
+        <el-table-column prop="real_name" label="姓名" width="120" />
+        <el-table-column prop="email" label="邮箱" min-width="160" show-overflow-tooltip />
+        <el-table-column label="校验" width="220">
+          <template #default="{ row }">
+            <el-tag :type="row.valid ? 'success' : 'danger'" size="small">
+              {{ row.reason }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div v-if="importResult" class="import-result">
+        <el-alert
+          :type="importResult.failed === 0 ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+        >
+          <template #title>
+            导入完成：成功 {{ importResult.success }} / 失败 {{ importResult.failed }} / 总 {{ importResult.total }}
+          </template>
+          <div v-if="importResult.errors.length" class="error-list">
+            <div v-for="(err, idx) in importResult.errors" :key="idx">{{ err }}</div>
+          </div>
+        </el-alert>
+      </div>
+
+      <template #footer>
+        <el-button @click="importDialog = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :icon="'Check'"
+          :disabled="importing || importPreview.filter(r => r.valid).length === 0"
+          :loading="importing"
+          @click="doImport"
+        >
+          开始导入（{{ importPreview.filter(r => r.valid).length }} 条）
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .rbac-management { padding: 16px; }
 .code-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.file-tip { color: #999; font-size: 13px; margin-left: 8px; }
+.error-list {
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: #f56c6c;
+  margin-top: 4px;
+}
 .code-tag { margin: 0; }
 
 .perm-group-list {
