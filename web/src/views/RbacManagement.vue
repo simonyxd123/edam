@@ -32,12 +32,22 @@ const loading = ref(false);
 // ============== Excel 导入 ==============
 const importDialog = ref(false);
 const importFile = ref<File | null>(null);
+
+const roleCodeToId = ref<Map<string, number>>(new Map())
+async function loadRoleMap() {
+  if (roleCodeToId.value.size > 0) return
+  try {
+    const list = await rbacApi.listRoles()
+    for (const r of list) roleCodeToId.value.set(r.code, r.id)
+  } catch (e) {}
+}
 const importPreview = ref<Array<{
   username: string;
   employee_no: string;
   real_name: string;
   email: string;
   password: string;
+  roleCodes: string;   // 逗号分隔的 role code（如 "employee,auditor"），导入后自动绑定
   valid: boolean;
   reason: string;
 }>>([]);
@@ -56,13 +66,14 @@ function openImportDialog() {
 }
 
 function downloadTemplate() {
-  // 模板示例：4 条不同角色
+  // 模板示例：5 条不同角色（含空、单个、多个）
   const data = [
-    ['username', 'employee_no', 'real_name', 'email', 'password'],
-    ['zhangsan',     'E000010', '张三',  'zhangsan@example.com', 'Init@123'],
-    ['lisi',         'E000011', '李四',  'lisi@example.com',     'Init@123'],
-    ['wangwu',       'E000012', '王五',  'wangwu@example.com',   'Init@123'],
-    ['admin02',      'E000099', '副管理', 'admin02@example.com',  'Init@123'],
+    ['username', 'employee_no', 'real_name', 'email',           'password',  'role_codes'],
+    ['zhangsan',   'E000010',     '张三',    'zhangsan@example.com', 'Init@123', 'employee'],
+    ['lisi',       'E000011',     '李四',    'lisi@example.com',     'Init@123', 'dept_manager'],
+    ['wangwu',     'E000012',     '王五',    'wangwu@example.com',   'Init@123', 'employee,auditor'],
+    ['admin02',    'E000099',     '副管理',  'admin02@example.com',  'Init@123', 'admin'],
+    ['guest01',    'E000020',     '访客',    'guest01@example.com',  'Init@123', ''],
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -99,12 +110,13 @@ function handleFileChange(file: any) {
         const real_name = String(row[rIdx] ?? '').trim();
         const email = String(row[mIdx] ?? '').trim();
         const password = String(row[pIdx] ?? 'Init@123').trim();
+        const roleCodes = String(row[rolesIdx] ?? " ").trim();
         const issues: string[] = [];
         if (!username) issues.push('缺 username');
         if (!/^[A-Z]\d+$/.test(employee_no)) issues.push('工号格式错（E000001）');
         if (password.length < 6) issues.push('密码 < 6 位');
         preview.push({
-          username, employee_no, real_name, email, password,
+          username, employee_no, real_name, email, password, roleCodes,
           valid: issues.length === 0,
           reason: issues.length ? issues.join('; ') : '✓',
         });
@@ -128,6 +140,7 @@ async function doImport() {
     ElMessage.warning('没有可导入的有效行');
     return;
   }
+  await loadRoleMap();
   importing.value = true;
   importResult.value = { total: validRows.length, success: 0, failed: 0, errors: [] };
   for (const row of validRows) {
@@ -140,7 +153,17 @@ async function doImport() {
         email: row.email || undefined,
         mfa_enabled: 0,
       });
-      importResult.value!.success++;
+      // 绑角色（roleCodes 形如 "employee,auditor"）
+      const codes = (row.roleCodes || '').split(',').map(s => s.trim()).filter(Boolean)
+      const roleIds = codes.map(c => roleCodeToId.value.get(c)).filter((v): v is number => typeof v === 'number')
+      if (roleIds.length > 0) {
+        try {
+          await rbacApi.assignRolesToUser(created.id, roleIds)
+        } catch (e: any) {
+          importResult.value!.errors.push(`${row.username} 绑角色失败：${e?.message || ''}`)
+        }
+      }
+      importResult.value!.success++
     } catch (e: any) {
       importResult.value!.failed++;
       const msg = e?.response?.data?.detail || e?.message || '未知错误';
@@ -803,7 +826,7 @@ onMounted(async () => {
         style="margin-bottom:12px"
       >
         <template #title>
-          Excel 格式：username / employee_no / real_name / email / password
+          Excel 格式：username / employee_no / real_name / email / password / role_codes（逗号分隔，如 employee,auditor）
         </template>
         <div style="margin-top:4px">
           第一行为表头，username 必填、employee_no 格式 E000001、password ≥ 6 位
