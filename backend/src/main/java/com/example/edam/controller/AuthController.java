@@ -58,13 +58,24 @@ public class AuthController {
         }
 
         // Step 2：调用业务（密码错误由 AuthService 内部累计 + 锁定）
-        Map<String, Object> response = authService.login(
-            request.getEmployeeNo(),
-            request.getPassword(),
-            request.getMfaCode()
-        );
+        // 用 try-catch 捕获 RuntimeException，失败时写 audit（result="failure"）
+        Map<String, Object> response;
+        try {
+            response = authService.login(
+                request.getEmployeeNo(),
+                request.getPassword(),
+                request.getMfaCode()
+            );
+        } catch (RuntimeException e) {
+            // 写登录失败审计（userId 未知，detail 保留 employee_no + 失败原因）
+            auditHelper.logAudit(
+                null, "login", "auth", null, "failure",
+                "employee_no=" + request.getEmployeeNo() + ", reason=" + e.getMessage(),
+                httpRequest);
+            throw e;
+        }
 
-        // 写审计日志：用 auditHelper 解析真实 IP/UA
+        // 写成功审计
         Long userId = ((Number) response.get("user_id")).longValue();
         auditHelper.logAudit(
             userId, "login", "auth", null, "success",

@@ -45,7 +45,6 @@ public class AuthService {
     private final AuditService auditService;
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
-    private final com.example.edam.util.AuditHelper auditHelper;
 
     /**
      * 登录
