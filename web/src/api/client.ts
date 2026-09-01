@@ -37,11 +37,16 @@ class ApiClient {
         const status = error.response?.status;
         const data = error.response?.data as any;
 
-        // 判断会话失效：401（标准）/ 403（被禁，token 也可能失效）/ 无 response（网络/后端挂）
-        const isSessionInvalid =
+        // 简化：任何 /api/ 路径错误（无 response 或 4xx/5xx 401/403）都视作会话失效
+        const url = error.config?.url || '';
+        const isApiCall = url.startsWith('/api/') || url.includes('/api/');
+        const isPublic = url.includes('/auth/login') || url.includes('/auth/refresh');
+        const isSessionInvalid = isApiCall && !isPublic && (
           status === 401 ||
-          (status === undefined && !error.response) ||
-          (status === 403 && data?.code === 'AUTH_403');
+          status === undefined ||
+          status === 403 ||
+          (typeof status === 'number' && status >= 400 && status < 500)
+        );
         if (isSessionInvalid) {
           console.warn('[client] session invalid, status=', status, 'url=', error.config?.url);
           // 清 localStorage 三个 key
