@@ -100,6 +100,7 @@ function handleFileChange(file: any) {
       const rIdx = colIdx('real_name');
       const mIdx = colIdx('email');
       const pIdx = colIdx('password');
+      const rolesIdx = colIdx('role_codes');
 
       const preview: typeof importPreview.value = [];
       for (let i = 1; i < rows.length; i++) {
