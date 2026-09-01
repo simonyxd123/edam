@@ -146,7 +146,7 @@ async function doImport() {
   importResult.value = { total: validRows.length, success: 0, failed: 0, errors: [] };
   for (const row of validRows) {
     try {
-      await rbacApi.createUser({
+      const created = await rbacApi.createUser({
         username: row.username,
         password: row.password,
         employee_no: row.employee_no,
@@ -275,7 +275,7 @@ async function saveUser() {
 
   try {
     if (userDialogMode.value === 'create') {
-      await rbacApi.createUser({
+      const created = await rbacApi.createUser({
         username: userForm.value.username,
         password: userForm.value.password,
         employee_no: userForm.value.employeeNo,
