@@ -38,10 +38,14 @@ class ApiClient {
         const data = error.response?.data as any;
 
         if (status === 401) {
-          // Token 过期
+          // Token 过期 / 会话失效：清 localStorage + 跳登录页
           localStorage.removeItem('access_token');
+          localStorage.removeItem('refresh_token');
+          localStorage.removeItem('user_id');
           if (window.location.pathname !== '/login') {
-            window.location.href = '/login';
+            ElMessage.warning('会话已失效，请重新登录');
+            // 给用户 1.5s 看到提示再跳
+            setTimeout(() => { window.location.href = '/login'; }, 1500);
           }
         } else if (status === 423) {
           ElMessage.error('账号已锁定');
