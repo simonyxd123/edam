@@ -37,14 +37,20 @@ class ApiClient {
         const status = error.response?.status;
         const data = error.response?.data as any;
 
-        if (status === 401) {
-          // Token 过期 / 会话失效：清 localStorage + 跳登录页
+        // 判断会话失效：401（标准）/ 403（被禁，token 也可能失效）/ 无 response（网络/后端挂）
+        const isSessionInvalid =
+          status === 401 ||
+          (status === undefined && !error.response) ||
+          (status === 403 && data?.code === 'AUTH_403');
+        if (isSessionInvalid) {
+          console.warn('[client] session invalid, status=', status, 'url=', error.config?.url);
+          // 清 localStorage 三个 key
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
           localStorage.removeItem('user_id');
           if (window.location.pathname !== '/login') {
             ElMessage.warning('会话已失效，请重新登录');
-            // 给用户 1.5s 看到提示再跳
+            // 1.5s 后跳登录页（让用户看清提示）
             setTimeout(() => { window.location.href = '/login'; }, 1500);
           }
         } else if (status === 423) {
