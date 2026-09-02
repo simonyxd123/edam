@@ -83,4 +83,65 @@ window.fetch = async function(input, init) {
 
 console.log('[global] fetch wrapper installed');
 
+// XHR 拦截：axios 默认用 XMLHttpRequest，fetch wrapper 拦不到，必须同时改 XHR
+(function () {
+  const OrigXHR = window.XMLHttpRequest;
+
+  function isApiPath(url) {
+    return url && (url.startsWith('/api/') || url.includes('/api/'));
+  }
+
+  function isPublicEndpoint(url) {
+    return url && (url.includes('/auth/login') || url.includes('/auth/refresh'));
+  }
+
+  function handleSessionInvalid(reason, url) {
+    try {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_id');
+    } catch (e) {}
+    if (window.location.pathname !== '/login') {
+      if (!window.__sessionInvalidRedirecting) {
+        window.__sessionInvalidRedirecting = true;
+        console.warn('[global-xhr] session invalid, reason=' + reason + ' url=' + url);
+        window.location.href = '/login';
+      }
+    }
+  }
+
+  function newXHR() {
+    const xhr = new OrigXHR();
+    let url = null;
+    const origOpen = xhr.open.bind(xhr);
+    xhr.open = function (method, u, ...rest) {
+      url = u;
+      return origOpen(method, u, ...rest);
+    };
+    xhr.addEventListener('readystatechange', function () {
+      if (xhr.readyState === 4) {
+        if (isApiPath(url) && !isPublicEndpoint(url) && xhr.status === 401) {
+          handleSessionInvalid('401', url);
+        }
+      }
+    });
+    return xhr;
+  }
+
+  window.XMLHttpRequest = newXHR;
+  console.log('[global-xhr] XMLHttpRequest wrapper installed');
+
+  // 兜底：unhandledrejection 监听
+  window.addEventListener('unhandledrejection', function (e) {
+    const reason = e && e.reason;
+    if (reason && reason.response && reason.response.status === 401) {
+      const u = (reason.config && reason.config.url) || '';
+      if (isApiPath(u) && !isPublicEndpoint(u)) {
+        handleSessionInvalid('unhandledrejection-401', u);
+      }
+    }
+  });
+})();
+
 app.mount('#app');
+
