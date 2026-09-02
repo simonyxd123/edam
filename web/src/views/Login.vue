@@ -11,10 +11,18 @@ const userStore = useUserStore();
 const formRef = ref();
 const loading = ref(false);
 
+const REMEMBER_KEY = 'edam_remember_employee_no';
+
+// 自动填充上次记住的工号
+const remembered = (() => {
+  try { return localStorage.getItem(REMEMBER_KEY) || ''; } catch (e) { return ''; }
+})();
+
 const form = reactive({
-  employee_no: 'SA0001',
-  password: 'admin123',
+  employee_no: remembered,
+  password: '',
   mfa_code: '',
+  remember: !!remembered,
 });
 
 const rules = {
@@ -27,6 +35,11 @@ async function handleLogin() {
   loading.value = true;
   try {
     await userStore.login(form.employee_no, form.password);
+    // 记住账号（勾选了 remember 才存）
+    try {
+      if (form.remember) localStorage.setItem(REMEMBER_KEY, form.employee_no);
+      else localStorage.removeItem(REMEMBER_KEY);
+    } catch (e) {}
     ElMessage.success('登录成功');
     const redirect = (route.query.redirect as string) || '/';
     router.push(redirect);
@@ -59,9 +72,12 @@ async function handleLogin() {
           <el-input v-model="form.mfa_code" placeholder="动态令牌（可选）" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" native-type="submit" :loading="loading" @click="handleLogin" class="login-btn">
-            登录
-          </el-button>
+          <div class="login-actions">
+            <el-checkbox v-model="form.remember" size="small">记住账号</el-checkbox>
+            <el-button type="primary" native-type="submit" :loading="loading" @click="handleLogin" class="login-btn">
+              登录
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
 
@@ -88,8 +104,13 @@ async function handleLogin() {
   h1 { color: #1890ff; margin: 0; font-size: 32px; }
   p { color: #666; font-size: 14px; margin: 8px 0 0; }
 }
+.login-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 .login-btn {
-  width: 100%;
+  margin: 0;
 }
 .footer {
   text-align: center;
