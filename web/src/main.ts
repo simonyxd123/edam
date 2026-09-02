@@ -143,5 +143,51 @@ console.log('[global] fetch wrapper installed');
   });
 })();
 
+// 页面加载时主动检查 token 是否过期（不依赖 401 响应拦截）
+// 解析 JWT payload 拿 exp 字段对比当前时间
+(function () {
+  function isPublicPath() {
+    const p = window.location.pathname;
+    return p === '/login' || p.startsWith('/login');
+  }
+  function clearAndRedirect() {
+    try {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_id');
+    } catch (e) {}
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
+  }
+  function isJwtExpired(token) {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return true;
+      // 兼容 base64url 和 base64
+      const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const pad = payload.length % 4;
+      const padded = payload + (pad ? '='.repeat(4 - pad) : '');
+      const json = atob(padded);
+      const data = JSON.parse(json);
+      const exp = data.exp;
+      if (!exp) return true;
+      return Date.now() / 1000 >= exp;
+    } catch (e) {
+      return true;  // 解析失败 → 视为过期
+    }
+  }
+  const token = localStorage.getItem('access_token');
+  if (token) {
+    if (isJwtExpired(token)) {
+      console.warn('[global] JWT expired on page load, clearing and redirecting');
+      clearAndRedirect();
+    }
+  } else if (!isPublicPath()) {
+    // 没 token 且非公开页 → 不主动清，等 401 触发再清
+  }
+})();
+
 app.mount('#app');
+
 
