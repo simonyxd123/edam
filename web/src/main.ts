@@ -37,4 +37,50 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 // v3.2 V-1 RBAC：注册全局权限指令 v-permission="'video:upload'"
 app.directive('permission', permission);
 
+// 全局 fetch 拦截：捕获所有 /api/ 401，强制跳登录页
+// 比 axios 拦截器更可靠（Vite HMR 漏应用 axios 代码时 fetch wrapper 仍生效）
+
+const ORIG_FETCH = window.fetch.bind(window);
+
+function isApiPath(url) {
+  return url.startsWith('/api/') || url.includes('/api/');
+}
+
+function isPublicEndpoint(url) {
+  return url.includes('/auth/login') || url.includes('/auth/refresh');
+}
+
+function handleSessionInvalid() {
+  try {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('user_id');
+  } catch (e) {}
+  if (window.location.pathname !== '/login') {
+    if (!window.__sessionInvalidRedirecting) {
+      window.__sessionInvalidRedirecting = true;
+      console.warn('[global] session invalid, redirecting to /login');
+      window.location.href = '/login';
+    }
+  }
+}
+
+window.fetch = async function(input, init) {
+  const url = typeof input === 'string' ? input : input.url;
+  if (!isApiPath(url) || isPublicEndpoint(url)) {
+    return ORIG_FETCH(input, init);
+  }
+  try {
+    const resp = await ORIG_FETCH(input, init);
+    if (resp.status === 401) {
+      handleSessionInvalid();
+    }
+    return resp;
+  } catch (e) {
+    throw e;
+  }
+};
+
+console.log('[global] fetch wrapper installed');
+
 app.mount('#app');
