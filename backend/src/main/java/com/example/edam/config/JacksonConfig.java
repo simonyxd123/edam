@@ -61,7 +61,7 @@ public class JacksonConfig {
         OffsetDateTimeSerializer() { super(OffsetDateTime.class); }
         @Override public void serialize(OffsetDateTime v, JsonGenerator g, SerializerProvider p) throws IOException {
             if (v == null) { g.writeNull(); return; }
-            g.writeString(v.atZoneSameInstant(ZONE_ID).format(DATE_TIME_FMT));
+            g.writeString(v.atZoneSameInstant(ZONE_ID).format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME));
         }
     }
 
@@ -70,7 +70,7 @@ public class JacksonConfig {
         LocalDateTimeSerializer() { super(LocalDateTime.class); }
         @Override public void serialize(LocalDateTime v, JsonGenerator g, SerializerProvider p) throws IOException {
             if (v == null) { g.writeNull(); return; }
-            g.writeString(v.atZone(ZONE_ID).format(DATE_TIME_FMT));
+            g.writeString(v.atZone(ZONE_ID).format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME));
         }
     }
 
