@@ -1,6 +1,8 @@
 package com.example.edam.model;
 
 import com.baomidou.mybatisplus.annotation.*;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
 import java.time.OffsetDateTime;
@@ -10,6 +12,7 @@ import java.time.OffsetDateTime;
  * 对应表：video_resource（参考 database_schema.md 2.1）
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @TableName("video_resource")
 public class VideoResource {
 
