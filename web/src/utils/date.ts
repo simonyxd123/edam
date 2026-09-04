@@ -54,9 +54,9 @@ export function formatDateTime(
   if (!d) return '-';
   // 字符串输入是已格式化时不要再次转换时区；utc().local() 不会改变无时区时间
   if (typeof input === 'string' && !/[T.Z]/.test(input)) {
-    return d.format(fmt);
+    return d.local().format(fmt);
   }
-  return d.format(fmt);
+  return d.local().format(fmt);
 }
 
 export function formatDate(input: string | number | Date | null | undefined): string {
