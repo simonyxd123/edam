@@ -56,7 +56,7 @@ export function formatDateTime(
   if (typeof input === 'string' && !/[T.Z]/.test(input)) {
     return d.format(fmt);
   }
-  return d.utc().local().format(fmt);
+  return d.format(fmt);
 }
 
 export function formatDate(input: string | number | Date | null | undefined): string {
