@@ -36,6 +36,8 @@ const previewDialogVisible = ref(false);
 const previewDoc = ref<Document | null>(null);
 const previewSrc = ref<string>('');
 const previewMime = ref<string>('');
+const previewLoading = ref(false);   // PDF 流可能几百 MB，需要 loading 防双击
+let previewBlobUrl = '';             // 非响应：记下当前 blob URL，关弹窗 / 重开时 revoke
 
 function canPreviewInline(mime: string | undefined): boolean {
   if (!mime) return false;
@@ -120,13 +122,59 @@ async function submitUpload() {
 async function handlePreview(doc: Document) {
   previewDoc.value = doc;
   previewMime.value = doc.mime_type || '';
-  // 后端 /documents/{id}/preview 流式输出；前端 iframe / img 直接显示
-  previewSrc.value = `/api/v1/documents/${doc.id}/preview`;
   previewDialogVisible.value = true;
+  previewLoading.value = true;
+
+  // 走 Blob URL 路线：先用 axios 带 JWT 拉字节流，转 Blob 喂给 iframe
+  // —— iframe 不会自动带 Authorization 头；如果直接把 src 设为 `/api/v1/.../preview`，
+  // 后端 SecurityConfig 会 401，浏览器表现成 ERR_CONNECTION_REFUSED 或反复重试，
+  // 在 dev/proxy 链复杂的测试环境下经常被误导成 "X.X.X.X refused to connect"。
+  // Blob URL 是浏览器本地资源，不发任何 HTTP，天然绕过鉴权与同源问题。
+  try {
+    // 先把上一个 blob URL 释放，避免连续打开多个预览时内存泄漏
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl);
+      previewBlobUrl = '';
+    }
+    const token = localStorage.getItem('access_token');
+    const userId = localStorage.getItem('user_id');
+    const r = await fetch(`/api/v1/documents/${doc.id}/preview`, {
+      headers: {
+        Authorization: 'Bearer ' + (token || ''),
+        'X-User-Id': userId || '',
+      },
+    });
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
+    }
+    const blob = await r.blob();
+    // 给 Blob 套上对应的 MIME，否则部分浏览器会用通用 octet-stream 处理
+    const typed = doc.mime_type ? blob.slice(0, blob.size, doc.mime_type) : blob;
+    previewBlobUrl = URL.createObjectURL(typed);
+    previewSrc.value = previewBlobUrl;
+    // 兜底回收：1 小时后兜底回收（即使弹窗异常没走到 closePreview）
+    setTimeout(() => {
+      if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl);
+        previewBlobUrl = '';
+      }
+    }, 60 * 60 * 1000);
+  } catch (e: any) {
+    console.error('[Documents] preview_load_failed:', e);
+    ElMessage.error('预览加载失败：' + (e?.message || '未知错误'));
+    previewSrc.value = '';
+  } finally {
+    previewLoading.value = false;
+  }
 }
 
 function closePreview() {
   previewDialogVisible.value = false;
+  // 主动回收 blob URL，否则浏览器要等 ~60min 的兜底定时器才释放
+  if (previewBlobUrl) {
+    URL.revokeObjectURL(previewBlobUrl);
+    previewBlobUrl = '';
+  }
   previewSrc.value = '';
   previewDoc.value = null;
 }
@@ -144,31 +192,15 @@ function downloadPreview() {
 }
 
 function openInNewTab() {
-  // 后端 /preview 需要 JWT，但新标签页不能继承当前 Authorization 头，
-  // 直接 window.open 会 401。
-  // 解决：fetch 拿到字节流 → 转 Blob URL → window.open(blob URL)
-  // Blob URL 浏览器本地渲染，不需要 JWT。
-  const token = localStorage.getItem('access_token');
-  const userId = localStorage.getItem('user_id');
-  fetch(previewSrc.value, {
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'X-User-Id': userId || '',
-    },
-  })
-    .then((r) => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.blob();
-    })
-    .then((blob) => {
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    })
-    .catch((e) => {
-      console.error('open_in_new_tab_failed:', e);
-      ElMessage.error('打开失败，请用「下载文件」保存到本地后再查看');
-    });
+  // previewSrc 现在是 Blob URL（由 handlePreview 已 fetch + blob 生成），
+  // 直接 window.open 即可，不必再 fetch 一次
+  if (!previewBlobUrl) {
+    ElMessage.warning('请等待预览加载完成');
+    return;
+  }
+  // 复制一份 blob URL 给新窗口，避免当前弹窗关掉时 revoke 影响对方
+  const fresh = previewBlobUrl;
+  window.open(fresh, '_blank', 'noopener,noreferrer');
 }
 
 async function handleDelete(doc: Document) {
@@ -309,12 +341,16 @@ onMounted(() => loadData());
       @close="closePreview"
     >
       <div v-if="previewDoc" class="preview-container">
+        <div v-if="previewLoading" v-loading="true" class="preview-loading">加载预览…</div>
         <iframe
-          v-if="canPreviewInline(previewMime)"
+          v-else-if="canPreviewInline(previewMime) && previewSrc"
           :src="previewSrc"
           class="preview-frame"
           :title="previewDoc.title"
         ></iframe>
+        <div v-else-if="canPreviewInline(previewMime)" class="preview-loading">
+          预览未加载：{{ previewSrc ? '' : '链接为空' }}
+        </div>
         <div v-else class="preview-fallback">
           <el-icon :size="64"><DocIcon /></el-icon>
           <h3>{{ previewDoc.title }}</h3>
@@ -451,6 +487,14 @@ onMounted(() => loadData());
   width: 100%;
   height: 70vh;
   min-height: 500px;
+}
+.preview-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  font-size: 14px;
 }
 .preview-frame {
   width: 100%;
