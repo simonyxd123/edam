@@ -108,7 +108,8 @@ nginx:
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-ssl-cert: ""
   config:
-    clientMaxBodySize: "500m"
+    # 与后端 spring.servlet.multipart.max-file-size=2GB 对齐
+    clientMaxBodySize: "2g"
     nginxConf: |
       worker_processes auto;
       events { worker_connections 4096; }
@@ -135,9 +136,9 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
   hosts:
     - host: api.example.com

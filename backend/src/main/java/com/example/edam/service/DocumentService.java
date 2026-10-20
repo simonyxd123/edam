@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.DocResource;
 import com.example.edam.repository.DocResourceRepository;
+import com.example.edam.util.FileHashUtils;
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
@@ -18,8 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.UUID;
 
 /**
@@ -62,10 +61,8 @@ public class DocumentService {
     public DocResource upload(MultipartFile file, String classificationLv, String title,
                               boolean enableWatermark, Long uploaderId) {
         try {
-            // 1. 计算 hash
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hashBytes = digest.digest(file.getBytes());
-            String fileHash = HexFormat.of().formatHex(hashBytes);
+            // 1. 计算 hash（流式，避免大文件整个进堆）
+            String fileHash = FileHashUtils.sha256Hex(file);
 
             // 2. 秒传
             DocResource existing = docRepository.findByFileHash(fileHash);

@@ -110,7 +110,8 @@ async function submitUpload() {
     uploadDialogVisible.value = false;
     loadData();
   } catch (e: any) {
-    ElMessage.error(e?.message || '上传失败');
+    // 拦截器已经弹过提示的（超时 / 4xx / 5xx）不再重复弹
+    if (!e?.__handled) ElMessage.error(e?.message || '上传失败');
   } finally {
     uploading.value = false;
   }

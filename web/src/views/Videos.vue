@@ -160,7 +160,8 @@ async function submitUpload() {
     // 启动 HLS 后台轮询，转码完成 / 失败再弹一条提示
     startHlsPolling(result.video_id);
   } catch (e: any) {
-    ElMessage.error(e?.message || '上传失败');
+    // 拦截器已经弹过提示的（超时 / 4xx / 5xx）不再重复弹
+    if (!e?.__handled) ElMessage.error(e?.message || '上传失败');
   } finally {
     uploading.value = false;
   }

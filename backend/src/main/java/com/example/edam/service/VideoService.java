@@ -7,6 +7,7 @@ import com.example.edam.model.VideoResource;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.VideoResourceRepository;
+import com.example.edam.util.FileHashUtils;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
@@ -21,8 +22,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.UUID;
 
 /**
@@ -102,10 +101,8 @@ public class VideoService {
     @Transactional
     public VideoResource upload(MultipartFile file, String classificationLv, String title, Long uploaderId) {
         try {
-            // 1. 计算文件 hash
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hashBytes = digest.digest(file.getBytes());
-            String fileHash = HexFormat.of().formatHex(hashBytes);
+            // 1. 计算文件 hash（流式，避免大文件整个进堆）
+            String fileHash = FileHashUtils.sha256Hex(file);
 
             // 2. 检查秒传
             VideoResource existing = videoRepository.findByFileHash(fileHash);
