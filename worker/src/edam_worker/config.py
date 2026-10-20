@@ -56,5 +56,11 @@ class Settings:
     OPS_ENABLED: bool = os.getenv("OPS_ENABLED", "false").lower() == "true"
     OPS_TOKEN: str = os.getenv("OPS_TOKEN", "")
 
+    # 任务处理失败时的内部重试（in-process，与 RabbitMQ requeue 无关）
+    # 终极失败仍走 requeue=False 把消息丢了；这里只是给"瞬时错误"机会
+    # WORKER_MAX_ATTEMPTS=1 = 关闭重试（与原先"一次性"语义一致）
+    WORKER_MAX_ATTEMPTS: int = int(os.getenv("WORKER_MAX_ATTEMPTS", "3"))
+    WORKER_RETRY_BASE_BACKOFF_SEC: float = float(os.getenv("WORKER_RETRY_BASE_BACKOFF_SEC", "1.0"))
+
 
 settings = Settings()
