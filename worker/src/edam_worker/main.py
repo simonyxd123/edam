@@ -3,14 +3,16 @@ EDAM Worker 入口
 启动：python -m edam_worker.main
 """
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
 from contextlib import asynccontextmanager
+from typing import Any, Dict
 
 import structlog
-from aio_pika import connect_robust, ExchangeType
+from aio_pika import Message, connect_robust, ExchangeType
 from aio_pika.abc import AbstractIncomingMessage
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, start_http_server
@@ -19,6 +21,7 @@ from .config import settings
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
 from .processors.watermark import WatermarkProcessor
+from .ops import router as ops_router, register_publisher
 
 # 结构化日志
 structlog.configure(
@@ -103,6 +106,34 @@ class WorkerApp:
             await self.connection.close()
         log.info("worker_stopped")
 
+    async def publish_video_preprocess(self, payload: Dict[str, Any]) -> None:
+        """把任务投递到 q.video.preprocess（运维接口用）。
+
+        复用 startup 时已经建立的连接（channel 单独开，避免污染消费侧）。
+
+        重复声明交换机（passive=True）— 与已有 RabbitMQ 拓扑保持一致，
+        不引入新 exchange。
+        """
+        if self.connection is None or self.connection.is_closed:
+            raise RuntimeError("rabbitmq connection not available")
+        channel = await self.connection.channel()
+        try:
+            exchange = await channel.declare_exchange(
+                "edam.tasks", ExchangeType.DIRECT, durable=True, passive=True,
+            )
+            message_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            await exchange.publish(
+                Message(
+                    body=message_body,
+                    content_type="application/json",
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key="video.preprocess",
+            )
+            log.info("ops_published", payload=payload)
+        finally:
+            await channel.close()
+
     async def handle_video(self, message: AbstractIncomingMessage) -> None:
         """处理视频预处理任务"""
         async with message.process(requeue=False):
@@ -152,6 +183,9 @@ worker = WorkerApp()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await worker.start()
+    # lifespan 启动后注入 publisher —— 比 worker.start() 抛错的话不发冷消息
+    register_publisher(worker.publish_video_preprocess)
+    log.info("ops_publisher_registered")
     yield
     await worker.stop()
 
@@ -171,6 +205,10 @@ async def health_live():
 @app.get("/health/ready")
 async def health_ready():
     return {"status": "ok"}
+
+
+# 运维接口（受 OPS_ENABLED / OPS_TOKEN 控制；fail-closed）
+app.include_router(ops_router)
 
 
 def handle_signal(signum, frame):
