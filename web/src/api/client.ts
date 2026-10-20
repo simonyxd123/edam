@@ -13,24 +13,18 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 const DEFAULT_TIMEOUT_MS = 30000;
 
 /**
- * 上传接口超时（毫秒）。
+ * 上传「无进展」超时（毫秒）。
  *
- * 实例级 timeout 对上传是致命的：XHR 到点 abort 会直接断开 TCP，
- * 而后端 Tomcat 此时还在读 multipart 请求体，于是撞上 EOFException
- * （表现为 `MultipartException: Failed to parse multipart servlet request`）。
- * 前端允许 2GB、后端 max-file-size 也是 2GB，30s 根本传不完。
+ * 不用固定总时长：8GB 视频按最慢 500KB/s 算要 4.7 小时，
+ * 无论把总时长设成多少，慢链路都会被误杀，而真正的卡死又只能干等。
  *
- * 这里按文件大小动态估算：最慢 500KB/s 兜底，下限 30 分钟，上限 2 小时。
+ * 改为「连续 N 分钟收不到任何字节才中止」——每次 onUploadProgress 都重置
+ * 计时器。慢但在传就一直放行；网线拔了 / 服务端挂了才报错。
+ *
+ * abort 会直接断开 TCP，后端 Tomcat 此时还在读 multipart 请求体会撞
+ * EOFException，所以这个值不宜过短，留了 5 分钟余量。
  */
-const UPLOAD_TIMEOUT_MIN_MS = 30 * 60 * 1000; // 30 分钟
-const UPLOAD_TIMEOUT_MAX_MS = 2 * 60 * 60 * 1000; // 2 小时
-const UPLOAD_ASSUMED_BYTES_PER_MS = (500 * 1024) / 1000; // 500 KB/s
-
-function uploadTimeoutFor(sizeBytes?: number): number {
-  if (!sizeBytes || sizeBytes <= 0) return UPLOAD_TIMEOUT_MAX_MS;
-  const estimated = Math.ceil(sizeBytes / UPLOAD_ASSUMED_BYTES_PER_MS);
-  return Math.min(UPLOAD_TIMEOUT_MAX_MS, Math.max(UPLOAD_TIMEOUT_MIN_MS, estimated));
-}
+const UPLOAD_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无进展即中止
 
 class ApiClient {
   private instance: AxiosInstance;
@@ -69,6 +63,10 @@ class ApiClient {
           || error.code === 'ETIMEDOUT'
           || /timeout/i.test(error.message || '');
         const isCanceled = axios.isCancel(error) || error.code === 'ERR_CANCELED';
+        // 我们自己触发的「上传无进展超时」也表现为 cancel，但必须提示用户，
+        // 否则页面会毫无反应。靠 upload() 在 signal 上打的标记区分。
+        const signal = error.config?.signal as { __idleTimeout?: boolean } | undefined;
+        const isUploadIdleAbort = !!signal?.__idleTimeout && isCanceled;
 
         // 简化：任何 /api/ 路径错误（无 response 或 4xx/5xx 401/403）都视作会话失效
         const url = error.config?.url || '';
@@ -81,7 +79,9 @@ class ApiClient {
           (typeof status === 'number' && status >= 400 && status < 500)
         );
 
-        if (isTimeout) {
+        if (isUploadIdleAbort) {
+          ElMessage.error(`上传超过 ${UPLOAD_IDLE_TIMEOUT_MS / 60000} 分钟无进展，已中止，请检查网络后重试`);
+        } else if (isTimeout) {
           ElMessage.error('请求超时，请检查网络后重试');
         } else if (isCanceled) {
           // 用户主动取消（关弹窗 / 离开页面），不打扰
@@ -124,29 +124,49 @@ class ApiClient {
   /**
    * multipart/form-data 上传（带真实进度）
    * - 自动复用 JWT / X-User-Id 拦截器
-   * - 超时按文件大小动态放宽（见 uploadTimeoutFor），避免大文件被 30s 掐断
-   * - onUploadProgress 在 axios 0.27+ 上传进度事件中触发（load/total 是字节数）
+   * - 超时策略为「无进展超时」：连续 5 分钟收不到字节才中止（见 UPLOAD_IDLE_TIMEOUT_MS），
+   *   这样 8GB 慢链路能慢慢传完，同时卡死的连接 5 分钟内就会报错
+   * - onUploadProgress 在 axios 上传进度事件中触发（load/total 是字节数）
    */
   async upload<T = any>(
     url: string,
     formData: FormData,
     onUploadProgress?: (loaded: number, total: number) => void,
   ): Promise<T> {
-    // 从 FormData 取回原始 File 以获得真实大小（其他表单字段忽略）
-    const filePart = formData.get('file');
-    const size = filePart instanceof File ? filePart.size : undefined;
+    const controller = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-    return (
-      await this.instance.post(url, formData, {
-        timeout: uploadTimeoutFor(size),
-        headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (e) => {
-          if (onUploadProgress && e.total) {
-            onUploadProgress(e.loaded, e.total);
-          }
-        },
-      })
-    ).data;
+    // 在 signal 上打标记，好让响应拦截器把「我们主动触发的无进展超时」
+    // 与「用户主动取消」区分开：前者要提示用户，后者才静默
+    const signal = controller.signal as AbortSignal & { __idleTimeout?: boolean };
+    signal.__idleTimeout = true;
+
+    // 每收到一次进度就重新计时
+    const resetIdleTimer = () => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        controller.abort();
+      }, UPLOAD_IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimer();
+
+    try {
+      return (
+        await this.instance.post(url, formData, {
+          signal,
+          headers: { 'Content-Type': 'multipart/form-data' },
+          onUploadProgress: (e) => {
+            resetIdleTimer();
+            if (onUploadProgress && e.total) {
+              onUploadProgress(e.loaded, e.total);
+            }
+          },
+        })
+      ).data;
+    } finally {
+      // 无论成功 / 失败 / 被中止，都要清掉计时器，否则会一直挂着直到超时才释放
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+    }
   }
 
   async put<T = any>(url: string, data?: any): Promise<T> {

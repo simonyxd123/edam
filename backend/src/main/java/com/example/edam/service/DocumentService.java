@@ -15,7 +15,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
@@ -32,6 +34,8 @@ public class DocumentService {
     private final DocResourceRepository docRepository;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
+    /** 用于在方法内部精确划定事务边界（见 upload 的说明） */
+    private final PlatformTransactionManager txManager;
 
     @Value("${edam.rabbitmq.exchange:edam.tasks}")
     private String exchange;
@@ -56,22 +60,25 @@ public class DocumentService {
 
     /**
      * 上传文档
+     *
+     * 与 VideoService.upload 同样刻意不加 {@code @Transactional}：
+     * MinIO 上传是唯一耗时步骤，移出事务才不会长时间占住数据库连接。
+     * 事务边界用 TransactionTemplate 显式划定，落库与发 MQ 仍在同一短事务内。
      */
-    @Transactional
     public DocResource upload(MultipartFile file, String classificationLv, String title,
                               boolean enableWatermark, Long uploaderId) {
         try {
             // 1. 计算 hash（流式，避免大文件整个进堆）
             String fileHash = FileHashUtils.sha256Hex(file);
 
-            // 2. 秒传
-            DocResource existing = docRepository.findByFileHash(fileHash);
+            // 2. 秒传（短只读事务）
+            DocResource existing = findExistingForDedup(fileHash);
             if (existing != null) {
                 log.info("doc_dedup_hit, file_hash={}", fileHash);
                 return existing;
             }
 
-            // 3. 保存到 MinIO（先确保 bucket 存在）
+            // 3. 保存到 MinIO（先确保 bucket 存在）—— 不占事务、不占数据库连接
             String originalName = file.getOriginalFilename();
             String fileType = detectFileType(originalName);
             String minioPath = String.format("uploads/%d/%s.%s",
@@ -80,7 +87,39 @@ public class DocumentService {
             ensureBucketExists(documentsBucket);
             uploadToMinio(documentsBucket, minioPath, file);
 
-            // 4. 创建记录
+            // 4. 落库 + 触发异步处理（短事务，毫秒级）
+            DocResource doc = persistAndPublish(classificationLv, title, uploaderId,
+                    fileHash, minioPath, fileType, originalName, enableWatermark, file);
+
+            log.info("doc_uploaded, doc_id={}, file_type={}, size={}, minio={}",
+                doc.getId(), fileType, file.getSize(), minioPath);
+            return doc;
+
+        } catch (Exception e) {
+            log.error("doc_upload_failed", e);
+            throw new RuntimeException("文档上传失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 秒传查询：短只读事务
+     */
+    private DocResource findExistingForDedup(String fileHash) {
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        tx.setReadOnly(true);
+        return tx.execute(s -> docRepository.findByFileHash(fileHash));
+    }
+
+    /**
+     * 落库 + 发 MQ：短事务。
+     * MQ 投递失败会连同 INSERT 一起回滚，避免留下永远不会被处理的记录。
+     */
+    private DocResource persistAndPublish(String classificationLv, String title, Long uploaderId,
+                                          String fileHash, String minioPath, String fileType,
+                                          String originalName, boolean enableWatermark,
+                                          MultipartFile file) {
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        return tx.execute(s -> {
             DocResource doc = new DocResource();
             doc.setTitle(title != null ? title : originalName);
             doc.setFileType(fileType);
@@ -96,7 +135,7 @@ public class DocumentService {
             doc.setEncrypted(1);
             docRepository.insert(doc);
 
-            // 4.1 防御：INSERT 后立即 SELECT 验证持久化（防止事务回滚时返回假 ID）
+            // 防御：INSERT 后立即 SELECT 验证持久化（防止事务回滚时返回假 ID）
             DocResource verify = docRepository.selectById(doc.getId());
             if (verify == null) {
                 log.error("doc_insert_verify_failed, id={}", doc.getId());
@@ -104,7 +143,7 @@ public class DocumentService {
             }
             log.info("doc_insert_verified, id={}", doc.getId());
 
-            // 5. 触发异步处理（水印 + 预览生成）
+            // 触发异步处理（水印 + 预览生成）
             rabbitTemplate.convertAndSend(exchange, documentRouting, java.util.Map.of(
                 "doc_id", doc.getId(),
                 "input_path", minioPath,
@@ -113,15 +152,8 @@ public class DocumentService {
                 "uploader_id", uploaderId,
                 "enable_watermark", enableWatermark
             ));
-
-            log.info("doc_uploaded, doc_id={}, file_type={}, size={}, minio={}",
-                doc.getId(), fileType, file.getSize(), minioPath);
             return doc;
-
-        } catch (Exception e) {
-            log.error("doc_upload_failed", e);
-            throw new RuntimeException("文档上传失败: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**

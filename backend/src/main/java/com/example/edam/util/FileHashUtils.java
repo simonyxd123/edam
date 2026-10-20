@@ -25,7 +25,7 @@ public final class FileHashUtils {
      * 流式计算 MultipartFile 的 SHA-256。
      *
      * 刻意不用 {@code digest.digest(file.getBytes())} —— 那会把整个文件一次性
-     * 读进 JVM 堆，前端允许 2GB 的场景下直接 OOM / GC 抖成慢动作，
+     * 读进 JVM 堆，前端允许 8GiB 的场景下直接 OOM / GC 抖成慢动作，
      * 反而把上传拖到超时。改成固定 8KB 缓冲逐块喂给 MessageDigest。
      *
      * 输出与旧实现逐字节一致（同样的小写 hex），秒传去重逻辑不受影响。

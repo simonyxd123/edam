@@ -33,6 +33,12 @@ const uploadFormRef = ref();
 const uploading = ref(false);
 const uploadProgress = ref(0);
 
+// 视频单文件上限：8 GiB
+// 必须与后端 spring.servlet.multipart.max-file-size=8GB 及各层代理的
+// client_max_body_size 对齐，任一层偏小都会在上传中途被拒。
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_LABEL = '8 GB';
+
 // HLS 后台处理状态轮询
 const pollingVideoIds = ref<Set<number>>(new Set());
 const pollTimers = new Map<number, number>();
@@ -127,10 +133,9 @@ async function submitUpload() {
     ElMessage.warning('请选择视频文件');
     return;
   }
-  // 简单校验：文件大小上限 2GB
-  const MAX = 2 * 1024 * 1024 * 1024;
-  if (uploadForm.value.file.size > MAX) {
-    ElMessage.error('视频文件不能超过 2 GB');
+  // 简单校验：文件大小上限 8GB
+  if (uploadForm.value.file.size > MAX_UPLOAD_BYTES) {
+    ElMessage.error(`视频文件不能超过 ${MAX_UPLOAD_LABEL}`);
     return;
   }
 
@@ -305,7 +310,7 @@ onBeforeUnmount(() => {
             <div v-if="!uploadForm.file" class="upload-placeholder">
               <el-icon :size="48"><UploadFilled /></el-icon>
               <div>点击或拖拽视频到此处</div>
-              <div class="upload-hint">支持 MP4 / MOV / MKV，最大 2 GB</div>
+              <div class="upload-hint">支持 MP4 / MOV / MKV，最大 {{ MAX_UPLOAD_LABEL }}</div>
             </div>
             <div v-else class="upload-selected">
               <el-icon :size="32"><VideoCamera /></el-icon>

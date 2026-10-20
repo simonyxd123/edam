@@ -51,8 +51,12 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    # 上传相关：必须与后端 max-file-size=8GB 及 base values 对齐。
+    # Helm 会用 overlay 覆盖 base 的同名注解，之前这里钉死 500m/300s，
+    # 导致 100MB 以上的大文件在生产环境被 ingress 直接 413 挡掉。
+    nginx.ingress.kubernetes.io/proxy-body-size: "8g"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "21600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "21600"
     nginx.ingress.kubernetes.io/rate-limit: "100"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
   hosts:

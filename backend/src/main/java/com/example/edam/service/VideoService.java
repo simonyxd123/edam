@@ -18,7 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
@@ -36,6 +38,8 @@ public class VideoService {
     private final SysUserRepository sysUserRepository;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
+    /** 用于在方法内部精确划定事务边界（见 upload 的三段式说明） */
+    private final PlatformTransactionManager txManager;
 
     @Value("${edam.rabbitmq.exchange:edam.tasks}")
     private String exchange;
@@ -97,21 +101,29 @@ public class VideoService {
 
     /**
      * 上传视频
+     *
+     * 刻意不加 {@code @Transactional}：整个流程里最慢的是 MinIO 上传，
+     * 8GB 文件可能十几分钟，放进事务会一直占着 Hikari 连接和事务，
+     * 并发几笔就能把连接池（20~50，connection-timeout 仅 30s）打满，
+     * 把列表、鉴权这些普通接口一起拖死。
+     *
+     * 改为三段：hash（无事务）→ 秒传查询（短只读事务）→
+     * MinIO put（无事务）→ 落库+发MQ（短事务）。
+     * 落库与发 MQ 仍放在同一个短事务里，保住「有记录必有消息」的一致性。
      */
-    @Transactional
     public VideoResource upload(MultipartFile file, String classificationLv, String title, Long uploaderId) {
         try {
             // 1. 计算文件 hash（流式，避免大文件整个进堆）
             String fileHash = FileHashUtils.sha256Hex(file);
 
-            // 2. 检查秒传
-            VideoResource existing = videoRepository.findByFileHash(fileHash);
+            // 2. 检查秒传（短只读事务）
+            VideoResource existing = findExistingForDedup(fileHash);
             if (existing != null) {
                 log.info("video_dedup_hit, file_hash={}", fileHash);
                 return existing;
             }
 
-            // 3. 真实上传到 MinIO（先确保 bucket 存在）
+            // 3. 真实上传到 MinIO（先确保 bucket 存在）—— 不占事务、不占数据库连接
             String minioPath = String.format("uploads/%d/%s.%s",
                 uploaderId, UUID.randomUUID(),
                 file.getContentType() != null && file.getContentType().contains("/")
@@ -121,7 +133,45 @@ public class VideoService {
             ensureBucketExists(videosBucket);
             uploadToMinio(videosBucket, minioPath, file);
 
-            // 4. 创建数据库记录
+            // 4. 查 employee_no 让 Worker 把工号烧进 HLS 水印（事务外先查好）
+            String employeeNo = lookupEmployeeNo(uploaderId);
+            if (employeeNo == null || employeeNo.isBlank()) {
+                employeeNo = "U" + uploaderId;  // 查不到时降级
+            }
+
+            // 5. 落库 + 触发异步处理（短事务，毫秒级）
+            VideoResource video = persistAndPublish(classificationLv, title, uploaderId, fileHash, minioPath, employeeNo, file);
+
+            log.info("video_uploaded, video_id={}, size={}, minio={}",
+                video.getId(), file.getSize(), minioPath);
+            return video;
+        } catch (Exception e) {
+            log.error("video_upload_failed", e);
+            throw new RuntimeException("视频上传失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 秒传查询：短只读事务。
+     */
+    private VideoResource findExistingForDedup(String fileHash) {
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        tx.setReadOnly(true);
+        return tx.execute(s -> videoRepository.findByFileHash(fileHash));
+    }
+
+    /**
+     * 落库 + 发 MQ：短事务。
+     *
+     * RabbitTemplate 的 convertAndSend 默认是异步投递且不等待 confirm，
+     * 在这里执行几乎不耗时，因此可以和 INSERT 放在同一事务里 ——
+     * MQ 投递失败则整笔回滚，避免留下「有记录但永远不会被转码」的视频。
+     */
+    private VideoResource persistAndPublish(String classificationLv, String title, Long uploaderId,
+                                            String fileHash, String minioPath, String employeeNo,
+                                            MultipartFile file) {
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        return tx.execute(s -> {
             VideoResource video = new VideoResource();
             video.setTitle(title != null ? title : file.getOriginalFilename());
             video.setFileHash(fileHash);
@@ -134,7 +184,7 @@ public class VideoService {
             video.setFingerprintStatus(0);
             videoRepository.insert(video);
 
-            // 4.1 防御：INSERT 后立即 SELECT 验证（防止事务回滚时前端拿到 ID 但 DB 没记录）
+            // 防御：INSERT 后立即 SELECT 验证（防止事务回滚时前端拿到 ID 但 DB 没记录）
             VideoResource verify = videoRepository.selectById(video.getId());
             if (verify == null) {
                 log.error("video_insert_verify_failed, id={}", video.getId());
@@ -142,12 +192,7 @@ public class VideoService {
             }
             log.info("video_insert_verified, id={}", video.getId());
 
-            // 5. 触发异步处理（HLS 转码 + 帧指纹）
-            //    查 employee_no 让 Worker 把工号烧进 HLS 水印
-            String employeeNo = lookupEmployeeNo(uploaderId);
-            if (employeeNo == null || employeeNo.isBlank()) {
-                employeeNo = "U" + uploaderId;  // 查不到时降级
-            }
+            // 触发异步处理（HLS 转码 + 帧指纹）
             rabbitTemplate.convertAndSend(exchange, videoRouting, java.util.Map.of(
                 "video_id", video.getId(),
                 "input_path", minioPath,
@@ -155,14 +200,8 @@ public class VideoService {
                 "uploader_id", uploaderId,
                 "employee_no", employeeNo
             ));
-
-            log.info("video_uploaded, video_id={}, size={}, minio={}",
-                video.getId(), file.getSize(), minioPath);
             return video;
-        } catch (Exception e) {
-            log.error("video_upload_failed", e);
-            throw new RuntimeException("视频上传失败: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -186,6 +225,18 @@ public class VideoService {
      */
     private void uploadToMinio(String bucket, String objectName, MultipartFile file) throws Exception {
         try (InputStream is = file.getInputStream()) {
+            // partSize = -1 → 由 SDK 自动决定分段大小。
+            //
+            // 注意阈值：S3 协议单次 PUT 上限 5 GiB，超过必须走分段上传。
+            // 上限从 2GB 提到 8GB 后，这里会从「单次 PUT」自动切成「分段上传」
+            // （8 GiB / 最小 5 MiB ≈ 1638 段，远低于 10000 段上限）。
+            //
+            // 刻意保持 -1 不改成显式分段大小：显式 partSize 会触发 SDK 对
+            // 「输入流必须可 reset」的校验，而 MultipartFile 的流来自 Tomcat
+            // 临时文件，reset 行为随容器版本而异，反而可能把现在能跑的
+            // 路径弄坏。交给 SDK 自动决策更稳。
+            //
+            // ⚠️ 8GB 实际分段上传尚未做过端到端冒烟测试，见 modify/ 变更记录。
             minioClient.putObject(
                 PutObjectArgs.builder()
                     .bucket(bucket)

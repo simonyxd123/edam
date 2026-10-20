@@ -56,7 +56,7 @@ public class VideoController {
                 "仅支持 video/* 类型的文件，当前: " + contentType);
         }
 
-        // 大小校验（前端 MAX=2GB，这里兜底）
+        // 大小校验（前端 MAX_UPLOAD_BYTES=8GiB，这里兜底）
         if (file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件为空");
         }

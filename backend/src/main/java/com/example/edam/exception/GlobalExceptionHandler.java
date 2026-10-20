@@ -87,14 +87,14 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 上传文件超过 spring.servlet.multipart.max-file-size（当前 2GB）。
+     * 上传文件超过 spring.servlet.multipart.max-file-size（当前 8GB）。
      * 属于客户端发得太大的正常拒绝，不该记 ERROR。
      */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, Object>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
         log.warn("upload_exceeds_limit: {}", ex.getMessage());
         return build(HttpStatus.PAYLOAD_TOO_LARGE, "Payload Too Large",
-                    "文件超过服务端上限（2GB），请压缩后再上传", "UPLOAD_413");
+                    "文件超过服务端上限（8GB），请压缩后再上传", "UPLOAD_413");
     }
 
     /**
