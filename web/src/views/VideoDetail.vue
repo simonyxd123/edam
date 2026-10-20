@@ -73,7 +73,10 @@ onMounted(async () => {
         }
       });
 
-      // 仅在同一会话内尝试一次内置恢复；二次 fatal 一律切原生 <video>，防级联
+      // NETWORK_ERROR 重试有上限，避免后端持续 4xx/5xx 时无限刷 spinner；
+      // MEDIA_ERROR 用单独的 recoverAttempted 标志，只试一次内置恢复。
+      const NETWORK_MAX_RETRIES = 3;
+      let networkRetries = 0;
       let recoveryAttempted = false;
 
       hls.value.on(Hls.Events.ERROR, (_e, data) => {
@@ -86,27 +89,43 @@ onMounted(async () => {
           // 非致命：hls.js 内部已自动重试，仅日志；不刷 errorMsg 防止覆盖真实致命错误
           return;
         }
-        // 致命：先按类型尝试一次内置恢复，恢复失败再切原生 <video>
-        if (!recoveryAttempted) {
-          recoveryAttempted = true;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            // 网络类（manifest/segment 404/secure_link 拒签等）：native 也会同样失败，
-            // 直接重试最经济；只有 startLoad 抛了才往下走 fallback
-            console.warn('[VideoDetail] fatal NETWORK_ERROR, retrying startLoad()');
-            errorMsg.value = '网络异常，正在重试…';
+
+        // 致命：先按类型尝试内置恢复，恢复失败 / 重试用尽再切原生 <video>
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          // 网络类（manifest/segment 404/5xx、secure_link 拒签、AES key 拉取失败、MinIO 文件丢失等）
+          const status = data.response?.code;
+          const body = (data.response?.text || '').slice(0, 80);
+          if (networkRetries < NETWORK_MAX_RETRIES) {
+            networkRetries++;
+            errorMsg.value = `网络异常，正在重试（${networkRetries}/${NETWORK_MAX_RETRIES}）…` +
+              (status ? ` (HTTP ${status})` : '');
+            console.warn(
+              `[VideoDetail] fatal NETWORK_ERROR, startLoad retry ${networkRetries}/${NETWORK_MAX_RETRIES}, ` +
+              `status=${status ?? '??'}, body=${JSON.stringify(body)}`,
+            );
             try { hls.value?.startLoad(); return; } catch { /* fall through */ }
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          }
+          // 重试耗尽 → 落 fallback 前给出真正的可操作错误
+          errorMsg.value =
+            `视频源不可达 (HTTP ${status ?? '??'})：` +
+            (status === 404
+              ? '视频文件在对象存储中不存在，请联系管理员重新处理'
+              : '请检查网络或稍后重试');
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (!recoveryAttempted) {
+            recoveryAttempted = true;
             // 解码/MediaSource/SourceBuffer 类：让 hls.js 走内置 recoverMediaError
             console.warn('[VideoDetail] fatal MEDIA_ERROR, calling recoverMediaError()');
             errorMsg.value = '视频解码异常，正在恢复…';
             try { hls.value?.recoverMediaError(); return; } catch { /* fall through */ }
           }
-          // 其它（KEY_SYSTEM_ERROR / MUX_ERROR / REMUXING_ERROR / OTHER_ERROR）走 fallback
+          errorMsg.value = `视频解码失败 (${data.details})：已切换至兼容模式`;
         }
-        // 不可恢复 / 已尝试一次 / 其它类型 → 切原生 <video>
+        // 其它（KEY_SYSTEM_ERROR / MUX_ERROR / REMUXING_ERROR / OTHER_ERROR）
+        // + 已用尽重试/恢复 → 切原生 <video>
+
         // 必须先 destroy hls 实例，否则直接覆盖 videoEl.src 会强制把内部 MediaSource 置为 closed，
         // 触发 hls.js 的 mediaSourceRequiresReset 反复重连，造成无限级联。
-        errorMsg.value = `HLS ${data.type}/${data.details}：已切换至兼容模式`;
         try {
           hls.value?.destroy();
           hls.value = null;
