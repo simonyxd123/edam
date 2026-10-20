@@ -29,14 +29,17 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        // 默认指向后端 application.yml 里的 server.port=8080；
+        // EDAM 开发期约定端口 = 8092
+        //   （与 backend/src/main/resources/application.yml 里 server.port=8080
+        //   不同源 —— 后端实际监听哪个端口，靠 dev 启动脚本、
+        //    -Dserver.port=8092 或反向代理统一覆盖，而不是改这里的默认值）
         // 测试环境如果后端跑在另一台机器/端口，通过环境变量覆盖：
         //   VITE_API_BASE_URL=http://your.host:port  npm run dev
-        target: process.env.VITE_API_BASE_URL || 'http://localhost:8080',
+        target: process.env.VITE_API_BASE_URL || 'http://localhost:8092',
         changeOrigin: true,
       },
       '/ws': {
-        target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8080',
+        target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8092',
         ws: true,
       },
     },

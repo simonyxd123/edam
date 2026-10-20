@@ -29,16 +29,16 @@ ECONNREFUSED，显示的"被拒连"主机是代理链最外层的 IP
 也不是后端真实地址，是**代理链最后报错的对外 IP**。
 从症状反推链路最容易跑偏到网络层。
 
-### 根因 2：vite.config.ts proxy 端口注释已 stale
+### 根因 2：vite.config.ts proxy 端口与 application.yml 错开由来已久
 
-vite.config.ts 注释与默认值都写 `http://localhost:8092`，
-但 `backend/.../application.yml` 里 `server.port` 一直是
-**8080**。8092 只是更早期开发机用过一次的端口。
+`backend/src/main/resources/application.yml` 里 `server.port=8080`
+是 Spring Boot 内嵌 Tomcat 的默认监听端口；
+而 `web/vite.config.ts` 里 proxy target 默认 `http://localhost:8092`，
+与 application.yml 不一致。
 
-如果测试环境把后端部署在别的机器（backend host ≠ vite host），
-proxy 默认 `localhost:8092` 一定连不上，必须靠
-`VITE_API_BASE_URL` 覆盖；以前没人注意到这条注释，
-现在统一一下措辞。
+8092 是 EDAM 开发期约定端口（与 8080 不同源）：后端实际监听 8092
+由 dev 启动脚本、`-Dserver.port=8092` 或反向代理覆盖，
+不应反过来改 application.yml —— 那样会污染生产默认。
 
 ## 修复
 
@@ -65,18 +65,30 @@ Blob URL 是浏览器本地资源，不发任何 HTTP，自然绕过：
   直接 `window.open`
 - `downloadPreview` 不用动（Blob URL + `<a download>` 本就 OK）
 
-### 修复 2：vite.config.ts 把 8092 → 8080
+### 修复 2：vite.config.ts 端口注释更新，明确 8092 ≠ application.yml
 
-```diff
-- // 与后端 server.port=8092 + dev profile 默认 MySQL 3307 配套
-+ // 默认指向后端 application.yml 里的 server.port=8080；
-+ // 测试环境如果后端跑在另一台机器/端口，通过环境变量覆盖：
-+ //   VITE_API_BASE_URL=http://your.host:port  npm run dev
-- target: process.env.VITE_API_BASE_URL || 'http://localhost:8092',
-+ target: process.env.VITE_API_BASE_URL || 'http://localhost:8080',
+不改默认值（沿用 `http://localhost:8092`），只把长期 stale 的注释
+写清楚：
+
+```ts
+'/api': {
+  // EDAM 开发期约定端口 = 8092
+  //   （与 backend/src/main/resources/application.yml 里 server.port=8080
+  //   不同源 —— 后端实际监听哪个端口，靠 dev 启动脚本、
+  //    -Dserver.port=8092 或反向代理统一覆盖，而不是改这里的默认值）
+  // 测试环境如果后端跑在另一台机器/端口，通过环境变量覆盖：
+  //   VITE_API_BASE_URL=http://your.host:port  npm run dev
+  target: process.env.VITE_API_BASE_URL || 'http://localhost:8092',
+  changeOrigin: true,
+},
+'/ws': {
+  target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8092',
+  ws: true,
+},
 ```
 
-`/ws` 同上同步改 `ws://localhost:8080`。
+如果后端实际在 8080 跑，把 `VITE_API_BASE_URL=http://localhost:8080`
+写到 `web/.env.local` 即可，不必改 vite.config.ts。
 
 ## 不在本次范围
 
