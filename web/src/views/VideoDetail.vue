@@ -58,19 +58,66 @@ onMounted(async () => {
         'BUFFER_APPENDING', 'BUFFER_EOS',
         'VIDEO_ATTACHING', 'VIDEO_ATTACHED',
       ].forEach((evt) => hls.value?.on((Hls.Events as any)[evt], () => log(evt)));
+
+      // 安全自动播放：只在 hls.js 完成 attach 之后再 play()，
+      // 并 catch 浏览器 autoplay 拒绝（NotAllowedError），避免误判成 MEDIA_ERROR。
+      // 注意：模板里不放 autoplay 属性，否则 <video> 在 MediaSource 就绪前就会触发一遍未连接 source 的 play。
+      hls.value.on(Hls.Events.MEDIA_ATTACHED, () => {
+        if (!videoEl.value) return;
+        videoEl.value.muted = true;
+        const p = videoEl.value.play();
+        if (p && typeof p.catch === 'function') {
+          p.catch((err: any) =>
+            console.warn('[VideoDetail] autoplay blocked, waiting user gesture:', err?.name || err),
+          );
+        }
+      });
+
+      // 仅在同一会话内尝试一次内置恢复；二次 fatal 一律切原生 <video>，防级联
+      let recoveryAttempted = false;
+
       hls.value.on(Hls.Events.ERROR, (_e, data) => {
         console.error('[VideoDetail] HLS error details:', JSON.stringify({
           type: data.type, details: data.details,
           fatal: data.fatal, error: data.error?.message,
           response: data.response, networkDetails: data.networkDetails,
         }));
-        if (data.fatal) {
-          errorMsg.value = `HLS ${data.type}/${data.details}: ${data.error?.message || ''}`;
-          // 致命错误 → 切原生 <video> 模式重试
-          try {
-            if (videoEl.value) videoEl.value.src = m3u8Url.value;
-            console.warn('[VideoDetail] fell back to native <video src>');
-          } catch (e) {}
+        if (!data.fatal) {
+          // 非致命：hls.js 内部已自动重试，仅日志；不刷 errorMsg 防止覆盖真实致命错误
+          return;
+        }
+        // 致命：先按类型尝试一次内置恢复，恢复失败再切原生 <video>
+        if (!recoveryAttempted) {
+          recoveryAttempted = true;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            // 网络类（manifest/segment 404/secure_link 拒签等）：native 也会同样失败，
+            // 直接重试最经济；只有 startLoad 抛了才往下走 fallback
+            console.warn('[VideoDetail] fatal NETWORK_ERROR, retrying startLoad()');
+            errorMsg.value = '网络异常，正在重试…';
+            try { hls.value?.startLoad(); return; } catch { /* fall through */ }
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            // 解码/MediaSource/SourceBuffer 类：让 hls.js 走内置 recoverMediaError
+            console.warn('[VideoDetail] fatal MEDIA_ERROR, calling recoverMediaError()');
+            errorMsg.value = '视频解码异常，正在恢复…';
+            try { hls.value?.recoverMediaError(); return; } catch { /* fall through */ }
+          }
+          // 其它（KEY_SYSTEM_ERROR / MUX_ERROR / REMUXING_ERROR / OTHER_ERROR）走 fallback
+        }
+        // 不可恢复 / 已尝试一次 / 其它类型 → 切原生 <video>
+        // 必须先 destroy hls 实例，否则直接覆盖 videoEl.src 会强制把内部 MediaSource 置为 closed，
+        // 触发 hls.js 的 mediaSourceRequiresReset 反复重连，造成无限级联。
+        errorMsg.value = `HLS ${data.type}/${data.details}：已切换至兼容模式`;
+        try {
+          hls.value?.destroy();
+          hls.value = null;
+          if (videoEl.value) {
+            videoEl.value.removeAttribute('src');
+            videoEl.value.load();
+            videoEl.value.src = m3u8Url.value;
+          }
+          console.warn('[VideoDetail] fell back to native <video src>');
+        } catch (e) {
+          console.warn('[VideoDetail] native fallback failed:', e);
         }
       });
       console.log('[VideoDetail] calling hls.loadSource...');
@@ -92,7 +139,22 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  hls.value?.destroy();
+  // destroy + 置空，避免异步回调（如 token刷新、错误事件）触达已销毁实例
+  try {
+    hls.value?.destroy();
+  } catch (e) {
+    /* noop */
+  }
+  hls.value = null;
+  if (videoEl.value) {
+    try {
+      videoEl.value.pause();
+      videoEl.value.removeAttribute('src');
+      videoEl.value.load();
+    } catch (e) {
+      /* noop */
+    }
+  }
 });
 
 function goBack() {
@@ -121,7 +183,6 @@ function goBack() {
       <video
         ref="videoEl"
         controls
-        autoplay
         muted
         style="width:100%;max-height:60vh;background:#000;display:block;"
       ></video>
