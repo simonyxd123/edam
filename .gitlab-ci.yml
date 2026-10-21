@@ -29,10 +29,12 @@ docs:lint:
         python -c "import xml.etree.ElementTree as ET; ET.parse('$f')" || exit 1
       done
       echo "drawio XML 语法 OK"
-    - apt-get update -qq && apt-get install -y -qq curl
+    # bc 必须装：python:3.10 镜像里没有 → `bc -l` 报 command not found →
+    # 命令替换得到空串 → [ "" = "1" ] 恒假 → 覆盖率掉到 0% 也照样绿灯
+    - apt-get update -qq && apt-get install -y -qq curl bc
     - curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz | tar -xz
     - mv linux-amd64/helm /usr/local/bin/
-    - helm lint helm/edam
+    - helm lint helm/edam -f gitops/overlays/prod/values.yaml
     # v3.2 V-10: 后端 Controller vs OpenAPI 一致性扫描（覆盖 95% 强制）
     - python scripts/check_controller_coverage.py
     - |
@@ -47,10 +49,10 @@ docs:lint:
         echo "请运行 'python scripts/check_controller_coverage.py' 查看缺失端点"
         exit 1
       fi
-    artifacts:
-      paths:
-        - modify/controller-coverage.md
-      expire_in: 30 days
+  artifacts:
+    paths:
+      - modify/controller-coverage.md
+    expire_in: 30 days
   rules:
     - changes:
         - doc/**/*
@@ -75,8 +77,11 @@ db:migrate:
     - mv flyway-10.10.0 /opt/flyway
     - export PATH="/opt/flyway:$PATH"
     - sleep 30  # 等待 MySQL 启动
-    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/migration migrate
-    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/seed migrate
+    # 一次 migrate，locations 指向包含 migration + seed 的共同父目录。
+    # 原来分两次 migrate：两次调用共用默认的 flyway_schema_history 表，
+    # 第二次会因为"已应用但本次 locations 里找不到"直接报错
+    # Detected applied migration not resolved locally
+    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/migration,filesystem:dev/db/seed migrate
     - |
       TABLES=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'")
       if [ "$TABLES" -lt 20 ]; then
@@ -115,12 +120,13 @@ worker:test:
   stage: test
   image: python:3.10
   before_script:
-    - cd worker
-    - pip install -r requirements.txt
-    - pip install -r requirements-dev.txt
+    # 注意：before_script 和 script 在同一个 shell 里执行，
+    # 原来两处都 `cd worker` → 第二句 cd worker 报
+    # "cd: worker: No such file or directory" → job 必失败
+    - pip install -r worker/requirements.txt
+    - pip install -r worker/requirements-dev.txt
   script:
-    - cd worker
-    - pytest --cov=. --cov-report=xml --cov-report=term
+    - cd worker && pytest --cov=. --cov-report=xml --cov-report=term
   artifacts:
     reports:
       coverage_report:
@@ -202,7 +208,17 @@ deploy:staging:
   script:
     - echo "部署到预发布环境"
     - kubectl config use-context $KUBE_CONTEXT_STAGING
-    - helm upgrade --install edam helm/edam --namespace edam-staging --set backend.image.tag=$IMAGE_TAG
+    # 必须带 -f gitops/overlays/<env>/values.yaml：
+    # 不带的话 overlay 里的副本数 / 资源限额 / 阈值全部不生效，
+    # prod 也在用 base values 的 3 副本 + 8g ingress
+    # 同时必须覆盖 worker.image.tag —— 否则 backend 滚到新 SHA、
+    # worker 留在旧 tag（CI 只推 SHA tag，那个 tag 压根不存在）
+    - helm upgrade --install edam helm/edam
+        --namespace edam-staging
+        -f gitops/overlays/staging/values.yaml
+        --set backend.image.tag=$IMAGE_TAG
+        --set worker.image.tag=$IMAGE_TAG
+        --set web.image.tag=$IMAGE_TAG
   environment:
     name: staging
     url: https://staging.example.com
@@ -221,7 +237,12 @@ deploy:production:
   script:
     - echo "部署到生产环境"
     - kubectl config use-context $KUBE_CONTEXT_PROD
-    - helm upgrade --install edam helm/edam --namespace edam --set backend.image.tag=$IMAGE_TAG
+    - helm upgrade --install edam helm/edam
+        --namespace edam
+        -f gitops/overlays/prod/values.yaml
+        --set backend.image.tag=$IMAGE_TAG
+        --set worker.image.tag=$IMAGE_TAG
+        --set web.image.tag=$IMAGE_TAG
   environment:
     name: production
     url: https://api.example.com

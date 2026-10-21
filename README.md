@@ -47,17 +47,26 @@ cd ../backend && mvn spring-boot:run
 
 # 4. 启动 Worker
 cd ../worker && pip install -r requirements.txt
-python -m uvicorn edam_worker.main:app --reload --port 8001
+PYTHONPATH=src python -m uvicorn edam_worker.main:app --reload --port 8001
 
 # 5. 启动前端
 cd ../web && npm install && npm run dev
 
 # 6. 访问
-#   前端：   http://localhost:3000
-#   后端：   http://localhost:8080/api/v1
-#   MinIO：  http://localhost:9001
-#   RabbitMQ：http://localhost:15672
+#   前端：    http://localhost:5173        ← Vite dev server（vite.config.ts）
+#   后端：    http://localhost:8092/api/v1  ← 开发期约定端口
+#   MinIO：   http://localhost:9001        ← 控制台
+#   RabbitMQ：http://localhost:15672       ← 管理台
 #   Grafana： http://localhost:3000
+#
+# 注意端口：
+# - 前端是 5173 不是 3000（3000 是 compose 里的 Grafana）
+# - 开发期后端跑 8092（前端 vite proxy 默认指向它）；
+#   application.yml 里 server.port=8080 是 Spring 内嵌 Tomcat 的默认，
+#   生产用 8080。开发期要跑 8092 就加 -Dserver.port=8092：
+#     cd backend && mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+# - worker 的包在 worker/src/ 下，没有 PYTHONPATH 会 ModuleNotFoundError：
+#     cd worker && PYTHONPATH=src python -m uvicorn edam_worker.main:app --reload --port 8001
 ```
 
 默认账号：`SA0001` / `admin123`（仅开发环境）

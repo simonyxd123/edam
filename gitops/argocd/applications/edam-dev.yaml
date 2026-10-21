@@ -21,11 +21,12 @@ spec:
   source:
     repoURL: 'https://github.com/example/edam.git'
     targetRevision: HEAD
-    path: helm/edam
+    path: .
+    chart: helm/edam
     helm:
       releaseName: edam-dev
       valueFiles:
-        - ../../gitops/overlays/dev/values.yaml
+        - gitops/overlays/dev/values.yaml
       parameters:
         - name: global.imageRegistry
           value: ghcr.io/example/edam

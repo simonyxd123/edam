@@ -9,7 +9,9 @@ global:
 scrape_configs:
   # Spring Boot 后端
   - job_name: 'spring-boot-backend'
-    metrics_path: '/actuator/prometheus'
+    # 后端有 context-path=/api/v1，少了前缀 → 一个 sample 都收不到 →
+    # 所有 backend 告警永远不触发
+    metrics_path: '/api/v1/actuator/prometheus'
     static_configs:
       - targets: ['host.docker.internal:8080']
         labels:

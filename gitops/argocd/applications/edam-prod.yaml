@@ -29,11 +29,12 @@ spec:
   source:
     repoURL: 'https://github.com/example/edam.git'
     targetRevision: v3.1.0  # 固定 tag
-    path: helm/edam
+    path: .
+    chart: helm/edam
     helm:
       releaseName: edam
       valueFiles:
-        - ../../gitops/overlays/prod/values.yaml
+        - gitops/overlays/prod/values.yaml
       parameters:
         - name: global.imageRegistry
           value: ghcr.io/example/edam

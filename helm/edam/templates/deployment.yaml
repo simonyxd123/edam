@@ -18,7 +18,7 @@ spec:
         {{- include "edam.backend.selectorLabels" . | nindent 8 }}
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/path: "/api/v1/actuator/prometheus"
         prometheus.io/port: "8080"
     spec:
       serviceAccountName: {{ include "edam.serviceAccountName" . }}
@@ -39,16 +39,32 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-            - name: DB_PASSWORD
+            - name: MYSQL_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "edam.fullname" . }}-secret
                   key: db-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: jwt-secret
             - name: VAULT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "edam.fullname" . }}-secret
                   key: vault-token
+            - name: WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: worker-token
+            - name: ADMIN_INITIAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: admin-password
+                  optional: true
           livenessProbe:
             {{- if .Values.backend.probes.liveness.enabled }}
             httpGet:

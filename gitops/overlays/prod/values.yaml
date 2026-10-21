@@ -70,7 +70,18 @@ ingress:
         - api.example.com
 
 # 密钥（必须通过 External Secrets 从 Vault 同步）
+#
+# 重要：External Secrets Operator 会把 Vault 里的值写进
+# <fullname>-secret（edam-secret），覆盖 helm 模板里渲染的占位值。
+# 这里的值只是"让 chart 能渲染出来"的占位，**不能**在生产用真值
+# （真值在 Git 里 = 泄密）。
+#
+# workerToken 同理 —— 它是 Worker → Backend 回调的共享密钥，
+# 两侧必须一致（后端读 edam.worker.token，worker 读 WORKER_TOKEN）。
 secret:
   dbPassword: "REPLACE_FROM_VAULT"
   vaultToken: "REPLACE_FROM_VAULT"
   jwtSecret: "REPLACE_FROM_VAULT"
+  workerToken: "REPLACE_FROM_VAULT"
+  # adminPassword 留空 → 后端不创建任何默认账号（fail-closed）
+  adminPassword: ""

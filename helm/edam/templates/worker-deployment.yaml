@@ -24,10 +24,36 @@ spec:
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.worker.service.port }}
+              protocol: TCP
           env:
             {{- range $key, $value := .Values.worker.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            - name: WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: worker-token
+            - name: OPS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: worker-token
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}

@@ -359,20 +359,31 @@ def _probe_minio() -> Dict[str, Any]:
 
 def _probe_backend() -> Dict[str, Any]:
     """同步探测后端 Spring Boot /actuator/health/liveness。一律 3s 兜底。"""
-    url = f"{settings.BACKEND_BASE_URL.rstrip('/')}/actuator/health/liveness"
-    try:
-        resp = requests.get(url, timeout=3)
-        return {
-            "ok": resp.status_code < 500,
-            "status": resp.status_code,
-            "url": url,
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "url": url,
-            "error": f"{type(e).__name__}: {e}",
-        }
+    # BACKEND_BASE_URL 可能已经带了 context-path（/api/v1），
+    # 也可能没带 —— 两种都要能拼对，否则探测永远 404
+    base = settings.BACKEND_BASE_URL.rstrip("/")
+    candidates = [
+        f"{base}/actuator/health/liveness",
+        f"{base}/api/v1/actuator/health/liveness",
+    ]
+    last_error = None
+    for url in candidates:
+        try:
+            resp = requests.get(url, timeout=3)
+            if resp.status_code < 500:
+                return {
+                    "ok": True,
+                    "status": resp.status_code,
+                    "url": url,
+                }
+            last_error = f"HTTP {resp.status_code}"
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+    return {
+        "ok": False,
+        "url": candidates[0],
+        "error": last_error,
+    }
 
 
 @app.get("/health/worker")

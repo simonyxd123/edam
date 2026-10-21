@@ -85,10 +85,10 @@ spec:
       groups:
         - edam-admins:edam
 
-  - name: developer
-    description: 'EDAM 开发者（只读 + 同步）'
-    policies:
-      - 'p, proj:edam:developer, applications, get, edam/*, allow'
-      - 'p, proj:edam:developer, applications, sync, edam/dev, allow'
-    groups:
-      - edam-devs:edam
+    - name: developer
+      description: 'EDAM 开发者（只读 + 同步）'
+      policies:
+        - 'p, proj:edam:developer, applications, get, edam/*, allow'
+        - 'p, proj:edam:developer, applications, sync, edam/dev, allow'
+      groups:
+        - edam-devs:edam

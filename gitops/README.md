@@ -22,6 +22,50 @@ ArgoCD（集群内）
 Helm 渲染 → 部署到 K8s
 ```
 
+## 为什么没有 ApplicationSet
+
+原先仓库里有一个 `gitops/argocd/applicationset.yaml`（git directories
+generator），**已删除**。原因：
+
+1. **它和 `applications/` 下的 3 个静态 Application 名字冲突** ——
+   两者都定义 `edam-dev` / `edam-staging` / `edam-prod`。
+2. 目录生成器会**跳过**不含 `Chart.yaml` / `kustomization.yaml` 的目录
+   —— `gitops/overlays/dev/` 里只有 `values.yaml` → **生成 0 个 Application**。
+3. 模板上下文里没有 `targetRevision` 字段（`{{.git.targetRevision}}` 渲染报错）。
+4. 没开 `goTemplate: true`，老式 fasttemplate 不求值 `{{path.basename}}`
+   → releaseName 变成字面量 `edam-{{path.basename}}` 这种非法 K8s 名字。
+5. `valueFiles` 用 `../../gitops/overlays/...` **越出 source root**
+   → ArgoCD 直接拒绝：`app path ... is not within the root`。
+
+现在只用 3 个静态 Application（`applications/edam-{dev,staging,prod}.yaml`），
+每个环境的同步策略显式写死：
+
+| 环境 | `syncPolicy.automated` |
+| --- | --- |
+| dev | `prune: true, selfHeal: true` —— 自动同步 |
+| staging | `{}` —— 手工触发 |
+| prod | `null` —— 手工触发（配合多级审批） |
+
+新增环境时复制一个 Application 即可，比维护 ApplicationSet 模板更可控。
+
+### source path 的关键约定
+
+三个 Application 的 source 都是：
+
+```yaml
+source:
+  repoURL: ...
+  targetRevision: HEAD
+  path: .          # ← 仓库根
+  chart: helm/edam # ← chart 指向子目录
+  helm:
+    valueFiles:
+      - gitops/overlays/<env>/values.yaml   # ← 相对仓库根，不能用 ../
+```
+
+ArgoCD 的 `valueFiles` **只能在 source root 内解析**，`..` 越界会被拒绝。
+所以 source root 必须是仓库根，chart 用 `chart:` 字段指到子目录。
+
 ## 三个环境
 
 | 环境 | 命名空间 | 同步方式 | 副本数 | 用途 |
