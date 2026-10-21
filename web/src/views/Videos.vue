@@ -5,14 +5,14 @@ import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { videoApi, type Video } from '@/api/video';
 import { api } from '@/api/client';
-import { useUserStore } from '@/stores/user';
 import { UploadFilled, VideoCamera } from '@element-plus/icons-vue';
 
 const router = useRouter();
-const userStore = useUserStore();
 const loading = ref(false);
 const videos = ref<Video[]>([]);
 const total = ref(0);
+/** 当前页码（分页组件 v-model 绑它，而不是筛选条件对象） */
+const page = ref(1);
 const searchForm = ref({
   classification_lv: '',
   keyword: '',
@@ -96,16 +96,20 @@ function stopHlsPolling(videoId: number) {
   pollingVideoIds.value.delete(videoId);
 }
 
-async function loadData(page = 1) {
+async function loadData(p = 1) {
   loading.value = true;
   try {
     const resp = await videoApi.list({
-      page,
+      page: p,
       page_size: 20,
       classification_lv: searchForm.value.classification_lv || undefined,
     });
     videos.value = resp.items;
     total.value = resp.pagination.total;
+    // 同步分页组件的当前页 —— 原来 v-model:current-page 绑的是
+    // searchForm（筛选条件对象），pager 永远显示 1，
+    // 用户翻到第 3 页再改筛选条件会拉第 1 页数据但页码还停在 3
+    page.value = p;
   } catch (e) {
     // 错误已处理
   } finally {
@@ -268,14 +272,14 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="handleView(row)">播放</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button link type="primary" @click="handleView(row as Video)">播放</el-button>
+            <el-button link type="danger" @click="handleDelete(row as Video)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
 
       <el-pagination
-        v-model:current-page="searchForm"
+        v-model:current-page="page"
         :total="total"
         :page-size="20"
         layout="total, prev, pager, next, jumper"

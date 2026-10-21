@@ -12,6 +12,7 @@ import router from './router';
 import './styles/main.scss';
 import { formatDateTime, formatDate, formatTime } from './utils/date';
 import { permission } from './utils/permission';
+import { handleSessionInvalid, isPublicEndpoint } from './utils/session';
 
 const app = createApp(App);
 
@@ -39,46 +40,35 @@ app.directive('permission', permission);
 
 // 全局 fetch 拦截：捕获所有 /api/ 401，强制跳登录页
 // 比 axios 拦截器更可靠（Vite HMR 漏应用 axios 代码时 fetch wrapper 仍生效）
+//
+// 注意：会话失效的统一处理在 utils/session.ts（清 token + 提示 + 跳登录页），
+// 这里只负责"检测到 401 就转交"，不再各写一份。
 
 const ORIG_FETCH = window.fetch.bind(window);
 
-function isApiPath(url) {
-  return url.startsWith('/api/') || url.includes('/api/');
+function isApiPath(url: string | undefined): boolean {
+  return !!url && (url.startsWith('/api/') || url.includes('/api/'));
 }
 
-function isPublicEndpoint(url) {
-  return url.includes('/auth/login') || url.includes('/auth/refresh');
+function extractUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
 }
 
-function handleSessionInvalid() {
-  try {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('user_id');
-  } catch (e) {}
-  if (window.location.pathname !== '/login') {
-    if (!window.__sessionInvalidRedirecting) {
-      window.__sessionInvalidRedirecting = true;
-      console.warn('[global] session invalid, redirecting to /login');
-      window.location.href = '/login';
-    }
-  }
-}
-
-window.fetch = async function(input, init) {
-  const url = typeof input === 'string' ? input : input.url;
+window.fetch = async function (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const url = extractUrl(input);
   if (!isApiPath(url) || isPublicEndpoint(url)) {
     return ORIG_FETCH(input, init);
   }
-  try {
-    const resp = await ORIG_FETCH(input, init);
-    if (resp.status === 401) {
-      handleSessionInvalid();
-    }
-    return resp;
-  } catch (e) {
-    throw e;
+  const resp = await ORIG_FETCH(input, init);
+  if (resp.status === 401) {
+    handleSessionInvalid('fetch:401');
   }
+  return resp;
 };
 
 console.log('[global] fetch wrapper installed');
@@ -87,57 +77,36 @@ console.log('[global] fetch wrapper installed');
 (function () {
   const OrigXHR = window.XMLHttpRequest;
 
-  function isApiPath(url) {
-    return url && (url.startsWith('/api/') || url.includes('/api/'));
-  }
-
-  function isPublicEndpoint(url) {
-    return url && (url.includes('/auth/login') || url.includes('/auth/refresh'));
-  }
-
-  function handleSessionInvalid(reason, url) {
-    try {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user_id');
-    } catch (e) {}
-    if (window.location.pathname !== '/login') {
-      if (!window.__sessionInvalidRedirecting) {
-        window.__sessionInvalidRedirecting = true;
-        console.warn('[global-xhr] session invalid, reason=' + reason + ' url=' + url);
-        window.location.href = '/login';
-      }
-    }
-  }
-
-  function newXHR() {
+  function newXHR(): XMLHttpRequest {
     const xhr = new OrigXHR();
-    let url = null;
+    let url: string | null = null;
     const origOpen = xhr.open.bind(xhr);
-    xhr.open = function (method, u, ...rest) {
-      url = u;
-      return origOpen(method, u, ...rest);
+    // 用 apply 转发全部参数 —— 原来的 rest 展开在 TS 下与 XMLHttpRequest.open
+    // 的重载签名不兼容
+    xhr.open = function (this: XMLHttpRequest, method: string, u: string | URL, ...rest: unknown[]) {
+      url = typeof u === 'string' ? u : u.toString();
+      return (origOpen as (...args: unknown[]) => void).apply(xhr, [method, u, ...rest]);
     };
     xhr.addEventListener('readystatechange', function () {
       if (xhr.readyState === 4) {
-        if (isApiPath(url) && !isPublicEndpoint(url) && xhr.status === 401) {
-          handleSessionInvalid('401', url);
+        if (isApiPath(url ?? undefined) && !isPublicEndpoint(url ?? undefined) && xhr.status === 401) {
+          handleSessionInvalid('xhr:401');
         }
       }
     });
     return xhr;
   }
 
-  window.XMLHttpRequest = newXHR;
+  window.XMLHttpRequest = newXHR as unknown as typeof XMLHttpRequest;
   console.log('[global-xhr] XMLHttpRequest wrapper installed');
 
   // 兜底：unhandledrejection 监听
-  window.addEventListener('unhandledrejection', function (e) {
-    const reason = e && e.reason;
-    if (reason && reason.response && reason.response.status === 401) {
-      const u = (reason.config && reason.config.url) || '';
+  window.addEventListener('unhandledrejection', function (e: PromiseRejectionEvent) {
+    const reason = e?.reason as { response?: { status?: number }; config?: { url?: string } } | undefined;
+    if (reason?.response?.status === 401) {
+      const u = reason.config?.url || '';
       if (isApiPath(u) && !isPublicEndpoint(u)) {
-        handleSessionInvalid('unhandledrejection-401', u);
+        handleSessionInvalid('unhandledrejection:401');
       }
     }
   });
@@ -146,24 +115,12 @@ console.log('[global] fetch wrapper installed');
 // 页面加载时主动检查 token 是否过期（不依赖 401 响应拦截）
 // 解析 JWT payload 拿 exp 字段对比当前时间
 (function () {
-  function isPublicPath() {
-    const p = window.location.pathname;
-    return p === '/login' || p.startsWith('/login');
-  }
-  function clearAndRedirect() {
-    try {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user_id');
-    } catch (e) {}
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login';
-    }
-  }
-  function isJwtExpired(token) {
+  function isJwtExpired(token: string): boolean {
     try {
       const parts = token.split('.');
-      if (parts.length !== 3) return true;
+      // 解析失败**不等于**过期 —— 后端哪天换成非 JWT token，
+      // 原实现一律判过期会导致"每次刷新都登出"
+      if (parts.length !== 3) return false;
       // 兼容 base64url 和 base64
       const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
       const pad = payload.length % 4;
@@ -171,20 +128,17 @@ console.log('[global] fetch wrapper installed');
       const json = atob(padded);
       const data = JSON.parse(json);
       const exp = data.exp;
-      if (!exp) return true;
+      if (typeof exp !== 'number') return false;
       return Date.now() / 1000 >= exp;
-    } catch (e) {
-      return true;  // 解析失败 → 视为过期
+    } catch {
+      // 解析失败 → 不做判断，交给 401 拦截器处理
+      return false;
     }
   }
   const token = localStorage.getItem('access_token');
-  if (token) {
-    if (isJwtExpired(token)) {
-      console.warn('[global] JWT expired on page load, clearing and redirecting');
-      clearAndRedirect();
-    }
-  } else if (!isPublicPath()) {
-    // 没 token 且非公开页 → 不主动清，等 401 触发再清
+  if (token && isJwtExpired(token)) {
+    console.warn('[global] JWT expired on page load, clearing and redirecting');
+    handleSessionInvalid('startup:jwt-expired');
   }
 })();
 

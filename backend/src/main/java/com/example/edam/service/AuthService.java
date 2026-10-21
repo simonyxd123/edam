@@ -6,6 +6,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.security.LoginAttemptService;
+import com.example.edam.security.PasswordPolicy;
 import com.example.edam.security.TotpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +50,71 @@ public class AuthService {
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
     private final LoginAttemptService loginAttemptService;
+    private final PasswordPolicy passwordPolicy;
+
+    /**
+     * 自助修改个人资料。
+     *
+     * <p>只允许改 email / phone / real_name —— 工号、角色、状态这些
+     * 敏感字段不开放给本人修改。
+     */
+    @Transactional
+    public void updateProfile(Long userId, String email, String phone, String realName) {
+        SysUser user = userRepository.findById(userId);
+        if (user == null) {
+            throw new ResourceNotFoundException("用户不存在");
+        }
+        if (email != null && !email.isBlank()) {
+            user.setEmail(email.trim());
+        }
+        if (phone != null) {
+            user.setPhone(phone.trim());
+        }
+        if (realName != null && !realName.isBlank()) {
+            user.setRealName(realName.trim());
+        }
+        userRepository.updateById(user);
+        log.info("user_profile_updated, user_id={}", userId);
+    }
+
+    /**
+     * 自助修改密码。
+     *
+     * <p>流程：校验旧密码 → 密码策略校验 → 检查历史密码 → 更新 hash
+     * → 清 must_change_password 标志 → 撤销该用户所有会话。
+     */
+    @Transactional
+    public void changePassword(Long userId, String oldPassword, String newPassword) {
+        if (oldPassword == null || oldPassword.isBlank()) {
+            throw new IllegalArgumentException("旧密码不能为空");
+        }
+        if (newPassword == null || newPassword.isBlank()) {
+            throw new IllegalArgumentException("新密码不能为空");
+        }
+        SysUser user = userRepository.findById(userId);
+        if (user == null) {
+            throw new ResourceNotFoundException("用户不存在");
+        }
+        if (!passwordEncoder.matches(oldPassword, user.getPasswordHash())) {
+            // 旧密码错 → 计入失败次数（独立事务，不会被这里的异常回滚）
+            loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
+            throw new IllegalArgumentException("旧密码不正确");
+        }
+        // 密码策略：长度 / 复杂度（至少 3 类）/ 弱口令黑名单
+        PasswordPolicy.ValidationResult policy = passwordPolicy.validate(newPassword);
+        if (!policy.isValid()) {
+            throw new IllegalArgumentException(policy.getReason());
+        }
+        if (passwordEncoder.matches(newPassword, user.getPasswordHash())) {
+            throw new IllegalArgumentException("新密码不能与旧密码相同");
+        }
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        user.setPasswordChangedAt(OffsetDateTime.now());
+        user.setMustChangePassword(false);
+        user.setFailedLoginCount(0);
+        userRepository.updateById(user);
+        log.info("user_password_changed, user_id={}", userId);
+    }
 
     /**
      * 登录

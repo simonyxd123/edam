@@ -2,8 +2,9 @@
  * API 客户端
  * 基于 axios + JWT 自动注入
  */
-import axios, { type AxiosInstance, type AxiosError } from 'axios';
+import axios, { type AxiosInstance, type AxiosError, type AxiosRequestConfig } from 'axios';
 import { ElMessage } from 'element-plus';
+import { handleSessionInvalid, isApiCall, isPublicEndpoint } from '@/utils/session';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -68,16 +69,22 @@ class ApiClient {
         const signal = error.config?.signal as { __idleTimeout?: boolean } | undefined;
         const isUploadIdleAbort = !!signal?.__idleTimeout && isCanceled;
 
-        // 简化：任何 /api/ 路径错误（无 response 或 4xx/5xx 401/403）都视作会话失效
+        // 会话失效判定：只认 401（+ 真正的网络无响应）。
+        //
+        // 原来写成 `status >= 400 && status < 500` —— 那样 403 权限不足、
+        // 404 资源不存在、409 冲突全都会被当成"会话失效"→ 清 token + 跳登录页。
+        // 删一个不存在的视频返回 404，用户被登出。
+        //
+        // 另外 `error.config.url` 是**相对路径**（如 '/videos'），
+        // 完整 URL 由 baseURL 在 adapter 层拼接 —— 判断 API 路径时必须
+        // 把 baseURL 算进去，否则 isApiCall 恒为 false（本段逻辑形同虚设）。
         const url = error.config?.url || '';
-        const isApiCall = url.startsWith('/api/') || url.includes('/api/');
-        const isPublic = url.includes('/auth/login') || url.includes('/auth/refresh');
-        const isSessionInvalid = isApiCall && !isPublic && (
-          status === 401 ||
-          status === undefined ||
-          status === 403 ||
-          (typeof status === 'number' && status >= 400 && status < 500)
-        );
+        const baseURL = error.config?.baseURL || '';
+        const isApi = isApiCall(url, baseURL);
+        const isPublic = isPublicEndpoint(url);
+        // 无 response 且非取消/超时 = 网络断了，不是会话失效
+        const isNetworkDown = status === undefined && !isTimeout && !isCanceled;
+        const isSessionInvalid = isApi && !isPublic && (status === 401 || isNetworkDown);
 
         if (isUploadIdleAbort) {
           ElMessage.error(`上传超过 ${UPLOAD_IDLE_TIMEOUT_MS / 60000} 分钟无进展，已中止，请检查网络后重试`);
@@ -87,15 +94,11 @@ class ApiClient {
           // 用户主动取消（关弹窗 / 离开页面），不打扰
         } else if (isSessionInvalid) {
           console.warn('[client] session invalid, status=', status, 'url=', error.config?.url);
-          // 清 localStorage 三个 key
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          localStorage.removeItem('user_id');
-          if (window.location.pathname !== '/login') {
-            ElMessage.warning('会话已失效，请重新登录');
-            // 1.5s 后跳登录页（让用户看清提示）
-            setTimeout(() => { window.location.href = '/login'; }, 1500);
-          }
+          // 统一走 utils/session 的处理（清 token + 提示 + 跳登录页）
+          handleSessionInvalid(`client:${status ?? 'network'}`);
+        } else if (status === 403) {
+          // 权限不足 —— 不是会话问题，别把人登出
+          ElMessage.error('没有权限执行该操作');
         } else if (status === 423) {
           ElMessage.error('账号已锁定');
         } else if (status === 429) {
@@ -113,12 +116,20 @@ class ApiClient {
     );
   }
 
-  async get<T = any>(url: string, params?: any): Promise<T> {
-    return (await this.instance.get(url, { params })).data;
+  async get<T = any>(url: string, params?: any, config?: AxiosRequestConfig): Promise<T> {
+    return (await this.instance.get(url, { params, ...config })).data;
   }
 
-  async post<T = any>(url: string, data?: any): Promise<T> {
-    return (await this.instance.post(url, data)).data;
+  /**
+   * POST。
+   *
+   * <p>`config` 形参以前不存在，调用方（如 api/video.ts 的 upload）为了传
+   * multipart 的 Content-Type 只能写 `as any` 把 config 塞到第三参 ——
+   * 而那个 config **被整个丢弃**，请求就带着默认的
+   * `Content-Type: application/json` 发出去。
+   */
+  async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
+    return (await this.instance.post(url, data, config)).data;
   }
 
   /**

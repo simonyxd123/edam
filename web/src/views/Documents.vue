@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useUserStore } from '@/stores/user';
 import { api } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
@@ -231,15 +230,25 @@ function getFileTypeLabel(type: string) {
   return map[type] || { label: type, type: '' };
 }
 
-function getStatusType(status: string) {
-  const map: Record<string, string> = {
+// el-tag 的 type 只接受 'primary' | 'success' | 'warning' | 'info' | 'danger' | undefined
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger';
+
+function getStatusType(status: string): TagType | undefined {
+  const map: Record<string, TagType> = {
     ready: 'success',
     processing: 'warning',
     pending: 'info',
     failed: 'danger',
     skipped: 'info',
   };
-  return map[status] || '';
+  return map[status];
+}
+
+/** 密级标签颜色：L4 绝密=红，L3 机密=橙，其余不染色 */
+function classificationTagType(lv: string | undefined): TagType | undefined {
+  if (lv === 'L4') return 'danger';
+  if (lv === 'L3') return 'warning';
+  return undefined;
 }
 
 onMounted(() => loadData());
@@ -288,7 +297,7 @@ onMounted(() => loadData());
         </el-table-column>
         <el-table-column label="密级" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.classification_lv === 'L4' ? 'danger' : row.classification_lv === 'L3' ? 'warning' : ''" size="small">
+            <el-tag :type="classificationTagType(row.classification_lv)" size="small">
               {{ row.classification_lv }}
             </el-tag>
           </template>
@@ -315,9 +324,9 @@ onMounted(() => loadData());
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="handlePreview(row)">预览</el-button>
-            <el-button link type="primary" @click="handleDistribute(row)">外发</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button link type="primary" @click="handlePreview(row as Document)">预览</el-button>
+            <el-button link type="primary" @click="handleDistribute(row as Document)">外发</el-button>
+            <el-button link type="danger" @click="handleDelete(row as Document)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>

@@ -98,13 +98,20 @@ router.beforeEach((to, _from, next) => {
   // 3. 需登录但 user 未加载（首次启动或 token 异常）→ 拉一次
   const requiredPerm = to.meta.permission as string | undefined;
   if (requiredPerm && !userStore.user) {
-    return userStore.fetchMe().then(() => {
-      if (!userStore.hasPermission(requiredPerm)) {
-        ElMessage.error('无权限访问该页面');
-        return next({ name: 'Dashboard' });
-      }
-      next();
-    }).catch(() => next({ name: 'Login' }));
+    // fetchMe 失败时会 reject（store 里已改）→ 走 catch 去 Login。
+    // 原来 fetchMe 内部 catch 后只调 logout() 就正常返回，Promise 永远
+    // resolve → then 分支里 user 仍为 null → hasPermission 恒 false →
+    // next({name:'Dashboard'}) → Dashboard 也有 permission 要求 →
+    // 再次进入本守卫 → **无限重定向**直到栈溢出 / 白屏。
+    return userStore.fetchMe()
+      .then(() => {
+        if (!userStore.hasPermission(requiredPerm)) {
+          ElMessage.error('无权限访问该页面');
+          return next({ name: 'Dashboard' });
+        }
+        next();
+      })
+      .catch(() => next({ name: 'Login', query: { redirect: to.fullPath } }));
   }
 
   // 4. 有 permission 要求但没权限 → 跳 Dashboard

@@ -42,7 +42,7 @@ export const videoApi = {
   upload: (formData: FormData) =>
     api.post<{ video_id: number; file_hash: string }>('/videos', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    } as any),
+    }),
 
   delete: (id: number) => api.delete<void>(`/videos/${id}`),
 };

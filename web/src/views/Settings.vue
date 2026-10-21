@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useUserStore } from '@/stores/user';
-import axios from 'axios';
+// 用项目的 api 客户端：自动注入 JWT + 统一 401/错误处理。
+// 原来用裸 axios（没有 Authorization 头）→ /auth/me 必然 401
+// → 命中全局 XHR 拦截器 → 清 token + 跳登录页。
+// 用户只要点一下左侧菜单「设置」，当场被登出。
+import { api } from '@/api/client';
 
 const userStore = useUserStore();
 
@@ -32,12 +36,12 @@ const msg = ref<{ type: 'success' | 'error'; text: string } | null>(null);
 
 onMounted(async () => {
   try {
-    const me = await axios.get('/api/v1/auth/me');
+    const me = await api.get<any>('/auth/me');
     profile.value = {
-      username: me.data.username || me.data.employee_no || '',
-      email: me.data.email || '',
-      phone: me.data.phone || '',
-      real_name: me.data.real_name || '',
+      username: me.employee_no || '',
+      email: me.email || '',
+      phone: me.phone || '',
+      real_name: me.real_name || '',
     };
   } catch {
     profile.value = {
@@ -56,7 +60,7 @@ function show(type: 'success' | 'error', text: string) {
 
 async function saveProfile() {
   try {
-    await axios.put('/api/v1/auth/profile', profile.value);
+    await api.put('/auth/profile', profile.value);
     show('success', '个人信息已更新');
   } catch (e: any) {
     show('error', e?.response?.data?.message || '更新失败');
@@ -73,7 +77,7 @@ async function changePassword() {
     return;
   }
   try {
-    await axios.post('/api/v1/auth/change-password', {
+    await api.post('/auth/change-password', {
       old_password: passwordForm.value.old_password,
       new_password: passwordForm.value.new_password,
     });
@@ -84,13 +88,10 @@ async function changePassword() {
   }
 }
 
-async function saveSystemConfig() {
-  try {
-    await axios.put('/api/v1/admin/system-config', systemConfig.value);
-    show('success', '系统配置已保存');
-  } catch (e: any) {
-    show('error', e?.response?.data?.message || '保存失败（需要管理员权限）');
-  }
+// 系统配置后端尚未提供持久化端点（AdminController 只有 backups），
+// 这里明确告知未开放，而不是留一个"点了没反应还报错"的假功能。
+function saveSystemConfig() {
+  show('error', '系统配置暂未开放持久化，请通过后端配置文件调整');
 }
 </script>
 

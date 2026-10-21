@@ -118,6 +118,52 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * 自助修改个人资料（邮箱 / 手机 / 真实姓名）。
+     *
+     * <p>此前前端「设置」页要调这个端点，但后端**从来没有实现**，
+     * 页面点一下就 404。
+     */
+    @PutMapping("/profile")
+    @Operation(summary = "修改当前用户个人资料")
+    public ResponseEntity<Map<String, Object>> updateProfile(
+            @RequestBody ProfileRequest request,
+            @com.example.edam.security.CurrentUserId Long userId) {
+        authService.updateProfile(userId, request.getEmail(), request.getPhone(), request.getRealName());
+        return ResponseEntity.ok(authService.getCurrentUser());
+    }
+
+    /**
+     * 自助修改密码。
+     *
+     * <p>此前只有管理员重置他人密码的接口，**用户自己改密码的入口不存在** ——
+     * 等保要求的"用户可自主修改密码"和"历史密码不可重用"都无从谈起。
+     */
+    @PostMapping("/change-password")
+    @Operation(summary = "自助修改密码")
+    public ResponseEntity<Map<String, Object>> changePassword(
+            @RequestBody ChangePasswordRequest request,
+            @com.example.edam.security.CurrentUserId Long userId) {
+        authService.changePassword(userId, request.getOldPassword(), request.getNewPassword());
+        return ResponseEntity.ok(Map.of("changed", true));
+    }
+
+    @Data
+    public static class ProfileRequest {
+        private String email;
+        private String phone;
+        @com.fasterxml.jackson.annotation.JsonProperty("real_name")
+        private String realName;
+    }
+
+    @Data
+    public static class ChangePasswordRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("old_password")
+        private String oldPassword;
+        @com.fasterxml.jackson.annotation.JsonProperty("new_password")
+        private String newPassword;
+    }
+
     @Data
     public static class LoginRequest {
         @com.fasterxml.jackson.annotation.JsonProperty("employee_no")

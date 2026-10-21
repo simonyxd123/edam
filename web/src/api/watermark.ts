@@ -24,7 +24,7 @@ export const watermarkApi = {
   extract: (formData: FormData) =>
     api.post<WatermarkExtractResult>('/watermarks/extract', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    } as any),
+    }),
 
   getCache: (resourceId: number, resourceType: 'video' | 'document') =>
     api.get<unknown[]>(`/watermarks/cache?resource_id=${resourceId}&resource_type=${resourceType}`),

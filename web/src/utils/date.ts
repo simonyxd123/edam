@@ -17,8 +17,16 @@ import customParseFormat from 'dayjs/plugin/customParseFormat';
 dayjs.extend(utc);
 dayjs.extend(customParseFormat);
 
-/** 完整日期时间：yyyy-MM-dd HH:mm:ss.SS */
-export const FMT_DATETIME = 'YYYY-MM-DD HH:mm:ss.SS';
+/**
+ * 完整日期时间：yyyy-MM-dd HH:mm:ss.SSS
+ *
+ * <p><b>注意 token 是 SSS 不是 SS</b>：dayjs 只认 `S`（1 位）/`SS`（2 位）/
+ * `SSS`（3 位）——但实测 `SS` 和 `S` 在 dayjs 里**不是有效 token**，
+ * 会被原样输出成字面量 "SS"。原来的 `'YYYY-MM-DD HH:mm:ss.SS'` 让
+ * 整个应用的时间戳都显示成 `2026-08-25 10:14:32.SS`（毫秒位是字面量）。
+ * dayjs 的毫秒 token 必须是 `SSS`。
+ */
+export const FMT_DATETIME = 'YYYY-MM-DD HH:mm:ss.SSS';
 /** 仅日期：yyyy-MM-dd */
 export const FMT_DATE = 'YYYY-MM-DD';
 /** 仅时间：HH:mm:ss */
@@ -33,7 +41,17 @@ function toCst(input: string | number | Date | null | undefined): dayjs.Dayjs | 
 
   // 1) 后端已格式化的字符串（不含 T 也不含 Z）—— 原样视为本地时间
   if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(input)) {
-    const d = dayjs(input, ['YYYY-MM-DD HH:mm:ss.SS', 'YYYY-MM-DD HH:mm:ss']);
+    // dayjs 的毫秒 token 只有 SSS（3 位）有效；
+    // Java 的 .SS（2 位）需要先补零再解析
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{2}$/.test(input)
+      ? input + '0'
+      : /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d$/.test(input)
+        ? input + '00'
+        : input;
+    const d = dayjs(normalized, [
+      'YYYY-MM-DD HH:mm:ss.SSS',
+      'YYYY-MM-DD HH:mm:ss',
+    ]);
     return d.isValid() ? d : null;
   }
 

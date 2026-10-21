@@ -163,11 +163,11 @@ onMounted(() => loadData());
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'pending'">
-              <el-button link type="success" @click="handleApprove(row)">批准</el-button>
-              <el-button link type="danger" @click="handleReject(row)">驳回</el-button>
+              <el-button link type="success" @click="handleApprove(row as Approval)">批准</el-button>
+              <el-button link type="danger" @click="handleReject(row as Approval)">驳回</el-button>
             </template>
             <template v-else-if="row.status === 'approved'">
-              <el-button link type="danger" @click="handleRevoke(row)">紧急撤销</el-button>
+              <el-button link type="danger" @click="handleRevoke(row as Approval)">紧急撤销</el-button>
             </template>
             <el-button link @click="ElMessage.info('查看详情：' + row.id)">详情</el-button>
           </template>

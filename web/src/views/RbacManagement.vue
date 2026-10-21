@@ -275,7 +275,7 @@ async function saveUser() {
 
   try {
     if (userDialogMode.value === 'create') {
-      const created = await rbacApi.createUser({
+      await rbacApi.createUser({
         username: userForm.value.username,
         password: userForm.value.password,
         employee_no: userForm.value.employeeNo,
@@ -566,7 +566,7 @@ onMounted(async () => {
                 v-permission="'user:manage'"
                 link
                 type="primary"
-                @click="openAssignRoles(row)"
+                @click="openAssignRoles(row as SysUserView)"
               >
                 分配角色
               </el-button>
@@ -574,7 +574,7 @@ onMounted(async () => {
                 v-permission="'user:manage'"
                 link
                 type="primary"
-                @click="openEditUser(row)"
+                @click="openEditUser(row as SysUserView)"
               >
                 编辑
               </el-button>
@@ -582,7 +582,7 @@ onMounted(async () => {
                 v-permission="'user:manage'"
                 link
                 type="warning"
-                @click="openResetPassword(row)"
+                @click="openResetPassword(row as SysUserView)"
               >
                 重置密码
               </el-button>
@@ -590,7 +590,7 @@ onMounted(async () => {
                 v-permission="'user:manage'"
                 link
                 type="danger"
-                @click="deleteUser(row)"
+                @click="deleteUser(row as SysUserView)"
                 :disabled="row.id === 1"
               >
                 删除
@@ -650,7 +650,7 @@ onMounted(async () => {
                 v-permission="'role:manage'"
                 link
                 type="primary"
-                @click="openEditRole(row)"
+                @click="openEditRole(row as Role)"
                 :disabled="row.is_system"
               >
                 编辑
@@ -659,7 +659,7 @@ onMounted(async () => {
                 v-permission="'role:manage'"
                 link
                 type="danger"
-                @click="deleteRole(row)"
+                @click="deleteRole(row as Role)"
                 :disabled="row.is_system"
               >
                 删除

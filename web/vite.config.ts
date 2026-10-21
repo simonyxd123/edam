@@ -56,4 +56,16 @@ export default defineConfig({
       },
     },
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // 没有测试文件时不要让 CI 挂掉（但仓库里已有真实用例，见 src/utils/*.spec.ts）
+    passWithNoTests: true,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      exclude: ['**/node_modules/**', '**/*.d.ts', 'src/auto-imports.d.ts', 'src/components.d.ts'],
+    },
+  },
 });

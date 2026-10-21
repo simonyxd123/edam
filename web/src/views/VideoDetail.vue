@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { api, apiBase } from '@/api/client';
+import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
 import Hls from 'hls.js';
 
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
-const videoId = route.params.id as string;
+// 响应式：原来是一次性快照 const videoId = route.params.id，
+// 从 /videos/1 跳 /videos/2 时 vue-router 复用同一组件实例，
+// onMounted 不再执行 → 播的还是上一个视频
+const videoId = computed(() => route.params.id as string);
 
 // 当前用户的工号（用于视频水印，按预览者动态显示）
 const currentEmployeeNo = computed(() => userStore.user?.employee_no || 'anonymous');
@@ -21,14 +24,27 @@ const hls = ref<Hls | null>(null);
 const loading = ref(true);
 const errorMsg = ref('');
 
-onMounted(async () => {
+onMounted(() => {
+  loadVideo();
+});
+
+// 路由参数变化 → 重新加载（vue-router 复用组件实例时 onMounted 不会重跑）
+watch(videoId, () => {
+  // 先销毁旧实例，否则两个 hls 实例抢同一个 <video> → MediaSource 冲突
+  destroyHls();
+  errorMsg.value = '';
+  loading.value = true;
+  loadVideo();
+});
+
+async function loadVideo() {
   try {
-    // 走项目 api 客户端（自动注入 JWT + X-User-Id）
-    const meta = await api.get<any>(`/videos/${videoId}`);
+    // 走项目 api 客户端（自动注入 JWT）
+    const meta = await api.get<any>(`/videos/${videoId.value}`);
     video.value = meta;
 
     const tk = await api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
-      `/playback/${videoId}/token`,
+      `/playback/${videoId.value}/token`,
     );
     // 后端返回的 m3u8_url 是相对路径 '/api/v1/playback/{id}/playlist.m3u8?token=...'
     const fullUrl = tk.m3u8_url.startsWith('http')
@@ -47,7 +63,6 @@ onMounted(async () => {
       hls.value = new Hls({
         debug: false,
         enableWorker: true,
-        xhrSetup: (xhr) => {},
       });
       // 监听全部生命周期事件，定位卡哪一步
       const log = (e: string, d?: any) => console.log('[VideoDetail] HLS', e, d || '');
@@ -58,6 +73,16 @@ onMounted(async () => {
         'BUFFER_APPENDING', 'BUFFER_EOS',
         'VIDEO_ATTACHING', 'VIDEO_ATTACHED',
       ].forEach((evt) => hls.value?.on((Hls.Events as any)[evt], () => log(evt)));
+
+      // 恢复成功 → 清掉错误横幅。
+      // 否则重试成功后 errorMsg 仍非空 → 模板 v-else-if="errorMsg" 继续渲染
+      // 红字，v-show="... && !errorMsg" 把播放器整个隐藏 ——
+      // 视频其实已经能播了，用户却只看到一条永久的错误横幅。
+      hls.value.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (errorMsg.value.startsWith('网络异常')) {
+          errorMsg.value = '';
+        }
+      });
 
       // 安全自动播放：只在 hls.js 完成 attach 之后再 play()，
       // 并 catch 浏览器 autoplay 拒绝（NotAllowedError），避免误判成 MEDIA_ERROR。
@@ -155,16 +180,21 @@ onMounted(async () => {
     errorMsg.value = e?.message || '加载失败';
     loading.value = false;
   }
-});
+}
 
-onBeforeUnmount(() => {
-  // destroy + 置空，避免异步回调（如 token刷新、错误事件）触达已销毁实例
+/** 销毁当前 hls 实例（切视频 / 卸载前都要调） */
+function destroyHls() {
   try {
     hls.value?.destroy();
-  } catch (e) {
+  } catch {
     /* noop */
   }
   hls.value = null;
+}
+
+onBeforeUnmount(() => {
+  // destroy + 置空，避免异步回调（如 token刷新、错误事件）触达已销毁实例
+  destroyHls();
   if (videoEl.value) {
     try {
       videoEl.value.pause();
