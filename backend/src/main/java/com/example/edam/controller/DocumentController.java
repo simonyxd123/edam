@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.DocResponse;
 import com.example.edam.model.DocResource;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.DocResourceRepository;
@@ -8,6 +9,7 @@ import com.example.edam.repository.SysUserRepository;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.service.WatermarkService;
+import com.example.edam.security.CurrentUserId;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import jakarta.servlet.http.HttpServletResponse;
@@ -70,7 +72,7 @@ public class DocumentController {
         @RequestParam("classification_lv") String classificationLv,
         @RequestParam(value = "title", required = false) String title,
         @RequestParam(value = "enable_watermark", defaultValue = "true") Boolean enableWatermark,
-        @RequestHeader("X-User-Id") Long uploaderId
+        @CurrentUserId Long uploaderId
     ) {
         // 文件类型校验：仅接受 office / pdf / image
         String contentType = file.getContentType();
@@ -136,8 +138,9 @@ public class DocumentController {
     }
 
     @GetMapping("/{doc_id}")
-    public DocResource getById(@PathVariable("doc_id") Long docId) {
-        return documentService.getById(docId);
+    public DocResponse getById(@PathVariable("doc_id") Long docId) {
+        // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
+        return DocResponse.from(documentService.getById(docId));
     }
 
     /**
@@ -156,7 +159,7 @@ public class DocumentController {
     @GetMapping("/{doc_id}/preview")
     public void preview(
             @PathVariable("doc_id") Long docId,
-            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+            @CurrentUserId(required = false) Long userId,
             jakarta.servlet.http.HttpServletRequest request,
             HttpServletResponse response
     ) {
@@ -242,16 +245,17 @@ public class DocumentController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:delete')")
     public ResponseEntity<Void> delete(
         @PathVariable("doc_id") Long docId,
-        @RequestHeader("X-User-Id") Long currentUserId
+        @CurrentUserId Long currentUserId
     ) {
         documentService.delete(docId, currentUserId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/batch-delete")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:delete')")
     public ResponseEntity<Map<String, Object>> batchDelete(
         @RequestBody BatchDeleteRequest request,
-        @RequestHeader("X-User-Id") Long operatorId
+        @CurrentUserId Long operatorId
     ) {
         int count = 0;
         for (Long id : request.getDocIds()) {
@@ -296,7 +300,10 @@ public class DocumentController {
 
     private Map<String, Object> toPaginationResponse(Page<DocResource> page) {
         Map<String, Object> response = new HashMap<>();
-        response.put("items", page.getRecords());
+        // 逐条转 DTO（Integer → String 枚举映射）
+        response.put("items", page.getRecords().stream()
+            .map(DocResponse::from)
+            .toList());
         response.put("pagination", Map.of(
             "page", (int) page.getCurrent(),
             "page_size", (int) page.getSize(),

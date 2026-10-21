@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import structlog
-from aio_pika import Message, connect_robust, ExchangeType
+from aio_pika import DeliveryMode, Message, connect_robust, ExchangeType
 from aio_pika.abc import AbstractIncomingMessage
 from fastapi import FastAPI
 from minio import Minio
@@ -121,6 +121,7 @@ class WorkerApp:
                 with TASK_DURATION.labels(task_type=task_type).time():
                     await processor_fn(payload)
                 # 成功
+                TASK_ATTEMPTS.labels(task_type=task_type, attempt_result="success").inc()
                 self._record_task(task_type, success=True, video_id=video_id)
                 TASKS_PROCESSED.labels(task_type=task_type, result="success").inc()
                 if attempt > 1:
@@ -130,7 +131,12 @@ class WorkerApp:
                         attempt=attempt,
                     )
                 return
-            except BaseException as e:  # 含 KeyboardInterrupt 之类 —— 实际只接得到 Exception
+            except asyncio.CancelledError:
+                # 收到 SIGTERM / uvicorn 优雅关闭时的 cancel：
+                # 绝不能当成"任务失败"去重试，否则关闭流程被反复拖延，
+                # 且会在 MinIO 上留下半成品目录。直接向上抛。
+                raise
+            except Exception as e:
                 last_error = e
                 TASK_ATTEMPTS.labels(task_type=task_type, attempt_result="failed").inc()
                 if attempt < max_attempts:
@@ -234,7 +240,7 @@ class WorkerApp:
                 Message(
                     body=message_body,
                     content_type="application/json",
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    delivery_mode=DeliveryMode.PERSISTENT,
                 ),
                 routing_key="video.preprocess",
             )

@@ -1,5 +1,6 @@
 package com.example.edam.controller;
 
+import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -39,7 +40,7 @@ public class AdminController {
     @Operation(summary = "触发备份（高危，需 MFA）")
     public ResponseEntity<Map<String, Object>> triggerBackup(
             @RequestBody BackupRequest request,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
 
         log.warn("backup_triggered operator_id={} type={} mfa_verified={}",
             operatorId, request.type, request.mfaCode != null && !request.mfaCode.isBlank());
@@ -63,7 +64,7 @@ public class AdminController {
     public ResponseEntity<Map<String, Object>> restoreBackup(
             @PathVariable("backup_id") String backupId,
             @RequestBody RestoreRequest request,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
 
         log.warn("restore_triggered operator_id={} backup_id={} mfa_present={} approval_token_present={}",
             operatorId, backupId,

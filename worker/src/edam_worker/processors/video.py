@@ -5,21 +5,16 @@
 """
 import asyncio
 import datetime
-import hashlib
+import io
+import json
 import os
-import re
-import subprocess
 import tempfile
-import time
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 import cv2
 import imagehash
-import numpy as np
 import structlog
 from minio import Minio
-from minio.error import S3Error
 from PIL import Image
 
 from ..config import settings
@@ -55,38 +50,56 @@ class VideoProcessor:
         hls_path = None
         fingerprint_path = None
         duration_sec: Optional[int] = None
+        # 初始化为 None —— 下面 finally 会引用它；
+        # 若下载阶段就抛异常，变量未定义会在 finally 里抛 NameError，
+        # 把真正的原始异常顶替掉（排障时极具误导性）
+        local_path: Optional[str] = None
+        work_dir: Optional[str] = None
 
         try:
-            # 1. 下载视频到临时目录
+            # 1. 下载视频到工作目录
+            work_dir = tempfile.mkdtemp(prefix=f"edam-video-{video_id}-")
             local_path = await self._download_from_minio(
-                settings.MINIO_BUCKET_VIDEOS, input_path
+                settings.MINIO_BUCKET_VIDEOS, input_path, work_dir
             )
 
             # 2. ffprobe 提取时长（即使后面转码失败也能拿到时长）
             duration_sec = await self._probe_duration(local_path)
 
-            # 3. HLS 切片 + AES 加密（含 drawtext 水印）
+            # 3. HLS 切片 + AES-128 加密（含 drawtext 水印）
             watermark_text = f"EDAM {employee_no} video:{video_id} {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            hls_dir = await self._hls_transcode(local_path, video_id, watermark_text)
+            hls_dir, key_bytes = await self._hls_transcode(local_path, video_id, watermark_text, work_dir)
+
+            # 4. 提取帧指纹
+            local_fp = await self._extract_fingerprints(local_path, video_id, work_dir)
+            fingerprint_path = f"videos/{video_id}/fingerprint.json"
+
+            # 5. 上传 HLS 与指纹到 MinIO
+            #    注意：hls_status / fp_status 必须在上传**成功之后**才置 ready。
+            #    否则上传到一半失败时，MinIO 上只有半套分片，
+            #    后端却收到 "ready" —— 前端提示"处理完成"，点进去却是 404。
+            await self._upload_hls(hls_dir, video_id)
             hls_path = f"videos/{video_id}/hls/playlist.m3u8"
             hls_status = 2  # ready
 
-            # 4. 提取帧指纹
-            local_fp = await self._extract_fingerprints(local_path, video_id)
-            fingerprint_path = f"videos/{video_id}/fingerprint.json"
+            await self._upload_fingerprint(local_fp, video_id)
             fp_status = 2    # ready
 
-            # 5. 上传 HLS 与指纹到 MinIO
-            await self._upload_hls(hls_dir, video_id)
-            await self._upload_fingerprint(local_fp, video_id)
+            # 6. AES 密钥单独存到 hls/ 之外，避免被 segment 代理误暴露
+            await self._upload_key(key_bytes, video_id)
 
             log.info("video_processing_complete", video_id=video_id, duration_sec=duration_sec)
 
         except Exception as e:
             log.error("video_processing_failed", video_id=video_id, error=str(e))
-            # 出错也继续到 finally，外层 finally 统一回调后端
+            # 必须 raise —— 外层 _process_with_retry 靠异常触发重试。
+            # 吞掉的话任何瞬时故障（MinIO 抖动 / FFmpeg 偶发失败）都会
+            # 让消息被直接 ACK 丢弃、DB 永久停在 failed，
+            # 而 Prometheus 还会显示 100% 成功率。
+            # 状态回调由 finally 负责，与是否重抛不冲突。
+            raise
         finally:
-            # 6. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status / duration_sec
+            # 7. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status / duration_sec
             #    前端轮询 /videos/{id} 看到 ready/failed 后弹提示
             await self._notify_backend_status(
                 video_id,
@@ -94,11 +107,8 @@ class VideoProcessor:
                 fingerprint_status=fp_status, fingerprint_path=fingerprint_path,
                 duration_sec=duration_sec,
             )
-            # 清理临时文件
-            try:
-                self._cleanup_temp(local_path)  # type: ignore
-            except Exception:
-                pass
+            # 清理临时文件（HLS 分片 + 指纹 JSON 都在 work_dir 里）
+            self._cleanup_temp(work_dir)
 
     async def _probe_duration(self, input_path: str) -> Optional[int]:
         """
@@ -152,8 +162,13 @@ class VideoProcessor:
             payload["duration_sec"] = duration_sec
 
         try:
+            # 带 X-Worker-Token —— 后端 PATCH /videos/{id}/status 已改为要求该头
+            # （原先 permitAll，谁都能把没转码的视频标成 ready）
+            headers = {}
+            if settings.WORKER_TOKEN:
+                headers["X-Worker-Token"] = settings.WORKER_TOKEN
             resp = await asyncio.to_thread(
-                requests.patch, url, json=payload, timeout=10
+                requests.patch, url, json=payload, headers=headers, timeout=10
             )
             if resp.status_code >= 400:
                 log.error("notify_backend_failed", video_id=video_id,
@@ -163,33 +178,54 @@ class VideoProcessor:
         except Exception as e:
             log.error("notify_backend_exception", video_id=video_id, error=str(e))
 
-    async def _download_from_minio(self, bucket: str, object_name: str) -> str:
-        """从 MinIO 下载到本地临时目录"""
-        tmp_dir = tempfile.mkdtemp(prefix="edam-video-")
-        local_path = os.path.join(tmp_dir, os.path.basename(object_name))
+    async def _download_from_minio(self, bucket: str, object_name: str, work_dir: str) -> str:
+        """从 MinIO 下载到工作目录"""
+        local_path = os.path.join(work_dir, os.path.basename(object_name))
         await asyncio.to_thread(
             self.minio.fget_object, bucket, object_name, local_path
         )
         return local_path
 
-    async def _hls_transcode(self, input_path: str, video_id: int, watermark_text: str = "EDAM") -> str:
+    async def _hls_transcode(
+        self,
+        input_path: str,
+        video_id: int,
+        watermark_text: str = "EDAM",
+        work_dir: Optional[str] = None,
+    ) -> tuple[str, bytes]:
         """
-        FFmpeg HLS 切片 + AES 加密
+        FFmpeg HLS 切片 + AES-128 加密
         参考方案书 4.2 节
 
-        注意：FFmpeg 4.3 不支持 -hls_key_url（4.4+ 才有）。
-        我们改用后处理：FFmpeg 输出 m3u8 后用 _rewrite_key_url() 把
-        URI="key.bin" 替换为后端真实 key URL。
+        加密（关键）：
+        - 生成 16 字节随机 key，写入 key.info（``URI key.bin`` + hex key）
+        - FFmpeg 用 ``-hls_key_info_file`` 做 AES-128-CBC 加密，
+          每个分片用独立 IV（key.info 不写 IV 时 FFmpeg 自动生成）
+        - m3u8 里的 ``URI="key.bin"`` 保持相对路径，
+          由后端 PlaybackController 在输出时改写成带 token 的绝对 URL
+          （与 segment 改写同一套机制，避免两处逻辑不一致）
+
+        注意：FFmpeg 4.3 不支持 ``-hls_key_url``（4.4+ 才有），
+        所以走 ``-hls_key_info_file`` 这条兼容路径。
 
         drawtext 水印（v3.2 视频防泄密）：
         - 右下角员工号 + 时间戳，半透明
         - 字体根据视频高度自动调整（height/30, min 16）
         - 颜色白底带黑边框（任何背景都可见）
+
+        :return: (hls 输出目录, 16 字节 AES key)
         """
-        output_dir = os.path.join(tempfile.gettempdir(), f"edam-hls-{video_id}")
-        os.makedirs(output_dir, exist_ok=True)
+        if work_dir is None:
+            work_dir = tempfile.mkdtemp(prefix=f"edam-hls-{video_id}-")
+        # mkdtemp 保证每次转码都是干净目录 —— 复用固定名字会让
+        # 上一轮残留的分片被一并上传（MinIO 存储膨胀 + 运维指标失真）
+        output_dir = tempfile.mkdtemp(prefix="hls-", dir=work_dir)
         m3u8_path = os.path.join(output_dir, "playlist.m3u8")
-        key_url = settings.HLS_KEY_URL.format(video_id=video_id)
+        key_path = os.path.join(output_dir, "key.bin")
+
+        # --- 生成 AES-128 key（16 字节）与 key.info ---
+        key = os.urandom(16)
+        await asyncio.to_thread(self._write_key_info, output_dir, key)
 
         # drawtext filter（转义冒号和单引号，FFmpeg filter 语法敏感）
         wm_escaped = watermark_text.replace("'", "\\'").replace(":", "\\:")
@@ -212,7 +248,7 @@ class VideoProcessor:
             font_part = f"fontfile='{font_path}':"
         else:
             font_part = "font='DejaVu Sans':"
-            log.warn("drawtext_font_not_found, falling_back_to_font_name, candidates={}", font_candidates)
+            log.warning("drawtext_font_not_found", candidates=font_candidates)
 
         # 右下角（不挡字幕）+ 白字 + 半透明黑底保证可读 + 低调不抢眼
         drawtext_filter = (
@@ -231,6 +267,7 @@ class VideoProcessor:
             "-c:a", "aac",
             "-hls_time", str(settings.HLS_SEGMENT_DURATION),
             "-hls_playlist_type", settings.HLS_PLAYLIST_TYPE,
+            "-hls_key_info_file", os.path.join(output_dir, "key.info"),
             "-hls_segment_filename", os.path.join(output_dir, "segment_%03d.ts"),
             "-threads", str(settings.FFMPEG_THREADS),
             m3u8_path,
@@ -251,32 +288,49 @@ class VideoProcessor:
                        stderr=stderr.decode("utf-8", errors="replace"))
             raise RuntimeError(f"FFmpeg HLS 转码失败: {video_id}")
 
-        # 后处理：把 m3u8 里的 URI="key.bin" 改为真实 key URL
-        await self._rewrite_key_url(m3u8_path, key_url)
+        # 校验：加密确实生效了（m3u8 必须有 EXT-X-KEY 行）
+        await self._assert_encrypted(m3u8_path)
+
+        # key.bin 留在 output_dir 里，随 _upload_hls 一起上传到
+        # videos/{id}/hls/key.bin；后端另有一份独立副本在
+        # videos/{id}/key.bin（不在 hls/ 目录下，避免被 segment 代理暴露）
+        with open(key_path, "wb") as f:
+            f.write(key)
 
         log.info("hls_transcode_complete", video_id=video_id, output_dir=output_dir)
-        return output_dir
+        return output_dir, key
 
-    async def _rewrite_key_url(self, m3u8_path: str, key_url: str) -> None:
-        """把 m3u8 里的 URI=\"key.bin\" 替换为真实 key URL"""
-        def _do_replace():
-            with open(m3u8_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            # 替换 EXT-X-KEY 行里的 URI
-            # 形如: #EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=...
-            new_content = re.sub(
-                r'URI="[^"]*"',
-                f'URI="{key_url}"',
-                content,
-                count=1,
+    def _write_key_info(self, output_dir: str, key: bytes) -> None:
+        """写 FFmpeg 的 key.info：URI 指向同目录的 key.bin，key 为 hex。
+
+        不写 IV —— 让 FFmpeg 为每个分片生成独立 IV（HLS AES-128 规范做法）。
+        """
+        key_info_path = os.path.join(output_dir, "key.info")
+        with open(key_info_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("URI key.bin\n")
+            f.write(key.hex() + "\n")
+
+    async def _assert_encrypted(self, m3u8_path: str) -> None:
+        """确认 m3u8 里有 EXT-X-KEY —— 没有就说明加密没生效，必须报错。
+
+        以前这里是"改写 key URL"，但 m3u8 里根本没有 EXT-X-KEY，
+        正则是纯 no-op 却照样打"改写成功"日志 —— 排查时极具误导性。
+        """
+        def _check() -> bool:
+            with open(m3u8_path, "r", encoding="utf-8", newline="") as f:
+                for line in f:
+                    if line.startswith("#EXT-X-KEY"):
+                        return True
+            return False
+
+        has_key = await asyncio.to_thread(_check)
+        if not has_key:
+            raise RuntimeError(
+                "HLS 加密未生效：m3u8 中缺少 #EXT-X-KEY，拒绝上传明文分片"
             )
-            with open(m3u8_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
+        log.info("hls_encryption_verified", path=m3u8_path)
 
-        await asyncio.to_thread(_do_replace)
-        log.info("m3u8_key_url_rewritten", path=m3u8_path, key_url=key_url)
-
-    async def _extract_fingerprints(self, input_path: str, video_id: int) -> str:
+    async def _extract_fingerprints(self, input_path: str, video_id: int, work_dir: Optional[str] = None) -> str:
         """
         提取视频帧指纹
         算法：
@@ -284,51 +338,65 @@ class VideoProcessor:
         - 计算 pHash（64-bit）
         - 多帧冗余（同一指纹在视频中出现 3 次以提高鲁棒性）
         参考方案书 4.4.1 节
+
+        整个函数体跑在 asyncio.to_thread 里 —— cv2 解码 + resize +
+        phash 全是同步 CPU 密集操作，放在事件循环里会把整个 worker
+        卡死（prefetch=10 的其余任务、/health 端点全部无响应）。
         """
-        cap = cv2.VideoCapture(input_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_interval = max(1, int(fps * settings.FINGERPRINT_KEYFRAME_INTERVAL))
-        fingerprints: List[str] = []
+        if work_dir is None:
+            work_dir = tempfile.mkdtemp(prefix=f"edam-fp-{video_id}-")
+        output_path = os.path.join(work_dir, "fingerprint.json")
 
-        frame_idx = 0
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % frame_interval == 0:
-                # 缩小到 32x32 用于 pHash
-                small = cv2.resize(frame, (32, 32))
-                rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                # 正确：cv2 ndarray → PIL.Image → imagehash.phash
-                pil_img = Image.fromarray(rgb_frame)
-                h = imagehash.phash(pil_img, hash_size=8)
-                fingerprints.append(str(h))
-            frame_idx += 1
-        cap.release()
+        def _do_extract() -> None:
+            cap = cv2.VideoCapture(input_path)
+            try:
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                frame_interval = max(1, int(fps * settings.FINGERPRINT_KEYFRAME_INTERVAL))
+                fingerprints: List[str] = []
 
-        log.info(
-            "fingerprint_extraction_complete",
-            video_id=video_id,
-            count=len(fingerprints),
-        )
+                frame_idx = 0
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    if frame_idx % frame_interval == 0:
+                        # 缩小到 32x32 用于 pHash
+                        small = cv2.resize(frame, (32, 32))
+                        rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                        # 正确：cv2 ndarray → PIL.Image → imagehash.phash
+                        pil_img = Image.fromarray(rgb_frame)
+                        h = imagehash.phash(pil_img, hash_size=8)
+                        fingerprints.append(str(h))
+                    frame_idx += 1
+            finally:
+                # 必须放在 finally —— 中途异常会跳过 release，
+                # 泄漏文件句柄 + 解码器
+                cap.release()
 
-        # 持久化（追加 employee_id + timestamp 在按需嵌入时）
-        output_path = os.path.join(tempfile.gettempdir(), f"edam-fp-{video_id}.json")
-        import json
-        import datetime
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "video_id": video_id,
-                "fingerprint_count": len(fingerprints),
-                "fingerprints": fingerprints,
-                "extracted_at": datetime.datetime.utcnow().isoformat() + "Z",
-            }, f, ensure_ascii=False, indent=2)
+            log.info(
+                "fingerprint_extraction_complete",
+                video_id=video_id,
+                count=len(fingerprints),
+            )
+
+            with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+                json.dump({
+                    "video_id": video_id,
+                    "fingerprint_count": len(fingerprints),
+                    "fingerprints": fingerprints,
+                    "extracted_at": datetime.datetime.utcnow().isoformat() + "Z",
+                }, f, ensure_ascii=False, indent=2)
+
+        await asyncio.to_thread(_do_extract)
         return output_path
 
     async def _upload_hls(self, hls_dir: str, video_id: int) -> None:
         """上传 HLS 切片到 MinIO"""
         for root, _, files in os.walk(hls_dir):
             for fname in files:
+                if fname == "key.info":
+                    # key.info 是 FFmpeg 的中间产物，不该暴露到对象存储
+                    continue
                 local_file = os.path.join(root, fname)
                 object_name = f"videos/{video_id}/hls/{fname}"
                 await asyncio.to_thread(
@@ -338,6 +406,24 @@ class VideoProcessor:
                     local_file,
                     content_type="application/octet-stream",
                 )
+
+    async def _upload_key(self, key: bytes, video_id: int) -> None:
+        """上传 AES-128 密钥到 MinIO（放在 hls/ 目录之外）。
+
+        独立路径 ``videos/{id}/key.bin`` 而不是 ``videos/{id}/hls/key.bin``：
+        hls/ 目录下的东西语义上都是"播放器要拉的"，key 应当只由
+        后端 getKey 端点（带 token 校验）吐出。
+        """
+        def _put() -> None:
+            self.minio.put_object(
+                settings.MINIO_BUCKET_VIDEOS,
+                f"videos/{video_id}/key.bin",
+                io.BytesIO(key),
+                length=len(key),
+                content_type="application/octet-stream",
+            )
+
+        await asyncio.to_thread(_put)
 
     async def _upload_fingerprint(self, local_path: str, video_id: int) -> None:
         """上传指纹到 MinIO"""
@@ -350,14 +436,20 @@ class VideoProcessor:
             content_type="application/json",
         )
 
-    def _cleanup_temp(self, path: str) -> None:
-        """清理临时目录"""
+    def _cleanup_temp(self, path: Optional[str]) -> None:
+        """清理工作目录（HLS 分片 + 指纹 JSON + 原始下载文件都在里面）。
+
+        以前只删了"下载文件的父目录"，而 HLS 目录和指纹 JSON 落在
+        /tmp 下且从不清除 —— 长驻 worker 每处理一个视频就在容器
+        可写层留下完整分片集，几百个视频后磁盘写满。
+        """
         if not path:
             return
         try:
             import shutil
-            parent = os.path.dirname(path)
-            if parent and os.path.exists(parent) and parent.startswith(tempfile.gettempdir()):
-                shutil.rmtree(parent, ignore_errors=True)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.exists(path):
+                os.unlink(path)
         except Exception as e:
             log.warning("temp_cleanup_failed", path=path, error=str(e))

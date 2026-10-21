@@ -12,6 +12,7 @@ import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysRoleRepository;
 import com.example.edam.repository.SysUserRoleRepository;
 import com.example.edam.service.AuditService;
+import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -92,7 +93,7 @@ public class RbacController {
     @Operation(summary = "创建角色")
     public Map<String, Object> createRole(
             @RequestBody CreateRoleRequest req,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
         if (req.code == null || req.code.isBlank()) {
             throw new IllegalArgumentException("角色 code 必填");
         }
@@ -128,7 +129,7 @@ public class RbacController {
     public Map<String, Object> updateRole(
             @PathVariable("role_id") Long roleId,
             @RequestBody UpdateRoleRequest req,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
         if (Boolean.TRUE.equals(role.getIsSystem())) {
@@ -154,7 +155,7 @@ public class RbacController {
     @Operation(summary = "删除角色（系统角色不可删）")
     public Map<String, Object> deleteRole(
             @PathVariable("role_id") Long roleId,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
         if (Boolean.TRUE.equals(role.getIsSystem())) {
@@ -178,7 +179,7 @@ public class RbacController {
     public Map<String, Object> assignPermissions(
             @PathVariable("role_id") Long roleId,
             @RequestBody AssignPermissionsRequest req,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
 
@@ -228,7 +229,7 @@ public class RbacController {
     public Map<String, Object> assignRolesToUser(
             @PathVariable("user_id") Long userId,
             @RequestBody AssignRolesRequest req,
-            @RequestHeader("X-User-Id") Long operatorId) {
+            @CurrentUserId Long operatorId) {
         int n = 0;
         if (req.role_ids != null && !req.role_ids.isEmpty()) {
             userRoleRepository.deleteByUserId(userId);

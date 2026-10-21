@@ -122,3 +122,17 @@ temp/
 test_videos/
 poc_*/
 
+
+# 前端构建产物
+web/dist/
+dist/
+
+# 前端覆盖率报告
+web/coverage/
+coverage/
+
+# Playwright / Cypress 产物
+e2e/playwright-report/
+e2e/test-results/
+e2e/cypress/screenshots/
+e2e/cypress/videos/

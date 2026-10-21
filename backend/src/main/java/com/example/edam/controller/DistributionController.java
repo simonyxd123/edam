@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.DistributionApproval;
 import com.example.edam.repository.DistributionApprovalRepository;
+import com.example.edam.security.CurrentUserId;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -53,7 +54,7 @@ public class DistributionController {
     @Transactional
     public ResponseEntity<Map<String, Object>> create(
         @RequestBody CreateApprovalRequest request,
-        @RequestHeader("X-User-Id") Long applicantId
+        @CurrentUserId Long applicantId
     ) {
         DistributionApproval approval = new DistributionApproval();
         approval.setDocId(request.getDocId());
@@ -87,10 +88,11 @@ public class DistributionController {
 
     @PostMapping("/{approval_id}/decide")
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:approve')")
     public ResponseEntity<Map<String, Object>> decide(
         @PathVariable("approval_id") Long approvalId,
         @RequestBody DecideRequest request,
-        @RequestHeader("X-User-Id") Long approverId
+        @CurrentUserId Long approverId
     ) {
         DistributionApproval approval = approvalRepository.selectById(approvalId);
         if (approval == null) {
@@ -98,13 +100,19 @@ public class DistributionController {
         }
 
         // 0=pending, 1=approved, 2=rejected
-        int newStatus = request.getDecision().equals("approve") ? 1 : 2;
+        // decision 可能为 null —— 原来直接 .equals 会 NPE，
+        // 而且任何非 "approve" 的值都会被当成 reject（拼错也静默拒绝）
+        String decision = request.getDecision();
+        if (!"approve".equals(decision) && !"reject".equals(decision)) {
+            throw new IllegalArgumentException("decision 必须是 approve 或 reject，当前: " + decision);
+        }
+        int newStatus = "approve".equals(decision) ? 1 : 2;
         approval.setStatus(newStatus);
         approval.setFinalDecisionAt(OffsetDateTime.now());
         approvalRepository.updateById(approval);
 
         log.info("approval_decided, approval_id={}, decision={}, approver_id={}",
-            approvalId, request.getDecision(), approverId);
+            approvalId, decision, approverId);
 
         Map<String, Object> response = new HashMap<>();
         response.put("status", statusToString(approval.getStatus()));
@@ -113,9 +121,10 @@ public class DistributionController {
 
     @PostMapping("/{approval_id}/revoke")
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:approve')")
     public ResponseEntity<Void> revoke(
         @PathVariable("approval_id") Long approvalId,
-        @RequestHeader("X-User-Id") Long operatorId
+        @CurrentUserId Long operatorId
     ) {
         DistributionApproval approval = approvalRepository.selectById(approvalId);
         if (approval == null) {
@@ -180,7 +189,13 @@ public class DistributionController {
 
     private Map<String, Object> toPaginationResponse(Page<DistributionApproval> page) {
         Map<String, Object> response = new HashMap<>();
-        response.put("items", page.getRecords());
+        // 逐条走 toResponse()：原来直接塞 page.getRecords()（原始实体），
+        // 实体是 camelCase + 扁平字段 + status 为 Integer，
+        // 前端取 row.external_recipient.name → undefined.name → 整个组件渲染崩溃白屏。
+        java.util.List<Map<String, Object>> items = page.getRecords().stream()
+            .map(this::toResponse)
+            .toList();
+        response.put("items", items);
         response.put("pagination", Map.of(
             "page", (int) page.getCurrent(),
             "page_size", (int) page.getSize(),

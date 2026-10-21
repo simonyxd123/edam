@@ -5,6 +5,7 @@ import com.example.edam.dto.AuditLogDTO;
 import com.example.edam.model.OperationLog;
 import com.example.edam.repository.OperationLogRepository;
 import com.example.edam.service.AuditService;
+import com.example.edam.security.CurrentUserId;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -68,7 +69,7 @@ public class AuditController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('audit:audit_export')")
     public ResponseEntity<Map<String, Object>> export(
             @RequestBody ExportRequest request,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         String taskId = UUID.randomUUID().toString();
         String downloadUrl = String.format(

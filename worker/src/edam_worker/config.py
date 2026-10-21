@@ -51,6 +51,10 @@ class Settings:
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "true").lower() == "true"
     METRICS_PORT: int = int(os.getenv("METRICS_PORT", "9100"))
 
+    # Worker 回调后端时携带的共享密钥
+    # 后端 PATCH /videos/{id}/status 校验该头；为空则后端一律拒绝回调
+    WORKER_TOKEN: str = os.getenv("WORKER_TOKEN", "")
+
     # 运维接口（按 video_id 重新触发 HLS 等）
     # OPS_TOKEN 为空时即便 OPS_ENABLED=true 也关闭（fail-closed）
     OPS_ENABLED: bool = os.getenv("OPS_ENABLED", "false").lower() == "true"

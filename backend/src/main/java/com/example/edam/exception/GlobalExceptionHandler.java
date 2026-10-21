@@ -19,6 +19,8 @@ import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.web.server.ResponseStatusException;
+
 /**
  * 全局异常处理器
  * 统一返回 RFC 7807 Problem Details 格式
@@ -30,6 +32,26 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNotFound(ResourceNotFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "Resource Not Found", ex.getMessage(), "RES_404");
+    }
+
+    /**
+     * ResponseStatusException 透传。
+     *
+     * <p>没有这个 handler 时，Spring 的 {@code ResponseStatusExceptionResolver}
+     * 会被 {@code @ExceptionHandler(Exception.class)} 抢先 —— 因为
+     * ExceptionHandlerMethodResolver 的优先级高于 ResponseStatusExceptionResolver。
+     * 结果是 {@code throw new ResponseStatusException(UNSUPPORTED_MEDIA_TYPE)}
+     * 被吞成 500「服务内部错误」，前端的错误提示全部失效
+     * （例如上传非视频文件本该返回 415）。
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatus(ResponseStatusException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        if (status == null) {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        String detail = ex.getReason() != null ? ex.getReason() : status.getReasonPhrase();
+        return build(status, status.getReasonPhrase(), detail, "HTTP_" + status.value());
     }
 
     @ExceptionHandler(AccessDeniedException.class)

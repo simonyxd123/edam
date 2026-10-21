@@ -116,28 +116,20 @@ public class WebAuthnAuthenticationService {
      */
     private void verifyAssertionSignature(String publicKeyB64, String authenticatorDataB64,
                                             String clientDataJSONB64, String signatureB64) {
-        try {
-            // 1. 解码
-            byte[] publicKey = Base64.getUrlDecoder().decode(publicKeyB64);
-            byte[] authenticatorData = Base64.getUrlDecoder().decode(authenticatorDataB64);
-            byte[] clientDataJSON = Base64.getUrlDecoder().decode(clientDataJSONB64);
-            byte[] signature = Base64.getUrlDecoder().decode(signatureB64);
-
-            // 2. 计算签名输入 = authenticatorData + SHA-256(clientDataJSON)
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] clientDataHash = digest.digest(clientDataJSON);
-            byte[] signedData = new byte[authenticatorData.length + clientDataHash.length];
-            System.arraycopy(authenticatorData, 0, signedData, 0, authenticatorData.length);
-            System.arraycopy(clientDataHash, 0, signedData, authenticatorData.length, clientDataHash.length);
-
-            // 3. 用公钥验证签名（简化：假设 ES256）
-            // 实际生产应解析 COSE 编码的公钥
-            // 此处仅记录日志
-            log.debug("assertion_verify skipped (simplified impl) publicKey_len={}",
-                publicKey.length);
-
-        } catch (Exception e) {
-            throw new IllegalArgumentException("签名验证异常", e);
-        }
+        // 安全关键：WebAuthn assertion 的签名验证是"无密码登录"的全部根基。
+        //
+        // 原实现只做 base64 解码，然后打一行
+        // "assertion_verify skipped (simplified impl)" 就返回成功 ——
+        // 配套的注册侧 extractPublicKey 也只是把 attestation 做 SHA-256
+        // 当公钥。于是注册不验 attestation、登录不验 signature，
+        // 攻击者只要知道工号 + credentialId 就能登录任意用户。
+        //
+        // 正确实现需要 webauthn4j（解析 COSE 公钥 / 校验 rpIdHash /
+        // flags / signCount / ES256 签名）。
+        // 在那之前必须 **fail-closed**：验不过就拒绝登录。
+        throw new UnsupportedOperationException(
+            "WebAuthn assertion 签名验证未实现，已拒绝登录以避免绕过密码。"
+                + "请接入 webauthn4j-spring-security-core 后再启用 WebAuthn 登录。"
+        );
     }
 }

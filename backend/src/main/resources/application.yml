@@ -108,6 +108,17 @@ edam:
     secret: ${JWT_SECRET:dev-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256}
     access-token-ttl-seconds: 600
     refresh-token-ttl-seconds: 604800
+  # Worker → Backend 回调共享密钥。
+  # PATCH /videos/{id}/status 用它鉴权（原先 permitAll，谁都能把没转码的视频标成 ready）。
+  # Worker 侧用同名环境变量 WORKER_TOKEN 注入。留空则回调一律拒绝（fail-closed）。
+  worker:
+    token: ${WORKER_TOKEN:}
+  # 启动自举：默认 admin 账号。
+  # 原先硬编码 admin123 且无 profile 开关，production 也会建 —— 等保高危项。
+  # 现在 admin-password 为空则不创建任何默认账号。
+  bootstrap:
+    admin-password: ${ADMIN_INITIAL_PASSWORD:}
+    create-default-admin: ${CREATE_DEFAULT_ADMIN:false}
   rate-limit:
     login:
       per-ip: 5

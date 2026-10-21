@@ -22,6 +22,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
 import java.util.UUID;
+import com.example.edam.security.CurrentUser;
+import org.springframework.security.access.AccessDeniedException;
 
 /**
  * 文档 Service
@@ -200,11 +202,18 @@ public class DocumentService {
         return doc;
     }
 
+    /**
+     * 删除文档
+     *
+     * <p>归属校验：只有上传者本人或管理员能删。
+     * 原实现对非 owner 只打 warn 就照样删（IDOR）。
+     */
     @Transactional
     public void delete(Long id, Long currentUserId) {
         DocResource doc = getById(id);
-        if (!doc.getUploaderId().equals(currentUserId)) {
-            log.warn("doc_delete_by_non_owner, doc_id={}, user_id={}", id, currentUserId);
+        if (!doc.getUploaderId().equals(currentUserId) && !CurrentUser.isAdmin()) {
+            log.warn("doc_delete_by_non_owner_rejected, doc_id={}, user_id={}", id, currentUserId);
+            throw new AccessDeniedException("无权删除他人上传的文档: " + id);
         }
         docRepository.deleteById(id);
     }

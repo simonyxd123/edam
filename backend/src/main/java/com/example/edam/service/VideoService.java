@@ -25,6 +25,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
 import java.util.UUID;
+import com.example.edam.security.CurrentUser;
+import org.springframework.security.access.AccessDeniedException;
 
 /**
  * 视频资源 Service
@@ -124,11 +126,12 @@ public class VideoService {
             }
 
             // 3. 真实上传到 MinIO（先确保 bucket 存在）—— 不占事务、不占数据库连接
+            //    扩展名必须来自**服务端白名单**，不能用客户端的 Content-Type：
+            //    Content-Type: video/../../../../other-bucket/secret 会让扩展名
+            //    变成 "../../../other-bucket/secret"，最终 key 形如
+            //    uploads/1/<uuid>.../../other-bucket/secret —— 目录穿越。
             String minioPath = String.format("uploads/%d/%s.%s",
-                uploaderId, UUID.randomUUID(),
-                file.getContentType() != null && file.getContentType().contains("/")
-                    ? file.getContentType().substring(file.getContentType().indexOf('/') + 1)
-                    : "mp4");
+                uploaderId, UUID.randomUUID(), detectVideoExtension(file));
 
             ensureBucketExists(videosBucket);
             uploadToMinio(videosBucket, minioPath, file);
@@ -152,10 +155,58 @@ public class VideoService {
     }
 
     /**
+     * 从 Content-Type 推断视频扩展名 —— **只认白名单里的 mime 子类型**。
+     *
+     * <p>不能直接取 {@code contentType.substring(indexOf('/') + 1)}：
+     * 客户端可以传 {@code video/../../../../secret}，那样扩展名会变成
+     * {@code ../../../secret}，拼进 MinIO object name 就是目录穿越。
+     */
+    private String detectVideoExtension(MultipartFile file) {
+        String contentType = file.getContentType();
+        if (contentType != null) {
+            String subtype = contentType.toLowerCase().trim();
+            int slash = subtype.indexOf('/');
+            if (slash >= 0) {
+                subtype = subtype.substring(slash + 1);
+            }
+            // 去掉可能的参数（video/mp4; charset=...）
+            int semi = subtype.indexOf(';');
+            if (semi >= 0) {
+                subtype = subtype.substring(0, semi).trim();
+            }
+            switch (subtype) {
+                case "mp4":
+                case "mpeg":
+                case "quicktime":
+                case "x-m4v":
+                case "x-msvideo":
+                case "webm":
+                case "x-matroska":
+                case "3gpp":
+                    return subtype.replace("x-", "");
+                default:
+                    break;
+            }
+        }
+        // Content-Type 不可信 → 退回按原始文件名判断
+        String name = file.getOriginalFilename();
+        if (name != null) {
+            String lower = name.toLowerCase();
+            if (lower.endsWith(".mp4")) return "mp4";
+            if (lower.endsWith(".mov")) return "mov";
+            if (lower.endsWith(".avi")) return "avi";
+            if (lower.endsWith(".mkv")) return "mkv";
+            if (lower.endsWith(".webm")) return "webm";
+            if (lower.endsWith(".m4v")) return "m4v";
+            if (lower.endsWith(".mpeg") || lower.endsWith(".mpg")) return "mpeg";
+        }
+        return "mp4";
+    }
+
+    /**
      * 秒传查询：短只读事务。
      */
-    private VideoResource findExistingForDedup(String fileHash) {
-        TransactionTemplate tx = new TransactionTemplate(txManager);
+    private VideoResource findExistingForDedup(String fileHash) {        TransactionTemplate tx = new TransactionTemplate(txManager);
         tx.setReadOnly(true);
         return tx.execute(s -> videoRepository.findByFileHash(fileHash));
     }
@@ -265,16 +316,20 @@ public class VideoService {
 
     /**
      * 删除视频
+     *
+     * <p>归属校验：只有上传者本人或管理员能删。
+     * 原实现对非 owner 只打一行 warn 就照样删 —— 任何持有
+     * {@code video:delete} 权限的普通用户都能删掉别人的视频（IDOR）。
      */
     @Transactional
     public void delete(Long id, Long currentUserId) {
         VideoResource video = getById(id);
-        if (!video.getUploaderId().equals(currentUserId)) {
-            // 实际应该检查 admin 权限
-            log.warn("video_delete_by_non_owner, video_id={}, user_id={}", id, currentUserId);
+        if (!video.getUploaderId().equals(currentUserId) && !CurrentUser.isAdmin()) {
+            log.warn("video_delete_by_non_owner_rejected, video_id={}, user_id={}", id, currentUserId);
+            throw new AccessDeniedException("无权删除他人上传的视频: " + id);
         }
         videoRepository.deleteById(id);
-        log.info("video_deleted, video_id={}", id);
+        log.info("video_deleted, video_id={}, operator_id={}", id, currentUserId);
     }
 
     private Integer parseClassification(String lv) {

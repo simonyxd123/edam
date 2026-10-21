@@ -4,6 +4,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
 import com.example.edam.security.JwtTokenProvider;
+import com.example.edam.security.CurrentUserId;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -46,7 +47,7 @@ public class WebAuthnController {
     @PostMapping("/register/begin")
     public ResponseEntity<RegistrationChallengeResponse> beginRegistration(
             @RequestBody BeginRegistrationRequest request,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
 
         SysUser user = userRepository.findById(userId);
         if (user == null) {
@@ -94,7 +95,7 @@ public class WebAuthnController {
     @PostMapping("/register/complete")
     public ResponseEntity<RegistrationCompleteResponse> completeRegistration(
             @RequestBody CompleteRegistrationRequest request,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
 
         SysUser user = userRepository.findById(userId);
         if (user == null) {
@@ -215,7 +216,7 @@ public class WebAuthnController {
      */
     @GetMapping("/credentials")
     public ResponseEntity<List<CredentialInfo>> listCredentials(
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
         List<WebAuthnCredential> creds = credentialRepository.findActiveByUserId(userId);
         List<CredentialInfo> result = creds.stream()
             .map(c -> {
@@ -239,7 +240,7 @@ public class WebAuthnController {
     @DeleteMapping("/credentials/{credentialId}")
     public ResponseEntity<Void> revokeCredential(
             @PathVariable String credentialId,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
         Optional<WebAuthnCredential> opt = credentialRepository.findByCredentialId(credentialId);
         if (opt.isEmpty() || !opt.get().getUserId().equals(userId)) {
             return ResponseEntity.notFound().build();

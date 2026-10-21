@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.example.edam.repository.SysUserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -19,6 +20,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/health")
 @RequiredArgsConstructor
+@Slf4j
 public class HealthController {
 
     @Value("${spring.application.name}")
@@ -74,7 +76,9 @@ public class HealthController {
             mysql.put("latency_ms", System.currentTimeMillis() - start);
         } catch (Exception e) {
             mysql.put("status", "down");
-            mysql.put("error", e.getMessage());
+            // 不对外暴露异常消息 —— 里面通常含 JDBC URL / 主机名 / 端口。
+            // 详细信息只进服务端日志。
+            log.warn("health_mysql_down: {}", e.getMessage());
         }
         components.put("mysql", mysql);
 
@@ -87,7 +91,7 @@ public class HealthController {
             redis.put("latency_ms", System.currentTimeMillis() - start);
         } catch (Exception e) {
             redis.put("status", "down");
-            redis.put("error", e.getMessage());
+            log.warn("health_redis_down: {}", e.getMessage());
         }
         components.put("redis", redis);
 
@@ -97,7 +101,7 @@ public class HealthController {
             rabbit.put("status", conn.isOpen() ? "ok" : "down");
         } catch (Exception e) {
             rabbit.put("status", "down");
-            rabbit.put("error", e.getMessage());
+            log.warn("health_rabbitmq_down: {}", e.getMessage());
         }
         components.put("rabbitmq", rabbit);
 

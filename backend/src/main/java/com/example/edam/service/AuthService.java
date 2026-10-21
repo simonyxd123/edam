@@ -5,6 +5,8 @@ import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
+import com.example.edam.security.LoginAttemptService;
+import com.example.edam.security.TotpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -45,6 +47,7 @@ public class AuthService {
     private final AuditService auditService;
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
+    private final LoginAttemptService loginAttemptService;
 
     /**
      * 登录
@@ -67,23 +70,30 @@ public class AuthService {
 
         // 3. 密码校验
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
-            handleFailedLogin(user);
+            // 失败计数必须走**独立事务**：本方法带 @Transactional，
+            // 后面 throw 的 RuntimeException 会把同事务里的 updateById 一起回滚，
+            // 导致失败计数永远写不进 DB —— 暴力破解防护形同虚设
+            loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
             throw new ResourceNotFoundException("工号或密码错误");
         }
 
         // 4. MFA 校验（L3+ 资源 + 用户启用 MFA）
         if (user.getMfaEnabled() != null && user.getMfaEnabled() == 1) {
             if (mfaCode == null || mfaCode.isBlank()) {
+                loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
                 throw new IllegalArgumentException("MFA 验证码必填");
             }
-            if (mfaCode.length() != 6 || !mfaCode.matches("\\d{6}")) {
-                throw new IllegalArgumentException("MFA 验证码格式错误（6 位数字）");
+            // 真正比对 mfaSecret（RFC 6238 TOTP）。
+            // 原来这里只校验"是不是 6 位数字"，任何 6 位数字都能通过 ——
+            // 等保要求的双因素认证等于没有。
+            if (!TotpUtil.verify(user.getMfaSecret(), mfaCode)) {
+                loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
+                throw new IllegalArgumentException("MFA 验证码错误");
             }
         }
 
-        // 5. 重置失败计数
-        user.setFailedLoginCount(0);
-        userRepository.updateById(user);
+        // 5. 重置失败计数（独立事务，避免与后面的异常同生共死）
+        loginAttemptService.recordSuccess(user);
 
         // 6. 签发 token（角色 + 权限码 都写进 claims，让 @PreAuthorize 能校验）
         String sessionId = UUID.randomUUID().toString();
@@ -188,16 +198,9 @@ public class AuthService {
     }
 
     /**
-     * 处理登录失败
+     * 处理登录失败 —— 已移到 {@link com.example.edam.security.LoginAttemptService}。
+     *
+     * <p>原因：原先在 {@code @Transactional login()} 内直接 updateById，
+     * 随后的 throw 会把这次写入一起回滚，失败计数永远落不了库。
      */
-    private void handleFailedLogin(SysUser user) {
-        int failedCount = user.getFailedLoginCount() + 1;
-        user.setFailedLoginCount(failedCount);
-        if (failedCount >= MAX_FAILED_ATTEMPTS) {
-            user.setStatus(3);
-            log.warn("账号锁定: employee_no={} failed_count={}",
-                user.getEmployeeNo(), failedCount);
-        }
-        userRepository.updateById(user);
-    }
 }

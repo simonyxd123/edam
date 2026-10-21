@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.example.edam.service.DocumentService;
+import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,7 @@ public class PreviewController {
     public ResponseEntity<String> preview(
             @PathVariable("doc_id") Long docId,
             @RequestParam(required = false, defaultValue = "html") String format,
-            @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+            @CurrentUserId(required = false) Long userId) {
 
         log.info("doc_preview doc_id={} format={} user_id={}", docId, format, userId);
         // v3.2 占位实现：返回 HTML 含 Canvas 水印（实际由前端渲染）
@@ -56,7 +57,7 @@ public class PreviewController {
     @Operation(summary = "下载已加密文档")
     public ResponseEntity<ByteArrayResource> download(
             @PathVariable("doc_id") Long docId,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
 
         log.info("doc_download doc_id={} user_id={}", docId, userId);
         // v3.2 占位实现：返回加密文档字节流（实际从 MinIO 获取）

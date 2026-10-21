@@ -8,6 +8,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
+import com.example.edam.security.CurrentUserId;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -74,7 +75,7 @@ public class UserController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<SysUserView> create(
             @RequestBody CreateUserRequest request,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         if (request.getUsername() == null || request.getUsername().isBlank()) {
             throw new IllegalArgumentException("用户名必填");
@@ -128,7 +129,7 @@ public class UserController {
     public SysUserView update(
             @PathVariable("user_id") Long userId,
             @RequestBody UpdateUserRequest request,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -149,7 +150,7 @@ public class UserController {
     public ResponseEntity<Void> resetPassword(
             @PathVariable("user_id") Long userId,
             @RequestBody ResetPasswordRequest request,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -168,7 +169,7 @@ public class UserController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<Void> delete(
             @PathVariable("user_id") Long userId,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -188,7 +189,7 @@ public class UserController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     public ResponseEntity<Void> revokeKeys(
             @PathVariable("user_id") Long userId,
-            @RequestHeader("X-User-Id") Long operatorId
+            @CurrentUserId Long operatorId
     ) {
         log.warn("user_keys_revoked, user_id={}, operator_id={}", userId, operatorId);
         auditService.log(operatorId, "revoke_keys", "user", userId, "success");

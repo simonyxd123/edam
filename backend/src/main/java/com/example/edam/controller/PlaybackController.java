@@ -4,6 +4,7 @@ import com.example.edam.model.VideoResource;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.VideoService;
+import com.example.edam.security.CurrentUserId;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import jakarta.servlet.http.HttpServletRequest;
@@ -50,7 +51,7 @@ public class PlaybackController {
     @PostMapping("/{video_id}/token")
     public ResponseEntity<Map<String, Object>> getToken(
         @PathVariable("video_id") Long videoId,
-        @RequestHeader("X-User-Id") Long userId,
+        @CurrentUserId Long userId,
         HttpServletRequest request
     ) {
         VideoResource video = videoService.getById(videoId);
@@ -86,7 +87,7 @@ public class PlaybackController {
     /**
      * 获取 HLS playlist.m3u8（流式输出 MinIO 中的 m3u8，并把 segment 路径改写为后端代理路径）
      *
-     * Hls.js 不能直接拉 MinIO 的 HLS（缺少 X-User-Id / Authorization），
+     * Hls.js 不能直接拉 MinIO 的 HLS（缺少 Authorization 头），
      * 所以后端代理出 m3u8 + segments，URL 里带 token。
      *
      * 鉴权：dev 阶段 permitAll + 方法内校验 JWT（防止 Hls.js 自动请求时不带 Authorization）。
@@ -109,11 +110,13 @@ public class PlaybackController {
 
         try {
             String objectName = String.format("videos/%d/hls/playlist.m3u8", videoId);
-            InputStream stream = minioClient.getObject(
-                GetObjectArgs.builder().bucket(videosBucket).object(objectName).build());
-
-            byte[] content = stream.readAllBytes();
-            stream.close();
+            byte[] content;
+            // try-with-resources：原来 readAllBytes() 抛异常时 close() 永不执行，
+            // MinIO 的 HTTP 连接直接泄漏，并发播放出错时会耗尽连接池
+            try (InputStream stream = minioClient.getObject(
+                    GetObjectArgs.builder().bucket(videosBucket).object(objectName).build())) {
+                content = stream.readAllBytes();
+            }
 
             // 推断 segment URL 的 base（从 request URL 拿 scheme + host + port）
             // 反向代理 / 内网穿透场景下，request.getRequestURL() 是后端实际接收的
@@ -125,12 +128,13 @@ public class PlaybackController {
                 videoId, browserBase, request.getRequestURL());
 
             // 把 segment_001.ts 等相对路径改写为**绝对路径**（含浏览器侧 origin + token）
+            // 同时把 EXT-X-KEY 的 URI="key.bin" 改写为后端 key 端点（带 token）
             // 这样 Hls.js 解析时不会因为 base URL 拼接错位而失败
             String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
-            String rewritten = rewriteM3u8Segments(text, videoId, token, browserBase);
+            String rewritten = rewriteM3u8(text, videoId, token, browserBase);
 
-            log.info("m3u8_served, video_id={}, segments_count={}, in_size={}, out_size={}",
-                videoId, countLines(text, ".ts"), content.length,
+            log.info("m3u8_served, video_id={}, segments_count={}, has_ext_x_key={}, in_size={}, out_size={}",
+                videoId, countLines(text, ".ts"), text.contains("#EXT-X-KEY"), content.length,
                 rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
 
             return ResponseEntity.ok()
@@ -205,10 +209,11 @@ public class PlaybackController {
 
         try {
             String objectName = String.format("videos/%d/hls/%s", videoId, filename);
-            InputStream stream = minioClient.getObject(
-                GetObjectArgs.builder().bucket(videosBucket).object(objectName).build());
-            byte[] content = stream.readAllBytes();
-            stream.close();
+            byte[] content;
+            try (InputStream stream = minioClient.getObject(
+                    GetObjectArgs.builder().bucket(videosBucket).object(objectName).build())) {
+                content = stream.readAllBytes();
+            }
             return ResponseEntity.ok()
                 .header("Content-Type", "video/mp2t")
                 .header("Cache-Control", "public, max-age=300")
@@ -220,7 +225,9 @@ public class PlaybackController {
     }
 
     /**
-     * 把 m3u8 里 segment_001.ts 等相对路径改为**绝对路径**（含浏览器侧 origin + token）
+     * 把 m3u8 改写成 Hls.js 可直接消费的形态：
+     * 1. segment_001.ts 等相对路径 → **绝对路径**（含浏览器侧 origin + token）
+     * 2. EXT-X-KEY 的 URI="key.bin" → 后端 key 端点绝对地址（带 token）
      *
      * 关键修复：之前用 `/api/v1/playback/{id}/segment/...` 相对路径，
      * Hls.js 用 m3u8 的 base URL 拼接，相对路径解析容易出错（特别是反向代理场景下
@@ -228,12 +235,18 @@ public class PlaybackController {
      *
      * 改用绝对路径后，Hls.js 直接拉完整 URL，不会做 base URL 拼接。
      */
-    private String rewriteM3u8Segments(String m3u8, long videoId, String token, String browserBase) {
+    private String rewriteM3u8(String m3u8, long videoId, String token, String browserBase) {
         String base = browserBase.endsWith("/") ? browserBase.substring(0, browserBase.length() - 1) : browserBase;
         // 匹配 segment_xxx.ts 整行（不含 #EXTINF / #EXT-X-*）
-        return m3u8.replaceAll(
+        String rewritten = m3u8.replaceAll(
             "(?m)^(segment_\\d+\\.ts)$",
             String.format("%s/api/v1/playback/%d/segment/$1?token=%s", base, videoId, token));
+        // EXT-X-KEY 的 URI 指向 key.bin（worker 写的是相对路径），
+        // 改成后端 key 端点 —— Hls.js 不能带自定义头，所以走 query token
+        rewritten = rewritten.replaceAll(
+            "URI=\"key\\.bin\"",
+            String.format("URI=\"%s/api/v1/playback/%d/key?token=%s\"", base, videoId, token));
+        return rewritten;
     }
 
     private int countLines(String text, String ext) {
@@ -243,21 +256,45 @@ public class PlaybackController {
     }
 
     /**
-     * 获取 HLS AES 密钥
+     * 获取 HLS AES-128 密钥
+     *
+     * 鉴权：query string token（与 playlist.m3u8 / segment 同一套机制）。
+     * Hls.js 拉 key 时**不会带自定义请求头**，所以不能用
+     * {@code @RequestHeader("X-Session-Token")} —— 那样会直接 400。
+     *
+     * 密钥来源：Worker 转码时生成的 16 字节随机 key，存在 MinIO
+     * {@code videos/{id}/key.bin}（刻意放在 hls/ 目录之外，
+     * 避免被 segment 代理暴露）。
      */
     @GetMapping("/{video_id}/key")
     public ResponseEntity<byte[]> getKey(
         @PathVariable("video_id") Long videoId,
-        @RequestHeader("X-Session-Token") String sessionToken
+        @RequestParam("token") String token
     ) {
-        // 实际生产：校验 sessionToken + 返回 16 字节 AES 密钥
-        byte[] key = new byte[16];
-        for (int i = 0; i < 16; i++) key[i] = (byte) (i + 1);
+        try {
+            jwtTokenProvider.parseAndValidate(token);
+        } catch (Exception e) {
+            log.warn("key_token_invalid, video_id={}, error={}", videoId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
-        return ResponseEntity.status(HttpStatus.OK)
-            .header("Cache-Control", "no-store")
-            .header("Content-Type", "application/octet-stream")
-            .body(key);
+        String objectName = String.format("videos/%d/key.bin", videoId);
+        try (InputStream stream = minioClient.getObject(
+                GetObjectArgs.builder().bucket(videosBucket).object(objectName).build())) {
+            byte[] key = stream.readAllBytes();
+            if (key.length != 16) {
+                log.error("hls_key_invalid_length, video_id={}, len={}", videoId, key.length);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            }
+            log.info("hls_key_served, video_id={}", videoId);
+            return ResponseEntity.status(HttpStatus.OK)
+                .header("Cache-Control", "no-store")
+                .header("Content-Type", "application/octet-stream")
+                .body(key);
+        } catch (Exception e) {
+            log.error("hls_key_serve_failed, video_id={}, object={}", videoId, objectName, e);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
     }
 
     /**
@@ -267,7 +304,7 @@ public class PlaybackController {
     public ResponseEntity<Void> reportLog(
         @PathVariable("video_id") Long videoId,
         @RequestBody PlaybackLogRequest request,
-        @RequestHeader("X-User-Id") Long userId
+        @CurrentUserId Long userId
     ) {
         // 实际生产：写入 play_log 表 + 异步上报安全审计
         log.info("playback_log, video_id={}, user_id={}, event={}, progress={}s",

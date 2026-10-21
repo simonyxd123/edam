@@ -22,12 +22,11 @@ EDAM Worker 运维接口
   （运维场景下已知，列表一下 MinIO 或查后端 DB 都很容易）
 """
 
+import asyncio
 import json
 import secrets
 from typing import Any, Callable, Dict, List, Optional
 
-import aio_pika
-from aio_pika import ExchangeType, Message
 from fastapi import APIRouter, Header, HTTPException, status
 from minio import Minio
 from minio.error import S3Error
@@ -204,7 +203,9 @@ async def ops_hls_status(
     若 m3u8_exists=false 则再 POST /reprocess-hls 入队重做。
     """
     _check_ops_auth(x_ops_token)
-    return _probe_hls_files(video_id)
+    # MinIO 列举是同步阻塞 IO（要遍历整个 hls/ 目录的数百个对象），
+    # 直接在 async 路由里调会把事件循环卡住
+    return await asyncio.to_thread(_probe_hls_files, video_id)
 
 
 @router.post(

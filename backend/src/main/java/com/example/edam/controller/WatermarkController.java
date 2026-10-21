@@ -1,5 +1,6 @@
 package com.example.edam.controller;
 
+import com.example.edam.security.CurrentUserId;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,7 +31,7 @@ public class WatermarkController {
     public ResponseEntity<Map<String, Object>> extract(
         @RequestParam("file") MultipartFile file,
         @RequestParam("type") String type,
-        @RequestHeader("X-User-Id") Long operatorId
+        @CurrentUserId Long operatorId
     ) {
         log.info("watermark_extract_request, type={}, size={}, operator_id={}",
             type, file.getSize(), operatorId);

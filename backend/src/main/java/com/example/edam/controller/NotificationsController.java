@@ -1,5 +1,6 @@
 package com.example.edam.controller;
 
+import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -46,7 +47,7 @@ public class NotificationsController {
             @RequestParam(required = false) String type,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int page_size,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
 
         log.info("notifications_list user_id={} is_read={} type={}", userId, is_read, type);
         Map<String, Object> response = new HashMap<>();
@@ -62,21 +63,21 @@ public class NotificationsController {
     @Operation(summary = "标记已读")
     public ResponseEntity<Void> markRead(
             @PathVariable("notif_id") Long notifId,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
         log.info("notification_read notif_id={} user_id={}", notifId, userId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/notifications/read-all")
     @Operation(summary = "全部标记已读")
-    public Map<String, Object> markAllRead(@RequestHeader("X-User-Id") Long userId) {
+    public Map<String, Object> markAllRead(@CurrentUserId Long userId) {
         log.info("notifications_read_all user_id={}", userId);
         return Map.of("updated_count", 0);
     }
 
     @GetMapping("/notifications/preferences")
     @Operation(summary = "获取通知偏好")
-    public Map<String, Object> getPreferences(@RequestHeader("X-User-Id") Long userId) {
+    public Map<String, Object> getPreferences(@CurrentUserId Long userId) {
         return Map.of(
             "channels", Map.of("email", true, "sms", false, "im_webhook", true, "in_app", true),
             "types", Map.of("approval", true, "key_alert", true, "driver_alert", true, "compliance", true, "system", true),
@@ -88,7 +89,7 @@ public class NotificationsController {
     @Operation(summary = "更新通知偏好")
     public Map<String, Object> updatePreferences(
             @RequestBody Map<String, Object> body,
-            @RequestHeader("X-User-Id") Long userId) {
+            @CurrentUserId Long userId) {
         log.info("notification_preferences_updated user_id={}", userId);
         return body;
     }

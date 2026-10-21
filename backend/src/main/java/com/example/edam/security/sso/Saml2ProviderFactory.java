@@ -61,16 +61,20 @@ public class Saml2ProviderFactory {
 
         @Override
         public SsoUserInfo resolveUserInfo(SsoCallbackPayload payload) {
-            // 实际生产：解析 SAML Response (XML base64)
-            // - 验证 SAML Response 签名
-            // - 提取 AttributeStatement
-            // - 映射到 SsoUserInfo
-            SsoUserInfo info = new SsoUserInfo();
-            info.setProviderId(config.getId());
-            // 此处为简化版，实际需 SAML 解析
-            info.setUserId("saml2_" + config.getId() + "_user");
-            info.setEmployeeNo("SSO_USER");
-            return info;
+            // 安全关键：SAML Response 必须验签 + 校验 audience + 校验
+            // InResponseTo，才能提取出可信身份。
+            //
+            // 原实现直接返回一个**硬编码身份**（saml2_<id>_user / SSO_USER），
+            // 意味着任何 POST /auth/sso/callback/saml2-* 带任意 SAMLResponse
+            // 都能走到 JIT 建号 + 签发合法 JWT —— 配了 IdP 的环境等于没有认证。
+            //
+            // 本实现尚未接入 spring-security-saml2-service-provider，
+            // 因此**fail-closed**：宁可登录失败，也不能发一个假的身份。
+            // 正确做法见 CHANGELOG / modify/ 下的 SAML 接入说明。
+            throw new UnsupportedOperationException(
+                "SAML2 身份解析未实现（缺少 SAML Response 验签），已拒绝登录以避免绕过认证。"
+                    + "请接入 spring-security-saml2-service-provider 后再启用 SAML2 provider。"
+            );
         }
 
         @Override

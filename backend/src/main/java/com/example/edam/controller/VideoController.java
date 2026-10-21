@@ -1,9 +1,11 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.VideoResponse;
 import com.example.edam.dto.VideoStatusUpdateRequest;
 import com.example.edam.model.VideoResource;
 import com.example.edam.service.VideoService;
+import com.example.edam.security.CurrentUserId;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +32,10 @@ public class VideoController {
 
     private final VideoService videoService;
 
+    /** Worker 回调令牌；为空则该回调端点一律拒绝（fail-closed） */
+    @org.springframework.beans.factory.annotation.Value("${edam.worker.token:}")
+    private String workerToken;
+
     @GetMapping
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
@@ -47,7 +53,7 @@ public class VideoController {
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
         @RequestParam(value = "title", required = false) String title,
-        @RequestHeader("X-User-Id") Long uploaderId
+        @CurrentUserId Long uploaderId
     ) {
         // MIME / 文件类型校验：必须以 video/ 开头
         String contentType = file.getContentType();
@@ -72,8 +78,9 @@ public class VideoController {
     }
 
     @GetMapping("/{video_id}")
-    public VideoResource getById(@PathVariable("video_id") Long videoId) {
-        return videoService.getById(videoId);
+    public VideoResponse getById(@PathVariable("video_id") Long videoId) {
+        // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
+        return VideoResponse.from(videoService.getById(videoId));
     }
 
     /**
@@ -84,12 +91,24 @@ public class VideoController {
      *         "fingerprint_status": 2, "fingerprint_path": "videos/1/fingerprint.json" }
      *
      * 任意字段可单独更新（不传则保持原值）。
+     *
+     * <p><b>鉴权</b>：该端点原先是 permitAll —— 任何人都能
+     * {@code PATCH {"hls_status": 2, "hls_path": "任意路径"}}，
+     * 把没转码的视频标成 ready，或把播放源指向任意 MinIO 对象
+     * （配合同样 permitAll 的 /playback/{video_id}/playlist.m3u8 构成完整的
+     * 任意对象读链）。现在要求带 X-Worker-Token 头。
      */
     @PatchMapping("/{video_id}/status")
     public ResponseEntity<Map<String, Object>> updateStatus(
             @PathVariable("video_id") Long videoId,
-            @RequestBody VideoStatusUpdateRequest request
+            @RequestBody VideoStatusUpdateRequest request,
+            // 参数名不能叫 workerToken —— 会遮蔽同名字段，鉴权就永远拿配置值比
+            @RequestHeader(value = "X-Worker-Token", required = false) String providedWorkerToken
     ) {
+        if (!isValidWorkerToken(providedWorkerToken)) {
+            log.warn("video_status_update_unauthorized, video_id={}", videoId);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         log.info("video_status_update_callback, video_id={}, body={}", videoId, request);
         videoService.updateProcessingStatus(
             videoId,
@@ -109,7 +128,7 @@ public class VideoController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
     public ResponseEntity<Void> delete(
         @PathVariable("video_id") Long videoId,
-        @RequestHeader("X-User-Id") Long currentUserId
+        @CurrentUserId Long currentUserId
     ) {
         videoService.delete(videoId, currentUserId);
         return ResponseEntity.noContent().build();
@@ -119,7 +138,7 @@ public class VideoController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
     public ResponseEntity<Map<String, Object>> batchDelete(
         @RequestBody BatchDeleteRequest request,
-        @RequestHeader("X-User-Id") Long operatorId
+        @CurrentUserId Long operatorId
     ) {
         int count = 0;
         for (Long id : request.getVideoIds()) {
@@ -158,9 +177,28 @@ public class VideoController {
         };
     }
 
+    /**
+     * 校验 Worker 回调令牌。
+     *
+     * <p>用常量时间比较防 timing 旁路。没配 {@code edam.worker.token} 时
+     * 一律拒绝 —— fail-closed，不能因为"忘了配"就把端点敞开。
+     */
+    private boolean isValidWorkerToken(String provided) {
+        String expected = workerToken;
+        if (expected == null || expected.isBlank() || provided == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+            expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            provided.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     private Map<String, Object> toPaginationResponse(Page<VideoResource> page) {
         Map<String, Object> response = new HashMap<>();
-        response.put("items", page.getRecords());
+        // 逐条转 DTO（Integer → String 枚举映射）
+        response.put("items", page.getRecords().stream()
+            .map(VideoResponse::from)
+            .toList());
         response.put("pagination", Map.of(
             "page", (int) page.getCurrent(),
             "page_size", (int) page.getSize(),

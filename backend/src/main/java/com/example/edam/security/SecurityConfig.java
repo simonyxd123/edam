@@ -48,6 +48,9 @@ public class SecurityConfig {
                 // 生产应换 presigned MinIO URL
                 .requestMatchers(HttpMethod.GET, "/playback/*/playlist.m3u8").permitAll()
                 .requestMatchers(HttpMethod.GET, "/playback/*/segment/*").permitAll()
+                // AES-128 密钥同理：Hls.js 拉 key 时也带不了自定义头，
+                // 走 query token + 方法内校验
+                .requestMatchers(HttpMethod.GET, "/playback/*/key").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated()
             )
