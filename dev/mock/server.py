@@ -94,13 +94,21 @@ class MockHandler(BaseHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {self.command} {self.path} {args[1]}")
 
     def _send_json(self, status, body):
-        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        # 204 / 304 响应**不允许带 body**（RFC 9110 §15.4.5）。
+        # 原来无论什么状态码都 json.dumps(body) —— 204 时会写出 4 字节的
+        # "null"，而客户端按 204 语义不读 body → socket 里残留数据 →
+        # urllib3 抛 "Parse Error: Data after `Connection: close`"。
+        # 这是竞态（残留数据何时被读到不确定），表现为**偶发**失败。
+        no_body = status in (204, 304)
+        payload = b"" if no_body else json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        if not no_body:
+            self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("X-Trace-Id", uuid.uuid4().hex)
         self.end_headers()
-        self.wfile.write(payload)
+        if payload:
+            self.wfile.write(payload)
 
     def _send_error(self, status, title, detail, code=""):
         body = {
