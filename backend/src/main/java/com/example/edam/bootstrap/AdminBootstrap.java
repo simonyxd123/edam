@@ -40,6 +40,8 @@ public class AdminBootstrap implements CommandLineRunner {
 
     private static final String DEFAULT_ADMIN_USERNAME = "admin";
     private static final String DEFAULT_ADMIN_EMPLOYEE_NO = "E000001";
+    /** 仅 dev profile 使用的默认密码 */
+    private static final String DEFAULT_ADMIN_PASSWORD = "admin123";
 
     private final SysUserRepository userRepository;
     private final SysRoleRepository roleRepository;
@@ -54,10 +56,31 @@ public class AdminBootstrap implements CommandLineRunner {
     @org.springframework.beans.factory.annotation.Value("${edam.bootstrap.create-default-admin:false}")
     private boolean createDefaultAdmin;
 
+    /**
+     * 当前激活的 Spring profile。
+     *
+     * <p>用于区分「本地开发」与「生产」：
+     * dev 下允许用默认密码 admin123 快速起步；
+     * production 下**绝不**创建带默认密码的账号。
+     */
+    @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
+    private String activeProfile;
+
+    private boolean isDevProfile() {
+        return activeProfile != null && (activeProfile.contains("dev") || activeProfile.isEmpty());
+    }
+
     @Override
     public void run(String... args) {
         SysUser admin = userRepository.findByEmployeeNo(DEFAULT_ADMIN_EMPLOYEE_NO);
         if (admin == null) {
+            // dev profile：没配密码就用 admin123，方便本地起服务
+            // （生产 profile 走下面的分支 —— 不配就一个账号都不建）
+            if (isDevProfile() && (adminPassword == null || adminPassword.isBlank())) {
+                adminPassword = DEFAULT_ADMIN_PASSWORD;
+                createDefaultAdmin = true;
+                log.warn("dev profile：使用默认 admin 密码创建管理员账号（生产环境不会走到这里）");
+            }
             if (adminPassword == null || adminPassword.isBlank()) {
                 // 没有配置初始密码 → 不创建任何默认账号。
                 // 生产环境必须通过运维通道手工建管理员账号。
@@ -89,6 +112,9 @@ public class AdminBootstrap implements CommandLineRunner {
             userRepository.insert(admin);
             log.warn("========================================================");
             log.warn("EDAM default admin user created: employee_no={}", DEFAULT_ADMIN_EMPLOYEE_NO);
+            if (isDevProfile()) {
+                log.warn("  dev 默认密码: {}", DEFAULT_ADMIN_PASSWORD);
+            }
             log.warn("  ⚠️  MUST change password after first login!");
             log.warn("========================================================");
         } else {

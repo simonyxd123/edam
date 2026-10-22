@@ -35,8 +35,18 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./db/migration:/docker-entrypoint-initdb.d/01-migration:ro
-      - ./db/seed:/docker-entrypoint-initdb.d/02-seed:ro
+      # ⚠️ 这里**故意不挂** docker-entrypoint-initdb.d。
+      #
+      # initdb.d 是在容器首次启动（数据卷为空）时**裸执行 SQL** 的 ——
+      # 不经过 Flyway，因此**不会写 flyway_schema_history**。
+      # 结果就是：库里的表是 initdb.d 建的，而 Flyway 看到的是"空 history"，
+      # 于是从 V1 开始重跑迁移 → CREATE TABLE IF NOT EXISTS 静默跳过已有表 →
+      # 最后加外键时报 "are incompatible"（Error 3780）。
+      #
+      # 现在 schema 与初始数据**全部由 Flyway 管理**（唯一权威来源）：
+      #   backend/src/main/resources/db/migration/
+      # 要重建库：docker compose down -v && docker compose up -d
+      # 然后启动后端，Flyway 会自动跑完整套迁移。
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
       interval: 10s

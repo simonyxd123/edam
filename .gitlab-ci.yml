@@ -91,7 +91,9 @@ db:migrate:
     - python dev/db/_validate_model_schema.py
     - python dev/db/_validate_migrations.py
     - python dev/db/_validate_fk_types.py
-    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration,filesystem:dev/db/seed migrate
+    # locations 只含迁移目录 —— seed（k6 压测用户等）不进迁移链，
+    # 需要时手工执行 dev/db/seed/*.sql
+    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate
     - |
       TABLES=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'")
       if [ "$TABLES" -lt 20 ]; then
