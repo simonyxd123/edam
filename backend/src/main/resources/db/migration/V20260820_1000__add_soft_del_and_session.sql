@@ -28,6 +28,11 @@ ALTER TABLE sys_user_role
 -- ----------------------------------------------------------------------------
 -- 4. 创建 sys_session 表（v3.2 V-8，方案书 §13.1 引用）
 -- ----------------------------------------------------------------------------
+-- ⚠️ 注意：sys_session 在 V20260812_1000（init）里已经被建过，
+--    而 init 的版本号更小、先执行 —— 所以这里的 CREATE TABLE IF NOT EXISTS
+--    实际是**空操作**，init 那份（缺 7 列）的结构才会真正落地。
+--    缺失的 7 列由 V20260830_2000__align_model_columns.sql 用 ALTER 补齐。
+--    保留这段 CREATE 是为了兼容"只跑了本迁移、没跑 init"的场景。
 CREATE TABLE IF NOT EXISTS sys_session (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     user_id BIGINT UNSIGNED NOT NULL COMMENT '关联用户ID',
