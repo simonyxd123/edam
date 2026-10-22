@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.dto.AuditLogDTO;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.OperationLog;
 import com.example.edam.repository.OperationLogRepository;
 import com.example.edam.service.AuditService;
@@ -49,15 +50,8 @@ public class AuditController {
         Page<AuditLogDTO> result = auditService.list(
             page, page_size, user_id, operation_type, start_time, end_time);
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("items", result.getRecords());
-        response.put("pagination", Map.of(
-            "page", (int) result.getCurrent(),
-            "page_size", (int) result.getSize(),
-            "total", result.getTotal(),
-            "total_pages", (int) result.getPages()
-        ));
-        return response;
+        // 统一分页壳（见 dto/PaginationResponses）
+        return PaginationResponses.of(result);
     }
 
     @GetMapping("/{log_id}")

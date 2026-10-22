@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.SysUserView;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.SysUser;
@@ -36,6 +37,8 @@ public class UserController {
 
     private final SysUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final com.example.edam.service.PasswordService passwordService;
+    private final com.example.edam.security.PasswordPolicy passwordPolicy;
     private final JwtTokenProvider jwtTokenProvider;
     private final AuditService auditService;
 
@@ -59,15 +62,8 @@ public class UserController {
             .map(SysUserView::from)
             .collect(Collectors.toList());
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("items", items);
-        response.put("pagination", Map.of(
-            "page", (int) result.getCurrent(),
-            "page_size", (int) result.getSize(),
-            "total", result.getTotal(),
-            "total_pages", (int) result.getPages()
-        ));
-        return response;
+        // 统一分页壳（见 dto/PaginationResponses）
+        return PaginationResponses.of(result, SysUserView::from);
     }
 
     @PostMapping
@@ -83,9 +79,10 @@ public class UserController {
         if (request.getEmployeeNo() == null || request.getEmployeeNo().isBlank()) {
             throw new IllegalArgumentException("工号必填");
         }
-        if (request.getPassword() == null || request.getPassword().length() < 6) {
-            throw new IllegalArgumentException("密码至少 6 位");
-        }
+        // 走统一的密码策略（长度 / 复杂度至少 3 类 / 弱口令黑名单）。
+        // 原先只查 length < 6 → 管理员可以给用户设 "123456"。
+        passwordPolicy.validateOrThrow(request.getPassword());
+
 
         // 唯一性检查
         if (userRepository.selectList(
@@ -147,21 +144,28 @@ public class UserController {
     @PutMapping("/{user_id}/password")
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
-    public ResponseEntity<Void> resetPassword(
+    public ResponseEntity<Map<String, Object>> resetPassword(
             @PathVariable("user_id") Long userId,
             @RequestBody ResetPasswordRequest request,
             @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
-        if (request.getPassword() == null || request.getPassword().length() < 6) {
-            throw new IllegalArgumentException("密码至少 6 位");
-        }
-        user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        user.setMustChangePassword(true);
-        userRepository.updateById(user);
+        // 走 PasswordService.resetPassword：
+        //   - 统一密码策略（长度 / 复杂度 / 弱口令黑名单）
+        //   - 写 sys_password_history（历史密码不可重用 —— 等保要求）
+        //   - 置 must_change_password（强制用户下次登录改密）
+        // 原来这里只查 length < 6，且从不写历史 → 历史密码表永远是空的
+        String tempPassword = passwordService.resetPassword(userId, operatorId);
+        // 注意：临时密码**不写进审计 detail** —— 审计表是可被审计员读到的，
+        // 密码落库等于二次泄露。原始密码通过响应体返回给管理员（一次性）。
         auditService.log(operatorId, "reset_password", "user", userId, "success");
-        return ResponseEntity.noContent().build();
+        log.info("user_password_reset, user_id={}, operator_id={}, temp_password_issued=true",
+            userId, operatorId);
+        // Map.of 的 value 类型要一致（String + Boolean 混用会推断失败）
+        return ResponseEntity.ok(Map.<String, Object>of(
+            "temp_password", tempPassword,
+            "must_change_password", true));
     }
 
     @DeleteMapping("/{user_id}")

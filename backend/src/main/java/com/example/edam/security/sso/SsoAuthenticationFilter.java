@@ -27,30 +27,32 @@ public class SsoAuthenticationFilter extends OncePerRequestFilter {
     private final SsoProperties ssoProperties;
     private final SsoProviderRegistry providerRegistry;
     private final SsoUserProvisioning provisioning;
+    private final SsoStateStore stateStore;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                      FilterChain filterChain) throws ServletException, IOException {
 
-        String path = request.getRequestURI();
-
-        // 1. 处理 SSO 启动入口（重定向到 IdP）
-        if (path.startsWith("/auth/sso/login/")) {
-            String providerId = path.substring("/auth/sso/login/".length());
-            handleSsoLogin(response, providerId);
+        // 路径必须去掉 context-path 再匹配。
+        // 原实现用 request.getRequestURI()（含 context-path，如
+        // "/api/v1/auth/sso/login/xxx"）跟前缀 "/auth/sso/login/" 比较 ——
+        // 永远不匹配 → SSO 登录 / 回调 / 元数据三条路径全是死的。
+        String loginProvider = SsoRequestPaths.extractAfter(request, SsoRequestPaths.LOGIN_PREFIX);
+        if (loginProvider != null) {
+            handleSsoLogin(response, loginProvider);
             return;
         }
 
         // 2. 处理 SSO 回调（IdP → EDAM）
-        if (path.startsWith("/auth/sso/callback/")) {
+        if (SsoRequestPaths.extractAfter(request, SsoRequestPaths.CALLBACK_PREFIX) != null) {
             handleSsoCallback(request, response);
             return;
         }
 
         // 3. 处理 SSO 元数据下载
-        if (path.startsWith("/auth/sso/metadata/")) {
-            String providerId = path.substring("/auth/sso/metadata/".length());
-            handleMetadata(response, providerId);
+        String metadataProvider = SsoRequestPaths.extractAfter(request, SsoRequestPaths.METADATA_PREFIX);
+        if (metadataProvider != null) {
+            handleMetadata(response, metadataProvider);
             return;
         }
 
@@ -93,16 +95,25 @@ public class SsoAuthenticationFilter extends OncePerRequestFilter {
             log.info("sso_login_success user_id={} employee_no={} provider={}",
                 userInfo.getUserId(), userInfo.getEmployeeNo(), payload.getProviderId());
 
-            // 5. 重定向到前端（含 access_token）
+            // 5. 重定向到前端，**只带一次性登录码**，不带 token。
+            //    原实现把 access_token + refresh_token 直接拼进 URL ——
+            //    会进浏览器历史、反代 access log、下游 Referer。
+            //    现在改成一次性 code，前端用 POST /auth/sso/exchange 换 token。
+            String loginCode = java.util.UUID.randomUUID().toString()
+                .replace("-", "") + java.util.UUID.randomUUID().toString().replace("-", "");
+            stateStore.saveLoginCode(loginCode, result.getAccessToken(), result.getRefreshToken());
+
             String redirectUrl = ssoProperties.getSuccessRedirect() +
-                "?token=" + result.getAccessToken() +
-                "&refresh_token=" + result.getRefreshToken();
+                (ssoProperties.getSuccessRedirect().contains("?") ? "&" : "?") +
+                "code=" + java.net.URLEncoder.encode(loginCode, java.nio.charset.StandardCharsets.UTF_8);
             response.sendRedirect(redirectUrl);
 
         } catch (Exception e) {
             log.error("sso_login_failed", e);
-            response.sendRedirect(ssoProperties.getFailureRedirect() +
-                "&reason=" + e.getMessage());
+            // 不把异常 message 拼进重定向 URL —— 里面可能含 IdP 地址、
+            // token 片段等内部信息；前端只需要知道"失败了"
+            String redirect = ssoProperties.getFailureRedirect();
+            response.sendRedirect(redirect.contains("?") ? redirect + "&reason=sso_failed" : redirect + "?reason=sso_failed");
         }
     }
 

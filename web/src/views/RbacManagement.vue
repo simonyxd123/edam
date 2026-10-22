@@ -18,6 +18,7 @@ import {
   type SysUserView,
 } from '@/api/rbac';
 import { useUserStore } from '@/stores/user';
+import { isDialogDismissed } from '@/utils/dialog';
 
 const userStore = useUserStore();
 
@@ -320,7 +321,7 @@ async function deleteUser(u: SysUserView) {
     ElMessage.success('用户已禁用（status=2）');
     await loadUsers();
   } catch (e: any) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       ElMessage.error('删除失败：' + (e?.message || '未知'));
     }
   }
@@ -458,7 +459,7 @@ async function deleteRole(role: Role) {
     ElMessage.success('角色已删除');
     await loadRoles();
   } catch (e: any) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       ElMessage.error('删除失败：' + (e?.message || '未知'));
     }
   }

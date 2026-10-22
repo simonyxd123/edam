@@ -35,7 +35,9 @@ public class WebhookRetryConsumer {
             int attempt = ((Number) message.get("attempt")).intValue();
 
             log.info("webhook_retry_received webhook_id={} attempt={}", webhookId, attempt);
-            deliveryService.deliver(url, secret, payload, webhookId, event);
+            // 必须把 attempt 透传进去 —— 原来取了却不用，
+            // deliver 内部硬编码从 1 开始 → attempt 永远重置 → 永不进 DLQ
+            deliveryService.deliver(url, secret, payload, webhookId, event, attempt);
         } catch (Exception e) {
             log.error("webhook_retry_failed", e);
         }

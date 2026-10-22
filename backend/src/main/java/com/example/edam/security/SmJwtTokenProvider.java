@@ -31,6 +31,16 @@ import java.util.List;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+/**
+ * @deprecated 当前**未被任何业务代码引用**。保留是因为它是方案书里
+ * 已规划的能力（国密算法链路 / 自动密级打标），接线后即可移除这个注解。
+ *
+ * <p>参考：
+ *   - {@code edam.crypto.use-gmsm=true} 时应切换到 {@link SmJwtTokenProvider}
+ *   - 上传视频/文档时应调用 {@link ClassificationEnforcement} 做服务端密级裁决
+ *     （目前密级完全由客户端传���的 classification_lv 决定）
+ */
+@Deprecated(since = "3.4.0")
 public class SmJwtTokenProvider {
 
     @Value("${edam.jwt.secret:dev-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256}")

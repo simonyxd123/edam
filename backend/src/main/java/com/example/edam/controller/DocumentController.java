@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.dto.DocResponse;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DocResource;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.DocResourceRepository;
@@ -215,7 +216,10 @@ public class DocumentController {
                 response.setContentLengthLong(watermarkedBytes.length);
                 out.write(watermarkedBytes);
                 out.flush();
-                double ratio = watermarkedBytes.length / Math.max(1.0, doc.getSizeBytes());
+                // sizeBytes 是可空 Long —— 历史数据 / MQ 回填可能是 null，
+                // 拆箱 NPE 时响应头已写了一半 → 客户端拿到截断响应
+                long originalSize = doc.getSizeBytes() != null ? doc.getSizeBytes() : 0L;
+                double ratio = watermarkedBytes.length / Math.max(1.0, (double) originalSize);
                 log.info("doc_preview_stream_done, doc_id={}, in_size={}, out_size={}, ratio={}x",
                     docId, doc.getSizeBytes(), watermarkedBytes.length,
                     String.format("%.2f", ratio));
@@ -299,18 +303,8 @@ public class DocumentController {
     }
 
     private Map<String, Object> toPaginationResponse(Page<DocResource> page) {
-        Map<String, Object> response = new HashMap<>();
-        // 逐条转 DTO（Integer → String 枚举映射）
-        response.put("items", page.getRecords().stream()
-            .map(DocResponse::from)
-            .toList());
-        response.put("pagination", Map.of(
-            "page", (int) page.getCurrent(),
-            "page_size", (int) page.getSize(),
-            "total", page.getTotal(),
-            "total_pages", (int) page.getPages()
-        ));
-        return response;
+        // 统一分页壳（见 dto/PaginationResponses）—— 逐条转 DTO（Integer → String 枚举映射）
+        return PaginationResponses.of(page, DocResponse::from);
     }
 
     @Data

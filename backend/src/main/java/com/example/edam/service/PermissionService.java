@@ -41,15 +41,58 @@ public class PermissionService {
     private final SysRolePermissionRepository rolePermRepository;
     private final SysPermissionRepository permissionRepository;
 
-    /** 全部权限 code（启动时一次性加载，用于 admin 短路返回全部权限） */
-    private Set<String> allPermissionCodes = Set.of();
+    /**
+     * 全部权限 code（用于 admin 短路返回全部权限）。
+     *
+     * <p>原先是 {@code @PostConstruct} 里加载一次就**永不刷新** ——
+     * 运行期新增权限对 admin 立即失效，必须重启才生效。
+     * 现在改成 TTL 缓存，到期自动重载。
+     */
+    private volatile Set<String> allPermissionCodes = Set.of();
+
+    /** 快照加载时间（毫秒） */
+    private volatile long snapshotLoadedAt = 0L;
+
+    /** 快照 TTL（秒） */
+    @org.springframework.beans.factory.annotation.Value("${edam.permission.snapshot-ttl-seconds:300}")
+    private int snapshotTtlSeconds;
 
     @PostConstruct
     public void init() {
-        allPermissionCodes = permissionRepository.selectList(null).stream()
-            .map(SysPermission::getCode)
-            .collect(Collectors.toSet());
-        log.info("PermissionService init: loaded {} permission codes", allPermissionCodes.size());
+        reloadPermissionSnapshot();
+    }
+
+    /**
+     * 重载权限快照（TTL 到期或启动时调用）。
+     *
+     * <p>用 try/catch 包住：数据库暂时不可用时保留旧快照，
+     * 不能让整个应用因为读权限表失败而起不来。
+     */
+    @org.springframework.scheduling.annotation.Scheduled(
+        fixedDelayString = "${edam.permission.snapshot-refresh-ms:60000}")
+    public void reloadPermissionSnapshot() {
+        try {
+            Set<String> codes = permissionRepository.selectList(null).stream()
+                .map(SysPermission::getCode)
+                .collect(Collectors.toSet());
+            this.allPermissionCodes = codes;
+            this.snapshotLoadedAt = System.currentTimeMillis();
+            log.info("permission_snapshot_reloaded, count={}", codes.size());
+        } catch (Exception e) {
+            log.error("permission_snapshot_reload_failed, keeping_previous, size={}",
+                allPermissionCodes.size(), e);
+        }
+    }
+
+    /**
+     * 快照是否已过期。
+     */
+    private boolean snapshotExpired() {
+        if (snapshotLoadedAt == 0L) {
+            return true;
+        }
+        long ageSeconds = (System.currentTimeMillis() - snapshotLoadedAt) / 1000;
+        return ageSeconds > snapshotTtlSeconds;
     }
 
     /**
@@ -60,6 +103,10 @@ public class PermissionService {
     @Transactional(readOnly = true)
     public Set<String> getUserPermissionCodes(Long userId) {
         if (userId == null) return Set.of();
+        // 快照过期就同步重载（读操作路径上顺带刷新，保证语义正确）
+        if (snapshotExpired()) {
+            reloadPermissionSnapshot();
+        }
         SysUser user = userRepository.selectById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在");
 

@@ -20,9 +20,16 @@ backend:
     requests:
       cpu: 1000m
       memory: 2Gi
+      # 临时磁盘（8GB 上传落盘用）。不声明的话调度器看不见这块压力，
+      # eviction 时会随机挑 Pod，8GB 上传中途被杀
+      ephemeral-storage: 20Gi
     limits:
       cpu: 2000m
       memory: 4Gi
+      ephemeral-storage: 30Gi
+  # emptyDir 容量上限
+  tmpVolumeSizeLimit: 20Gi
+  logVolumeSizeLimit: 2Gi
   podDisruptionBudget:
     enabled: true
     minAvailable: 1
@@ -107,7 +114,7 @@ worker:
     # 需要时在 overlays 里设 OPS_ENABLED=true
     OPS_ENABLED: "false"
 
-# Nginx 网关
+# Nginx 网关（统一入口：/api 与 /ws → 后端，其余 → 前端 SPA）
 nginx:
   enabled: true
   name: nginx
@@ -132,26 +139,73 @@ nginx:
   config:
     # 与后端 spring.servlet.multipart.max-file-size=8GB 对齐
     clientMaxBodySize: "8g"
+    # NOTE: upstream server names must be the REAL Service names.
+    # The old value was "backend:8080" but the actual name is
+    # {{fullname}}-backend - nginx would fail with "host not found in upstream".
     nginxConf: |
       worker_processes auto;
       events { worker_connections 4096; }
       http {
         include /etc/nginx/mime.types;
         client_max_body_size {{ .Values.nginx.config.clientMaxBodySize }};
-        upstream backend {
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+
+        upstream edam_backend {
           least_conn;
-          server backend:8080;
+          server {{ include "edam.fullname" . }}-backend:{{ .Values.backend.service.port }};
         }
+        upstream edam_web {
+          least_conn;
+          server {{ include "edam.fullname" . }}-web:{{ .Values.web.service.port }};
+        }
+
         server {
           listen 80;
+          server_name _;
+
+          # backend API (keep the /api/v1 prefix - backend context-path=/api/v1)
           location /api/ {
-            proxy_pass http://backend;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://edam_backend;
+          }
+
+          # WebSocket (STOMP over WebSocket) - upgrade headers required
+          location /ws {
+            proxy_pass http://edam_backend;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_read_timeout 300s;
+          }
+
+          # frontend SPA (everything else)
+          location / {
+            proxy_pass http://edam_web;
           }
         }
       }
+
+# 前端（Vue3 SPA 静态资源，镜像自带 nginx）
+web:
+  enabled: true
+  image:
+    repository: edam/web
+    tag: "3.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  podAnnotations: {}
 
 # Ingress
 ingress:

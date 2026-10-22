@@ -68,6 +68,22 @@ public class WebhookDeliveryService {
      */
     @Async("webhookExecutor")
     public void deliver(String url, String secret, String payload, Long webhookId, String event) {
+        deliver(url, secret, payload, webhookId, event, 1);
+    }
+
+    /**
+     * 投递 webhook（带重试调度），显式指定当前是第几次尝试。
+     *
+     * <p>attempt 必须**逐次透传**：原实现里 deliver 硬编码
+     * {@code scheduleRetry(..., 1, ...)}，而重试消费者虽然从消息里
+     * 取出了 attempt 却**完全没用** —— 于是每次重试 attempt 都重置成 1，
+     * {@code shouldRetry(1)} 永远为 true → 无限重试风暴，
+     * 永远进不了死信队列。
+     *
+     * @param attempt 当前是第几次尝试（首次 = 1）
+     */
+    @Async("webhookExecutor")
+    public void deliver(String url, String secret, String payload, Long webhookId, String event, int attempt) {
         // 签名
         String signature = signHmacSha256(secret, payload);
 
@@ -84,9 +100,9 @@ public class WebhookDeliveryService {
         delivery.setDeliveredAt(Instant.now());
         deliveryRepository.insert(delivery);
 
-        // 失败调度重试
+        // 失败调度重试（attempt 逐次递增，不再重置为 1）
         if (!result.success) {
-            scheduleRetry(url, secret, payload, webhookId, event, 1, delivery.getId());
+            scheduleRetry(url, secret, payload, webhookId, event, attempt, delivery.getId());
         } else {
             log.info("webhook_delivered webhook_id={} event={} status={}", webhookId, event, result.statusCode);
         }

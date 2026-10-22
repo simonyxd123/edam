@@ -81,7 +81,9 @@ db:migrate:
     # 原来分两次 migrate：两次调用共用默认的 flyway_schema_history 表，
     # 第二次会因为"已应用但本次 locations 里找不到"直接报错
     # Detected applied migration not resolved locally
-    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/migration,filesystem:dev/db/seed migrate
+    # 迁移脚本的唯一权威目录：backend/src/main/resources/db/migration
+    # （与后端运行时 Spring Flyway 读的 classpath:db/migration 完全一致）
+    - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration,filesystem:dev/db/seed migrate
     - |
       TABLES=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'")
       if [ "$TABLES" -lt 20 ]; then
@@ -135,6 +137,42 @@ worker:test:
   rules:
     - changes:
         - worker/**/*
+
+# ----------------------------------------------------------------------------
+# 4.5 E2E 测试（Playwright）
+# ----------------------------------------------------------------------------
+# 之前 e2e/ 目录里有 playwright + cypress 两套测试，但**CI 完全没接** ——
+# 端到端链路从来没被自动验证过。
+#
+# 用 mcr.microsoft.com/playwright 镜像：自带 Node + Python3 + 各浏览器，
+# 免去 CI 里再装浏览器。mock server 用 dev/mock/server.py（零第三方依赖），
+# 不用 Prism（job 镜像里没有 docker）。
+e2e:test:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.45.0-jammy
+  variables:
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    # CI 里不用连真实后端，全部打 mock
+    CI: "true"
+  before_script:
+    - cd e2e && npm ci
+  script:
+    # 只跑 chromium：firefox/webkit 在这个镜像里还得额外下浏览器，
+    # CI 阶段没必要拖这么久
+    - cd e2e && npx playwright test --project=chromium --reporter=list,junit
+  artifacts:
+    when: always
+    paths:
+      - e2e/playwright-report/
+      - e2e/results/
+    expire_in: 7 days
+    reports:
+      junit: e2e/results/junit.xml
+  rules:
+    - changes:
+        - e2e/**/*
+        - dev/mock/**/*
+        - doc/openapi.yaml
 
 # ----------------------------------------------------------------------------
 # 5. 前端构建

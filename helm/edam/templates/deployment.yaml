@@ -88,11 +88,22 @@ spec:
               mountPath: /tmp
             - name: cache
               mountPath: /app/cache
+            # 日志目录：readOnlyRootFilesystem=true 时 /var/log/edam 不存在，
+            # 不挂 volume 的话 Logback FileAppender 会静默失败
+            - name: log
+              mountPath: /var/log/edam
       volumes:
         - name: tmp
-          emptyDir: {}
+          # 8GB 上传（max-file-size=8GB + file-size-threshold=0 强制落盘）
+          # 需要 ≥8GB 可用临时磁盘。不设 sizeLimit 的话会直接吃
+          # 节点可分配磁盘，一个大上传能把 kubelet 拖到 disk-pressure。
+          emptyDir:
+            sizeLimit: {{ .Values.backend.tmpVolumeSizeLimit | default "20Gi" }}
         - name: cache
           emptyDir: {}
+        - name: log
+          emptyDir:
+            sizeLimit: {{ .Values.backend.logVolumeSizeLimit | default "2Gi" }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

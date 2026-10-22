@@ -63,6 +63,11 @@ DOCUMENTS = []
 APPROVALS = []
 LOGS = []
 
+# 登录失败计数（模拟后端的 IP 限流 5/min + 账号锁定）
+LOGIN_FAILURES = {}
+LOGIN_LOCKED = set()
+MAX_LOGIN_FAILURES = 5
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -110,13 +115,82 @@ class MockHandler(BaseHTTPRequestHandler):
         self._send_json(status, body)
 
     def _read_body(self):
+        """读请求体。
+
+        JSON 就按 JSON 解析；multipart/form-data 则解析出普通字段
+        （文件字段只取文件名，mock 不需要真实内容）。
+        原来一律按 JSON 解析 → multipart 请求直接抛异常。
+        """
         length = int(self.headers.get("Content-Length", 0))
-        if length > 0:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        return {}
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in ctype:
+            return self._parse_multipart(raw, ctype)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    def _parse_multipart(self, raw, ctype):
+        """从 multipart body 里抽出普通字段（文件字段只取文件名）。"""
+        fields = {}
+        m = re.search("boundary=([^;]+)", ctype)
+        if not m:
+            return fields
+        boundary = ("--" + m.group(1).strip(chr(34))).encode("utf-8")
+        sep = bytes([13, 10, 13, 10])
+        for part in raw.split(boundary):
+            if sep not in part:
+                continue
+            head, _, body = part.partition(sep)
+            head_text = head.decode("utf-8", errors="replace")
+            name = self._multipart_attr(head_text, "name")
+            if not name:
+                continue
+            filename = self._multipart_attr(head_text, "filename")
+            value = body.rstrip(bytes([13, 10])).decode("utf-8", errors="replace")
+            # 文件字段只记文件名，普通字段记值
+            fields[name] = filename if filename else value
+        return fields
+
+    @staticmethod
+    def _multipart_attr(head_text, attr):
+        """从 multipart 头里取 name="xxx" / filename="xxx" 的值。"""
+        for piece in head_text.split(";"):
+            piece = piece.strip()
+            if piece.startswith(attr + "="):
+                return piece[len(attr) + 1:].strip().strip(chr(34))
+        return None
+
+    # 需要 JWT 的端点前缀（与后端 SecurityConfig 的 anyRequest().authenticated() 对齐）
+    PROTECTED_PREFIXES = ("/users", "/roles", "/permissions", "/audit", "/videos",
+                          "/documents", "/distribution", "/notifications",
+                          "/webhooks", "/tags", "/watermarks", "/playback")
+
+    def _has_valid_token(self):
+        """检查 Authorization 头（mock 只校验 token 存在且在 SESSIONS/已签发集合里）。
+
+        后端是从 JWT 里取 userId 的；mock 没有 JWT 解析能力，
+        但至少要能区分"带了 token"与"没带 token"。
+        """
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        return auth[7:].strip() != ""
+
+    def _require_auth(self):
+        if not self._has_valid_token():
+            self._send_error(401, "Unauthorized", "未登录或会话已失效", "AUTH_401")
+            return False
+        return True
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if any(path.startswith(p) for p in self.PROTECTED_PREFIXES):
+            if not self._require_auth():
+                return
         if path == "/health/live":
             return self._send_json(200, {"status": "alive", "uptime_sec": 100, "pid": 1})
         if path == "/health/ready":
@@ -141,6 +215,8 @@ class MockHandler(BaseHTTPRequestHandler):
             return self._handle_document_get(int(m.group(1)))
         if path == "/distribution/approvals":
             return self._handle_approvals_list()
+        if m := re.match(r"^/distribution/approvals/(\d+)$", path):
+            return self._handle_approval_get(int(m.group(1)))
         if path == "/users":
             return self._handle_users_list()
         if path == "/audit/logs":
@@ -151,6 +227,8 @@ class MockHandler(BaseHTTPRequestHandler):
             return self._send_json(200, [{"id": 1, "code": "video:read", "name": "查看视频"}])
         if path == "/notifications":
             return self._send_json(200, {"items": [], "pagination": {"page": 1, "page_size": 20, "total": 0, "total_pages": 0}, "unread_count": 0})
+        if path == "/watermarks/cache":
+            return self._send_json(200, [])
         if path == "/webhooks":
             return self._send_json(200, [])
         if path == "/tags":
@@ -161,6 +239,9 @@ class MockHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/auth/login":
             return self._handle_login()
+        if any(path.startswith(p) for p in self.PROTECTED_PREFIXES):
+            if not self._require_auth():
+                return
         if path == "/auth/refresh":
             return self._handle_refresh()
         if path == "/auth/logout":
@@ -180,7 +261,7 @@ class MockHandler(BaseHTTPRequestHandler):
         if m := re.match(r"^/distribution/approvals/(\d+)/decide$", path):
             return self._handle_approval_decide(int(m.group(1)))
         if m := re.match(r"^/distribution/approvals/(\d+)/revoke$", path):
-            return self._send_json(204, None)
+            return self._handle_approval_revoke(int(m.group(1)))
         if path == "/watermarks/extract":
             return self._handle_watermark_extract()
         if path == "/users":
@@ -226,7 +307,19 @@ class MockHandler(BaseHTTPRequestHandler):
             return self._send_error(400, "Bad Request", "工号和密码不能为空", "VAL_400")
         if employee_no not in USERS:
             return self._send_error(401, "Unauthorized", "工号或密码错误", "AUTH_401")
+        # 账号已锁定 → 423（对应后端 AccountLockedException）
+        if employee_no in LOGIN_LOCKED:
+            return self._send_error(423, "Locked", "账号已锁定，请 30 分钟后再试", "AUTH_423")
         if password != "admin123":
+            # 失败计数：达到阈值 → 锁定（后端是 5 次锁定 30 分钟）
+            failures = LOGIN_FAILURES.get(employee_no, 0) + 1
+            LOGIN_FAILURES[employee_no] = failures
+            if failures >= MAX_LOGIN_FAILURES:
+                LOGIN_LOCKED.add(employee_no)
+                return self._send_error(423, "Locked", "账号已锁定，请 30 分钟后再试", "AUTH_423")
+            # 超过限流阈值（每分钟 3 次工号维度）→ 429
+            if failures >= 3:
+                return self._send_error(429, "Too Many Requests", "登录尝试过于频繁，请稍后再试", "RATE_429")
             return self._send_error(401, "Unauthorized", "工号或密码错误", "AUTH_401")
 
         user = USERS[employee_no]
@@ -267,7 +360,12 @@ class MockHandler(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         page = int(q.get("page", [1])[0])
         page_size = int(q.get("page_size", [20])[0])
-        return self._send_json(200, pagination_response(VIDEOS, page, page_size))
+        # 密级过滤：原来直接返回全量 → "按密级过滤"用例断言全不成立
+        items = VIDEOS
+        lv = q.get("classification_lv", [None])[0]
+        if lv:
+            items = [v for v in VIDEOS if v.get("classification_lv") == lv]
+        return self._send_json(200, pagination_response(items, page, page_size))
 
     def _handle_video_get(self, video_id):
         v = next((v for v in VIDEOS if v["id"] == video_id), None)
@@ -348,17 +446,67 @@ class MockHandler(BaseHTTPRequestHandler):
         return self._send_json(201, approval)
 
     def _handle_approval_decide(self, approval_id):
-        return self._send_json(200, {"status": "approved"})
+        # 原来是无状态空壳，永远返回 approved 且不改数据 ——
+        # 测试随后 GET 详情拿到的还是 pending
+        a = next((x for x in APPROVALS if x["id"] == approval_id), None)
+        if not a:
+            return self._send_error(404, "Not Found", f"审批不存在: {approval_id}", "RES_404")
+        body = self._read_body()
+        decision = body.get("decision", "")
+        if decision not in ("approve", "reject"):
+            return self._send_error(400, "Bad Request",
+                                    "decision 必须是 approve 或 reject", "REQ_400")
+        a["status"] = "approved" if decision == "approve" else "rejected"
+        a["decided_at"] = now_iso()
+        a["comment"] = body.get("comment", "")
+        return self._send_json(200, {"status": a["status"]})
+
+    def _handle_approval_get(self, approval_id):
+        a = next((x for x in APPROVALS if x["id"] == approval_id), None)
+        if not a:
+            return self._send_error(404, "Not Found", f"审批不存在: {approval_id}", "RES_404")
+        return self._send_json(200, a)
+
+    def _handle_approval_revoke(self, approval_id):
+        a = next((x for x in APPROVALS if x["id"] == approval_id), None)
+        if not a:
+            return self._send_error(404, "Not Found", f"审批不存在: {approval_id}", "RES_404")
+        a["status"] = "revoked"
+        a["revoked_at"] = now_iso()
+        return self._send_json(204, None)
 
     def _handle_watermark_extract(self):
-        return self._send_json(200, {
-            "type": "image",
-            "extracted": {
+        # 按请求声明的类型返回对应结构 —— 原来固定返回 type="image"，
+        # 导致 PDF / 视频两类用例都断言失败
+        try:
+            body = self._read_body()
+        except Exception:
+            body = {}
+        wm_type = body.get("type") or "image"
+        if wm_type == "video":
+            extracted = {
+                "employee_no": "",
+                "extract_time": now_iso(),
+                "fingerprint": ["0f0f0f0f0f0f0f0f", "1a2b3c4d5e6f7081"],
+                "confidence": 0.85,
+            }
+        elif wm_type == "pdf":
+            extracted = {
+                "employee_no": "",
+                "extract_time": now_iso(),
+                "fingerprint": "",
+                "confidence": 0.72,
+            }
+        else:
+            extracted = {
                 "employee_no": "",
                 "extract_time": now_iso(),
                 "fingerprint": "",
                 "confidence": 0.0,
-            },
+            }
+        return self._send_json(200, {
+            "type": wm_type,
+            "extracted": extracted,
             "matched_users": [],
         })
 

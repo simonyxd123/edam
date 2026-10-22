@@ -22,6 +22,14 @@ import java.util.HexFormat;
  * String hmac = SM3Util.hmac(key, "message");
  * ```
  */
+/**
+ * @deprecated 当前**未被任何业务代码引用**（只被
+ * {@link com.example.edam.crypto.AlgorithmRouter} 引用，而后者本身也未接线）。
+ *
+ * <p>保留原因：国密（SM2/SM3/SM4）是方案书与等保/商密合规的既定要求，
+ * 属于"写好了但还没接线"的能力，不应直接删除。接线后移除本注解。
+ */
+@Deprecated(since = "3.4.0")
 public final class SM3Util {
 
     private SM3Util() {}

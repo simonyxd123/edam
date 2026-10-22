@@ -1,5 +1,6 @@
 package com.example.edam.controller;
 
+import com.example.edam.security.sso.SsoStateStore;
 import com.example.edam.exception.RateLimitExceededException;
 import com.example.edam.security.ClientIpResolver;
 import com.example.edam.security.LoginRateLimiter;
@@ -16,6 +17,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -32,6 +34,7 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final SsoStateStore ssoStateStore;
     private final LoginRateLimiter loginRateLimiter;
     private final ClientIpResolver clientIpResolver;
     private final AuditHelper auditHelper;
@@ -162,6 +165,32 @@ public class AuthController {
         private String oldPassword;
         @com.fasterxml.jackson.annotation.JsonProperty("new_password")
         private String newPassword;
+    }
+
+    /**
+     * SSO 一次性登录码 → token 交换
+     *
+     * <p>SSO 回调成功后重定向只带一个一次性 code（不带 token），
+     * 前端用这个端点换 token。避免 token 出现在浏览器历史 /
+     * 反代 access log / 下游 Referer 里。
+     */
+    @PostMapping("/sso/exchange")
+    @Operation(summary = "SSO 一次性登录码换 token")
+    public ResponseEntity<Map<String, Object>> ssoExchange(
+            @RequestBody SsoExchangeRequest request) {
+        Map<String, String> tokens = ssoStateStore.consumeLoginCode(request.getCode());
+        Map<String, Object> response = new HashMap<>();
+        response.put("access_token", tokens.get("access_token"));
+        response.put("refresh_token", tokens.get("refresh_token"));
+        response.put("token_type", "Bearer");
+        response.put("expires_in", 600);
+        return ResponseEntity.ok(response);
+    }
+
+    @Data
+    public static class SsoExchangeRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("code")
+        private String code;
     }
 
     @Data

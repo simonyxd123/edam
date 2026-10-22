@@ -3,6 +3,7 @@ package com.example.edam.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DistributionApproval;
 import com.example.edam.repository.DistributionApprovalRepository;
 import com.example.edam.security.CurrentUserId;
@@ -188,21 +189,8 @@ public class DistributionController {
     }
 
     private Map<String, Object> toPaginationResponse(Page<DistributionApproval> page) {
-        Map<String, Object> response = new HashMap<>();
-        // 逐条走 toResponse()：原来直接塞 page.getRecords()（原始实体），
-        // 实体是 camelCase + 扁平字段 + status 为 Integer，
-        // 前端取 row.external_recipient.name → undefined.name → 整个组件渲染崩溃白屏。
-        java.util.List<Map<String, Object>> items = page.getRecords().stream()
-            .map(this::toResponse)
-            .toList();
-        response.put("items", items);
-        response.put("pagination", Map.of(
-            "page", (int) page.getCurrent(),
-            "page_size", (int) page.getSize(),
-            "total", page.getTotal(),
-            "total_pages", (int) page.getPages()
-        ));
-        return response;
+        // 统一分页壳（见 dto/PaginationResponses）—— 逐条转响应体
+        return PaginationResponses.of(page, this::toResponse);
     }
 
     @Data

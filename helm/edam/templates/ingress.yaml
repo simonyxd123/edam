@@ -33,9 +33,12 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "edam.fullname" $ }}-backend
+                # 统一入口是 nginx 网关：它负责把 /api 与 /ws 转给后端，
+                # 其余转给前端 SPA。直接指后端的话访问根路径只会拿到
+                # 后端 404 —— 前端根本不存在。
+                name: {{ include "edam.fullname" $ }}-nginx
                 port:
-                  number: {{ $.Values.backend.service.port }}
+                  number: {{ $.Values.nginx.service.port }}
           {{- end }}
     {{- end }}
 {{- end }}

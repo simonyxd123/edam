@@ -1,0 +1,28 @@
+{{- if .Values.nginx.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "edam.fullname" . }}-nginx
+  labels:
+    {{- include "edam.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nginx
+  {{- with .Values.nginx.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.nginx.service.type }}
+  ports:
+    - port: {{ .Values.nginx.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    {{- if .Values.nginx.service.httpsPort }}
+    - port: {{ .Values.nginx.service.httpsPort }}
+      targetPort: http
+      protocol: TCP
+      name: https
+    {{- end }}
+  selector:
+    {{- include "edam.nginx.selectorLabels" . | nindent 4 }}
+{{- end }}

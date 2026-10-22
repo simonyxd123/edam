@@ -35,13 +35,15 @@ public class OidcProviderFactory {
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    private final SsoStateStore stateStore;
+
     /**
      * 创建 OIDC Provider
      */
     public SsoProvider create(SsoProperties.ProviderConfig config) {
         log.info("oidc_provider_create provider_id={} issuer={}",
             config.getId(), config.getIssuer());
-        return new OidcProvider(config);
+        return new OidcProvider(config, stateStore);
     }
 
     /**
@@ -49,9 +51,11 @@ public class OidcProviderFactory {
      */
     static class OidcProvider implements SsoProvider {
         private final SsoProperties.ProviderConfig config;
+        private final SsoStateStore stateStore;
 
-        OidcProvider(SsoProperties.ProviderConfig config) {
+        OidcProvider(SsoProperties.ProviderConfig config, SsoStateStore stateStore) {
             this.config = config;
+            this.stateStore = stateStore;
         }
 
         @Override
@@ -70,6 +74,12 @@ public class OidcProviderFactory {
             String codeVerifier = generateRandomString(64);
             String codeChallenge = base64UrlEncode(sha256(codeVerifier));
 
+            // 关键：把 state 与 code_verifier 存起来。
+            // 原实现生成后**立刻丢弃** —— verifier 换 token 时不发送，
+            // 任何合规 IdP 都会拒绝（PKCE 白做）；state 也没人验，
+            // 登录 CSRF 无防护。
+            stateStore.saveState(config.getId(), state, codeVerifier);
+
             StringBuilder url = new StringBuilder(config.getAuthorizationUri());
             url.append("?response_type=code");
             url.append("&client_id=").append(urlEncode(config.getClientId()));
@@ -84,8 +94,12 @@ public class OidcProviderFactory {
         @Override
         public SsoUserInfo resolveUserInfo(SsoCallbackPayload payload) {
             try {
-                // 1. 用 code 换 access_token
-                String accessToken = exchangeCodeForToken(payload.getRawPayload());
+                // 0. 消费 state（一次性），取回 PKCE code_verifier
+                //    顺带完成登录 CSRF 防护：state 不匹配直接拒
+                String codeVerifier = stateStore.consumeState(payload.getState(), config.getId());
+
+                // 1. 用 code 换 access_token（带 code_verifier 走 PKCE）
+                String accessToken = exchangeCodeForToken(payload.getRawPayload(), codeVerifier);
 
                 // 2. 用 access_token 拉 userinfo
                 String userInfoJson = fetchUserInfo(accessToken);
@@ -123,12 +137,18 @@ public class OidcProviderFactory {
         /**
          * Code 换 Token
          */
-        private String exchangeCodeForToken(String code) throws Exception {
-            String body = "grant_type=authorization_code" +
-                "&client_id=" + urlEncode(config.getClientId()) +
-                "&client_secret=" + urlEncode(config.getClientSecret()) +
-                "&code=" + urlEncode(code) +
-                "&redirect_uri=" + urlEncode(config.getRedirectUri());
+        private String exchangeCodeForToken(String code, String codeVerifier) throws Exception {
+            StringBuilder bodyBuilder = new StringBuilder()
+                .append("grant_type=authorization_code")
+                .append("&client_id=").append(urlEncode(config.getClientId()))
+                .append("&client_secret=").append(urlEncode(config.getClientSecret()))
+                .append("&code=").append(urlEncode(code))
+                .append("&redirect_uri=").append(urlEncode(config.getRedirectUri()));
+            // PKCE：把登录时存的 code_verifier 送回去
+            if (codeVerifier != null && !codeVerifier.isBlank()) {
+                bodyBuilder.append("&code_verifier=").append(urlEncode(codeVerifier));
+            }
+            String body = bodyBuilder.toString();
 
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(config.getTokenUri()))

@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.VideoResponse;
 import com.example.edam.dto.VideoStatusUpdateRequest;
 import com.example.edam.model.VideoResource;
@@ -194,18 +195,8 @@ public class VideoController {
     }
 
     private Map<String, Object> toPaginationResponse(Page<VideoResource> page) {
-        Map<String, Object> response = new HashMap<>();
-        // 逐条转 DTO（Integer → String 枚举映射）
-        response.put("items", page.getRecords().stream()
-            .map(VideoResponse::from)
-            .toList());
-        response.put("pagination", Map.of(
-            "page", (int) page.getCurrent(),
-            "page_size", (int) page.getSize(),
-            "total", page.getTotal(),
-            "total_pages", (int) page.getPages()
-        ));
-        return response;
+        // 统一分页壳（见 dto/PaginationResponses）—— 逐条转 DTO（Integer → String 枚举映射）
+        return PaginationResponses.of(page, VideoResponse::from);
     }
 
     @Data

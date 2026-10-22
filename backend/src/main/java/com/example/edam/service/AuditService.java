@@ -30,6 +30,19 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AuditService {
 
+    /**
+     * 审计写入失败计数。
+     *
+     * <p>原实现只打一行 error 日志就继续 —— 合规系统里"静默丢审计记录"
+     * 是严重问题（日志本身也会被轮转掉）。现在有 Prometheus 指标，
+     * 可以直接配告警。
+     */
+    private static final io.micrometer.core.instrument.Counter AUDIT_WRITE_FAILURES =
+        io.micrometer.core.instrument.Counter.builder("edam_audit_write_failures_total")
+            .description("审计日志写入失败次数（合规告警指标）")
+            .register(io.micrometer.core.instrument.Metrics.globalRegistry);
+
+
     private final OperationLogRepository operationLogRepository;
     private final SysUserRepository sysUserRepository;
 
@@ -48,6 +61,7 @@ public class AuditService {
             entry.setTimestamp(java.time.OffsetDateTime.now());
             operationLogRepository.insert(entry);
         } catch (Exception e) {
+            AUDIT_WRITE_FAILURES.increment();
             log.error("audit_log_write_failed, user_id={}, op={}", userId, operationType, e);
         }
     }
@@ -67,6 +81,7 @@ public class AuditService {
             entry.setTimestamp(java.time.OffsetDateTime.now());
             operationLogRepository.insert(entry);
         } catch (Exception e) {
+            AUDIT_WRITE_FAILURES.increment();
             log.error("audit_log_write_failed, user_id={}, op={}", userId, operationType, e);
         }
     }

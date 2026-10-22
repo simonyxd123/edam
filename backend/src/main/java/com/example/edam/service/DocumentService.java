@@ -56,6 +56,11 @@ public class DocumentService {
         if (fileType != null) {
             wrapper.eq(DocResource::getFileType, fileType);
         }
+        // 密级过滤：原来收了 classification_lv 参数却**完全不用** ——
+        // 前端「密级」下拉框选了等于没选
+        if (classificationLv != null) {
+            wrapper.eq(DocResource::getClassificationLv, parseClassification(classificationLv));
+        }
         wrapper.orderByDesc(DocResource::getUploadTime);
         return docRepository.selectPage(new Page<>(page, pageSize), wrapper);
     }

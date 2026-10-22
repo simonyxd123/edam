@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { distributionApi, type Approval } from '@/api/distribution';
+import { isDialogDismissed } from '@/utils/dialog';
 
 const loading = ref(false);
 const approvals = ref<Approval[]>([]);
@@ -35,7 +36,7 @@ async function handleApprove(row: Approval) {
     ElMessage.success('已批准');
     loadData();
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       // 错误已处理
     }
   }
@@ -53,7 +54,7 @@ async function handleReject(row: Approval) {
     ElMessage.success('已驳回');
     loadData();
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       // 错误已处理
     }
   }
@@ -70,7 +71,7 @@ async function handleRevoke(row: Approval) {
     ElMessage.warning('已撤销');
     loadData();
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       // 错误已处理
     }
   }

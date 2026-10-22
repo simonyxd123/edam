@@ -76,3 +76,20 @@ app.kubernetes.io/name: {{ include "edam.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: worker
 {{- end }}
+{{/*
+Nginx selector labels.
+*/}}
+{{- define "edam.nginx.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "edam.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: nginx
+{{- end }}
+
+{{/*
+Web (frontend SPA) selector labels.
+*/}}
+{{- define "edam.web.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "edam.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: web
+{{- end }}

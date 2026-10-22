@@ -6,7 +6,6 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.security.LoginAttemptService;
-import com.example.edam.security.PasswordPolicy;
 import com.example.edam.security.TotpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -50,7 +49,7 @@ public class AuthService {
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
     private final LoginAttemptService loginAttemptService;
-    private final PasswordPolicy passwordPolicy;
+    private final PasswordService passwordService;
 
     /**
      * 自助修改个人资料。
@@ -80,10 +79,11 @@ public class AuthService {
     /**
      * 自助修改密码。
      *
-     * <p>流程：校验旧密码 → 密码策略校验 → 检查历史密码 → 更新 hash
-     * → 清 must_change_password 标志 → 撤销该用户所有会话。
+     * <p>委托给 {@link PasswordService} —— 那里的实现更完整：
+     * 密码策略 + **历史密码不可重用**（sys_password_history）+ 记录历史。
+     * 本项目此前 PasswordService 写好了却**从未被任何 controller 调用**，
+     * 等保要求的"历史密码不可重用"完全没生效。
      */
-    @Transactional
     public void changePassword(Long userId, String oldPassword, String newPassword) {
         if (oldPassword == null || oldPassword.isBlank()) {
             throw new IllegalArgumentException("旧密码不能为空");
@@ -91,29 +91,12 @@ public class AuthService {
         if (newPassword == null || newPassword.isBlank()) {
             throw new IllegalArgumentException("新密码不能为空");
         }
+        // 旧密码错误要计入失败次数（独立事务，不会被这里的异常回滚）
         SysUser user = userRepository.findById(userId);
-        if (user == null) {
-            throw new ResourceNotFoundException("用户不存在");
-        }
-        if (!passwordEncoder.matches(oldPassword, user.getPasswordHash())) {
-            // 旧密码错 → 计入失败次数（独立事务，不会被这里的异常回滚）
+        if (user != null && !passwordEncoder.matches(oldPassword, user.getPasswordHash())) {
             loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
-            throw new IllegalArgumentException("旧密码不正确");
         }
-        // 密码策略：长度 / 复杂度（至少 3 类）/ 弱口令黑名单
-        PasswordPolicy.ValidationResult policy = passwordPolicy.validate(newPassword);
-        if (!policy.isValid()) {
-            throw new IllegalArgumentException(policy.getReason());
-        }
-        if (passwordEncoder.matches(newPassword, user.getPasswordHash())) {
-            throw new IllegalArgumentException("新密码不能与旧密码相同");
-        }
-        user.setPasswordHash(passwordEncoder.encode(newPassword));
-        user.setPasswordChangedAt(OffsetDateTime.now());
-        user.setMustChangePassword(false);
-        user.setFailedLoginCount(0);
-        userRepository.updateById(user);
-        log.info("user_password_changed, user_id={}", userId);
+        passwordService.changePassword(userId, oldPassword, newPassword);
     }
 
     /**

@@ -124,6 +124,26 @@ edam:
       per-ip: 5
       per-employee: 3
       window-seconds: 60
+      # 限流桶总量硬上限（IP + 工号两个维度合计）。
+      # 原先两个 ConcurrentHashMap 永不清理，而 key 是客户端可控的
+      # X-Forwarded-For → 伪造 IP 即可无限撑大内存。
+      max-entries: 10000
+      cleanup-interval-ms: 60000
+  security:
+    # 受信反向代理（IP 或 CIDR，逗号分隔）。
+    # 只有来自这些地址的请求才采信 X-Forwarded-For / X-Real-IP；
+    # 留空 = 不信任任何代理（fail-closed）。
+    # K8s 必须配 ingress 的 CIDR，否则所有请求会被记为 ingress pod IP。
+    trusted-proxies: ${TRUSTED_PROXIES:}
+  websocket:
+    # 允许的跨域来源，逗号分隔。留空 = 只允许同源。
+    # 不要用 "*" —— WebSocket 的 Origin 头必须服务端自己校验。
+    allowed-origins: ${WS_ALLOWED_ORIGINS:}
+  sso:
+    enabled: false
+    # SSO 回调 / 登录码交换用的 Redis key TTL 由代码固定为 10 分钟
+    success-redirect: /login
+    failure-redirect: /login?error=sso_failed
   watermark:
     cache-ttl-seconds: 86400
     cache-max-size-gb: 100
@@ -166,7 +186,13 @@ logging:
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{trace_id:-}] %logger{36} - %msg%n"
   file:
-    name: /var/log/edam/backend.log
+    # 日志落盘路径。K8s 里 readOnlyRootFilesystem=true 时该目录不存在
+    # 也没有 volume 挂载 → Logback FileAppender 创建失败，
+    # 只打一条 ERROR 就继续，文件日志彻底丢失。
+    # 两种部署姿势：
+    #   1) 挂 emptyDir 到 /var/log/edam（保留本文件日志）
+    #   2) 生产由采集器接管（Filebeat/Fluentd 收 stdout）→ 置空即关闭文件日志
+    name: ${LOG_FILE:/var/log/edam/backend.log}
     max-size: 100MB
     max-history: 30
 

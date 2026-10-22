@@ -32,6 +32,14 @@ import java.util.Arrays;
  * 注：当前实现基于 BouncyCastle（未 GM/T 0028 认证）
  * 生产环境应使用商用国密 SDK（三未信安 / 卫士通）
  */
+/**
+ * @deprecated 当前**未被任何业务代码引用**（只被
+ * {@link com.example.edam.crypto.AlgorithmRouter} 引用，而后者本身也未接线）。
+ *
+ * <p>保留原因：国密（SM2/SM3/SM4）是方案书与等保/商密合规的既定要求，
+ * 属于"写好了但还没接线"的能力，不应直接删除。接线后移除本注解。
+ */
+@Deprecated(since = "3.4.0")
 public final class SM2Util {
 
     private static final SecureRandom RNG = new SecureRandom();

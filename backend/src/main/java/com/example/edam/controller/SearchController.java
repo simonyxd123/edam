@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DocResource;
 import com.example.edam.model.VideoResource;
 import com.example.edam.service.DocumentService;
@@ -41,14 +42,7 @@ public class SearchController {
         log.info("search_videos q={} classification_lv={}", q, classification_lv);
         // v3.2 占位实现：实际应调用 ES 客户端
         Page<VideoResource> result = videoService.list(page, page_size, classification_lv, null);
-        Map<String, Object> response = new HashMap<>();
-        response.put("items", result.getRecords());
-        response.put("pagination", Map.of(
-            "page", (int) result.getCurrent(),
-            "page_size", (int) result.getSize(),
-            "total", result.getTotal(),
-            "total_pages", (int) result.getPages()
-        ));
+        Map<String, Object> response = new HashMap<>(PaginationResponses.of(result));
         response.put("took_ms", 12);
         return response;
     }
@@ -64,14 +58,7 @@ public class SearchController {
 
         log.info("search_documents q={} file_type={}", q, file_type);
         Page<DocResource> result = documentService.list(page, page_size, null, file_type);
-        Map<String, Object> response = new HashMap<>();
-        response.put("items", result.getRecords());
-        response.put("pagination", Map.of(
-            "page", (int) result.getCurrent(),
-            "page_size", (int) result.getSize(),
-            "total", result.getTotal(),
-            "total_pages", (int) result.getPages()
-        ));
+        Map<String, Object> response = new HashMap<>(PaginationResponses.of(result));
         response.put("took_ms", 8);
         return response;
     }

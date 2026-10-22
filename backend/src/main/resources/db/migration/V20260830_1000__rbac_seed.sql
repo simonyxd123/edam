@@ -1,62 +1,34 @@
 -- ===================================================================
--- EDAM RBAC 完整化（V3）
--- 1. 备份旧 sys_role_permission（*/* 通配）→ 新建标准化权限目录
--- 2. 新增 sys_permission（权限目录）
--- 3. 新建 sys_role_permission（角色 → 权限 多对多）
--- 4. 新建 sys_user_role（用户 → 角色 多对多）
--- 5. 补齐 4 个预置角色 + 权限分配
--- 6. 给已有 admin 用户 + 默认 admin 账号分配角色
+-- V20260830_1000：RBAC 目录与预置角色
+-- ===================================================================
+-- 背景：仓库里原本有**两套**互不兼容的迁移：
+--   A) backend/src/main/resources/db/migration/  V1 / V2 / V3
+--   B) dev/db/migration/                        V2026* 系列
+-- 两套的表名、列名、版本号体系全都不同（A 的 sys_user_role 用 expires_at，
+-- B 的用 expire_at；A 的 sys_permission 有 action/description/is_system，
+-- B 的没有），任何一份先跑、另一份后跑都会因 validate-on-migrate 失败。
+--
+-- 现在统一为一套：B 的表结构（35 张表的超集）+ A 的 RBAC 数据。
+-- 表结构在 V20260812_1000__init_schema.sql 里已经建好，
+-- 本迁移只负责灌「权限目录 + 预置角色 + 角色权限分配 + 用户角色绑定」。
+--
+-- 权限码与角色码以**代码为准**：
+--   - @PreAuthorize 用的是 admin:backup / distribution:approve / system:manage ...
+--   - PermissionService.isAdmin() / CurrentUser.isAdmin() 判的是角色码 'admin'
+--   所以这里用 admin / dept_manager / employee / auditor 这套码
 -- ===================================================================
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- 1. 备份旧表（保留 1 个月可回滚） =====================================
-RENAME TABLE sys_role_permission TO sys_role_permission_legacy;
+-- 1. 预置角色 ===========================================================
+INSERT INTO sys_role (code, name, description, is_system) VALUES
+  ('admin',        '系统管理员',   '全部权限，不可删除',       1),
+  ('dept_manager', '部门经理',     '本部门资源管理与审批',   1),
+  ('employee',     '普通员工',     '查看与使用本部门资源',   1),
+  ('auditor',      '审计员',       '只读 + 审计导出',        1)
+ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description);
 
--- 2. 权限目录 =================================================================
-CREATE TABLE sys_permission (
-  id            BIGINT       NOT NULL AUTO_INCREMENT,
-  code          VARCHAR(64)  NOT NULL,        -- 如 video:read
-  name          VARCHAR(128) NOT NULL,        -- 如 查看视频
-  resource_type VARCHAR(32)  NOT NULL,        -- video / document / ...
-  action        VARCHAR(32)  NOT NULL,        -- read / upload / ...
-  description   VARCHAR(255),
-  is_system     TINYINT(1)   NOT NULL DEFAULT 1,    -- 系统预置不可改
-  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_sys_permission_code (code),
-  KEY idx_sys_permission_resource (resource_type, action)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限目录';
-
--- 3. 角色 ↔ 权限 ========================================================
-CREATE TABLE sys_role_permission (
-  id            BIGINT       NOT NULL AUTO_INCREMENT,
-  role_id       BIGINT       NOT NULL,
-  permission_id BIGINT       NOT NULL,
-  constraint_def VARCHAR(255),                -- JSON，如 {"max_count":100}（预留）
-  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_srp_role_perm (role_id, permission_id),
-  KEY idx_srp_role (role_id),
-  KEY idx_srp_perm (permission_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色权限映射';
-
--- 4. 用户 ↔ 角色 ========================================================
-CREATE TABLE sys_user_role (
-  id          BIGINT       NOT NULL AUTO_INCREMENT,
-  user_id     BIGINT       NOT NULL,
-  role_id     BIGINT       NOT NULL,
-  granted_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  granted_by  BIGINT,
-  expires_at  DATETIME(3),
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_sur_user_role (user_id, role_id),
-  KEY idx_sur_user (user_id),
-  KEY idx_sur_role (role_id),
-  KEY idx_sur_expires (expires_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户角色映射';
-
--- 5. 种子数据：权限目录（45 条）==========================================
+-- 2. 权限目录（45 条）===================================================
 INSERT INTO sys_permission (code, name, resource_type, action, description) VALUES
   ('dashboard:read',         '查看仪表板',         'dashboard',    'read',          NULL),
   ('video:read',             '查看视频',           'video',        'read',          NULL),
@@ -102,9 +74,14 @@ INSERT INTO sys_permission (code, name, resource_type, action, description) VALU
   ('classification:read',    '查看密级',           'classification','read',         NULL),
   ('classification:manage',  '密级变更',           'classification','manage',       NULL),
   ('sso:manage',             'SSO 配置',           'sso',          'manage',        NULL),
-  ('mfa:manage',             'MFA 配置',           'mfa',          'manage',        NULL);
+  ('mfa:manage',             'MFA 配置',           'mfa',          'manage',        NULL)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  resource_type = VALUES(resource_type),
+  action = VALUES(action),
+  description = VALUES(description);
 
--- 6. 角色权限分配 ========================================================
+-- 3. 角色权限分配 ========================================================
 -- admin：所有权限
 INSERT INTO sys_role_permission (role_id, permission_id)
 SELECT r.id, p.id
@@ -148,7 +125,7 @@ JOIN sys_permission p ON p.code IN (
 )
 WHERE r.code = 'auditor';
 
--- 7. 已有用户迁移：默认 employee 角色 =======================
+-- 4. 已有用户绑定默认 employee 角色 =======================================
 INSERT INTO sys_user_role (user_id, role_id, granted_by)
 SELECT u.id, r.id, NULL
 FROM sys_user u
@@ -159,17 +136,10 @@ WHERE r.code = 'employee'
     SELECT 1 FROM sys_user_role sur WHERE sur.user_id = u.id
   );
 
--- 8. 默认 admin 账号（工号 E000001）额外获得 admin 角色 ===================
+-- 5. 默认 admin 账号（工号 E000001）额外获得 admin 角色 =================
 INSERT INTO sys_user_role (user_id, role_id)
 SELECT u.id, r.id
 FROM sys_user u
 JOIN sys_role r ON r.code = 'admin'
 WHERE u.employee_no = 'E000001'
 ON DUPLICATE KEY UPDATE granted_at = granted_at;
-
--- 9. 强制所有旧会话 re-login（token 里的角色已过期）=====================
-UPDATE sys_session
-SET revoked = 1,
-    revoked_at = CURRENT_TIMESTAMP(3),
-    revoked_reason = 'rbac_v3_force_relogin'
-WHERE revoked = 0;

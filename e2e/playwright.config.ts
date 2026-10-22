@@ -4,9 +4,12 @@
 // ============================================================================
 
 import { defineConfig, devices } from '@playwright/test';
+import path from 'node:path';
 
 export default defineConfig({
-  testDir: './tests',
+  // 测试文件实际在 e2e/playwright/tests/ —— 原值 './tests' 指向不存在的目录，
+  // playwright 直接报 "No tests found"，这套 e2e 从来没被真正执行过
+  testDir: './playwright/tests',
   // 串行执行（Prism mock 不支持并发）
   fullyParallel: false,
   workers: 1,
@@ -53,14 +56,21 @@ export default defineConfig({
   ],
 
   // 启动 Mock Server 作为前置服务
-  // 本地使用 Python 轻量级 mock（无需 Docker）
-  // CI 中可使用 stoplight/prism:5
+  //
+  // 本地和 CI 都用 Python 轻量级 mock（dev/mock/server.py，零第三方依赖）。
+  //
+  // 原来 CI 分支走 `docker run stoplight/prism:5` —— CI 的 job 镜像里
+  // 没有 docker（也没法 docker-in-docker），那条路径从来没跑通。
+  //
+  // 路径修正：原来用 process.cwd() 拼 `dev/mock/server.py`，但 playwright
+  // 是在 e2e/ 目录下跑的 → 拼出 e2e/dev/mock/server.py（不存在）。
+  // 正确路径是相对仓库根的 ../dev/mock/server.py。
   webServer: {
-    command: process.env.CI
-      ? 'docker run --rm -p 4010:4010 -v $PWD/doc/openapi.yaml:/tmp/openapi.yaml:ro --name edam-prism stoplight/prism:5 mock -p 4010 -h 0.0.0.0 /tmp/openapi.yaml'
-      : `python ${process.cwd().replace(/\\/g, '/')}/dev/mock/server.py 4010`,
+    // Windows 上 `python3` 是 Microsoft Store 的别名（会报 exit 9009），
+    // Linux/CI 镜像里才是真的 python3
+    command: `${process.platform === 'win32' ? 'python' : 'python3'} ${path.resolve(__dirname, '../dev/mock/server.py')} 4010`,
     url: 'http://localhost:4010/health/live',
     timeout: 30 * 1000,
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
   },
 });

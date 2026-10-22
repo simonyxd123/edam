@@ -80,6 +80,19 @@ public class PasswordPolicy {
     }
 
     /**
+     * 校验密码，不通过就抛 400。
+     *
+     * <p>便捷方法：让调用方（UserController 创建/重置密码、
+     * AuthService 自助改密）不必每次都判 {@code isValid()}。
+     */
+    public void validateOrThrow(String password) {
+        ValidationResult result = validate(password);
+        if (!result.isValid()) {
+            throw new IllegalArgumentException(result.getReason());
+        }
+    }
+
+    /**
      * 是否在历史密码列表中（不能与最近 N 次重复）
      */
     public boolean isInHistory(String newPasswordHash, java.util.List<String> historyHashes) {

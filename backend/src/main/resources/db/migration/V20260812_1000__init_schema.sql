@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS sys_permission (
     code VARCHAR(128) NOT NULL,
     name VARCHAR(128) NOT NULL,
     resource_type VARCHAR(32) NOT NULL,
+    -- 以下 4 列是 Java model com.example.edam.model.SysPermission 要求的，
+    -- 原 dev/db 脚本漏了 —— MyBatis-Plus 写这些字段会直接报 Unknown column
+    action VARCHAR(32) NOT NULL DEFAULT '',
+    description VARCHAR(255) NULL,
+    is_system TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     UNIQUE KEY uk_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -85,6 +91,9 @@ CREATE TABLE IF NOT EXISTS sys_role_permission (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     permission_id BIGINT UNSIGNED NOT NULL,
     role_id BIGINT UNSIGNED NOT NULL,
+    -- model SysRolePermission.constraintDef / createdAt
+    constraint_def VARCHAR(255) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     UNIQUE KEY uk_role_permission (role_id, permission_id),
     KEY idx_permission_id (permission_id)
@@ -97,11 +106,13 @@ CREATE TABLE IF NOT EXISTS sys_user_role (
     role_id BIGINT UNSIGNED NOT NULL,
     granted_by BIGINT UNSIGNED NULL,
     granted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    expire_at DATETIME(3) NULL,
+    -- 列名必须是 expires_at：Java model SysUserRole.expiresAt
+    -- 映射到 expires_at。原脚本写的是 expire_at → 角色过期过滤永远查不到
+    expires_at DATETIME(3) NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_role (user_id, role_id),
     KEY idx_role_id (role_id),
-    KEY idx_expire_at (expire_at)
+    KEY idx_expires_at (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 1.7 会话表
@@ -135,7 +146,7 @@ CREATE TABLE IF NOT EXISTS video_resource (
     minio_path VARCHAR(512) NOT NULL,
     duration_sec INT UNSIGNED NOT NULL DEFAULT 0,
     size_bytes BIGINT UNSIGNED NOT NULL,
-    mime_type VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(255) NULL,
     classification_lv TINYINT NOT NULL DEFAULT 1 COMMENT '1=L1 2=L2 3=L3 4=L4',
     uploader_id BIGINT UNSIGNED NOT NULL,
     upload_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -164,7 +175,7 @@ CREATE TABLE IF NOT EXISTS doc_resource (
     minio_path VARCHAR(512) NOT NULL,
     preview_path VARCHAR(512) NULL,
     size_bytes BIGINT UNSIGNED NOT NULL,
-    mime_type VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(255) NULL,
     classification_lv TINYINT NOT NULL DEFAULT 1,
     uploader_id BIGINT UNSIGNED NOT NULL,
     upload_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -188,7 +199,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     file_hash CHAR(64) NOT NULL,
     file_type VARCHAR(16) NOT NULL,
-    mime_type VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(255) NULL,
     size_bytes BIGINT UNSIGNED NOT NULL,
     minio_path VARCHAR(512) NOT NULL,
     encryption_key_id BIGINT UNSIGNED NULL,

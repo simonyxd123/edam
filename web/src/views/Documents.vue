@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
+import { isDialogDismissed } from '@/utils/dialog';
 
 const loading = ref(false);
 const documents = ref<Document[]>([]);
@@ -209,7 +210,7 @@ async function handleDelete(doc: Document) {
     ElMessage.success('删除成功');
     loadData();
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       // 错误已处理
     }
   }

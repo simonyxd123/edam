@@ -1,0 +1,16 @@
+{{- if .Values.nginx.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "edam.fullname" . }}-nginx
+  labels:
+    {{- include "edam.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nginx
+data:
+  # 用 tpl 渲染 —— 配置串里的 Helm 表达式需要在 chart 渲染期求值
+  # （upstream 里的 Service 名是模板值）
+  #
+  # 注意：注释里**不能**出现双花括号 —— Helm 会把它当成模板动作解析
+  nginx.conf: |
+{{ tpl .Values.nginx.config.nginxConf . | indent 4 }}
+{{- end }}

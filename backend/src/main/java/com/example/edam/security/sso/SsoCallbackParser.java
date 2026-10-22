@@ -11,8 +11,14 @@ import jakarta.servlet.http.HttpServletRequest;
 public class SsoCallbackParser {
 
     public static SsoCallbackPayload parse(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        String providerId = path.substring("/auth/sso/callback/".length());
+        // 用 context-path 之外的路径切 providerId。
+        // 原实现直接 substring(getRequestURI())，在 context-path=/api/v1 下
+        // 会切出 "api/v1/auth/sso/callback/xxx" 当 providerId → 查不到 provider。
+        String providerId = SsoRequestPaths.extractAfter(request, SsoRequestPaths.CALLBACK_PREFIX);
+        if (providerId == null) {
+            throw new IllegalArgumentException("无法从请求路径解析 providerId: "
+                + SsoRequestPaths.pathWithinContext(request));
+        }
 
         SsoCallbackPayload payload = new SsoCallbackPayload();
         payload.setProviderId(providerId);

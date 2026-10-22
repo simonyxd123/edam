@@ -6,6 +6,7 @@ import axios from 'axios';
 import { videoApi, type Video } from '@/api/video';
 import { api } from '@/api/client';
 import { UploadFilled, VideoCamera } from '@element-plus/icons-vue';
+import { isDialogDismissed } from '@/utils/dialog';
 
 const router = useRouter();
 const loading = ref(false);
@@ -187,7 +188,7 @@ async function handleDelete(video: Video) {
     ElMessage.success('删除成功');
     loadData();
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isDialogDismissed(e)) {
       // 错误已处理
     }
   }

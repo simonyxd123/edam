@@ -37,6 +37,9 @@ public class SecurityConfig {
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/auth/login", "/auth/refresh").permitAll()
+                // SSO：登录跳转 / 回调 / 元数据 / 一次性登录码交换
+                // 都要匿名可达（回调发生在用户还没拿到 token 的时候）
+                .requestMatchers("/auth/sso/**").permitAll()
                 .requestMatchers("/health/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 .requestMatchers("/ws/**").permitAll()
