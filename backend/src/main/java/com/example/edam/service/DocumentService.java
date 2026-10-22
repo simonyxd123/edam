@@ -52,9 +52,22 @@ public class DocumentService {
      * 文档列表
      */
     public Page<DocResource> list(int page, int pageSize, String classificationLv, String fileType) {
+        return list(page, pageSize, classificationLv, fileType, null);
+    }
+
+    /**
+     * 文档列表（分页 + 过滤 + 标题关键字）
+     *
+     * @param keyword 标题模糊匹配关键字；null / 空 = 不过滤
+     */
+    public Page<DocResource> list(int page, int pageSize, String classificationLv,
+                                   String fileType, String keyword) {
         LambdaQueryWrapper<DocResource> wrapper = new LambdaQueryWrapper<>();
         if (fileType != null) {
             wrapper.eq(DocResource::getFileType, fileType);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            wrapper.like(DocResource::getTitle, keyword.trim());
         }
         // 密级过滤：原来收了 classification_lv 参数却**完全不用** ——
         // 前端「密级」下拉框选了等于没选

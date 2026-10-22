@@ -40,8 +40,11 @@ public class SearchController {
             @RequestParam(defaultValue = "20") int page_size) {
 
         log.info("search_videos q={} classification_lv={}", q, classification_lv);
-        // v3.2 占位实现：实际应调用 ES 客户端
-        Page<VideoResource> result = videoService.list(page, page_size, classification_lv, null);
+        // q 真正参与过滤：此前收了 q 却完全不用，返回全量列表 ——
+        // 用户搜任何关键字都能"搜到"全部资源。
+        // 完整 Elasticsearch 检索（分词/高亮/相关性排序）是 v3.2 V-7 的规划，
+        // 当前按标题模糊匹配实现，比"假装搜索"诚实。
+        Page<VideoResource> result = videoService.list(page, page_size, classification_lv, null, q);
         Map<String, Object> response = new HashMap<>(PaginationResponses.of(result));
         response.put("took_ms", 12);
         return response;
@@ -57,7 +60,8 @@ public class SearchController {
             @RequestParam(defaultValue = "20") int page_size) {
 
         log.info("search_documents q={} file_type={}", q, file_type);
-        Page<DocResource> result = documentService.list(page, page_size, null, file_type);
+        // 同上：q 真正参与过滤
+        Page<DocResource> result = documentService.list(page, page_size, null, file_type, q);
         Map<String, Object> response = new HashMap<>(PaginationResponses.of(result));
         response.put("took_ms", 8);
         return response;

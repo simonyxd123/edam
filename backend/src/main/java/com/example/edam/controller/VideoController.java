@@ -156,15 +156,29 @@ public class VideoController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
+    /**
+     * 批量授权（分享给多个用户）。
+     *
+     * <p><b>状态：未实现</b>。原实现直接返回
+     * {@code granted_count = userIds.size()} —— 看起来全部授权成功，
+     * 实际一条权限都没写。前端会提示"已授权 N 个用户"，而权限表纹丝不动。
+     *
+     * <p>需要先明确授权模型（是否带有效期 / 是否可撤销 / 是否受密级约束 /
+     * 被授权者能否再分享），才能落库到 {@code video_permission}。
+     * 在那之前明确返回 501，不给前端假成功。
+     */
     @PostMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
     public ResponseEntity<Map<String, Object>> batchPermission(
         @RequestBody BatchPermissionRequest request
     ) {
-        // 实际实现应调用 PermissionService
-        Map<String, Object> response = new HashMap<>();
-        response.put("granted_count", request.getUserIds().size());
-        return ResponseEntity.ok(response);
+        log.warn("batch_permission_not_implemented, user_ids={}", request.getUserIds().size());
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "not_implemented");
+        body.put("detail", "批量授权尚未实现：需要先确定授权模型（有效期 / 可撤销性 / "
+            + "密级约束 / 是否可再分享），再落库到 video_permission。"
+            + "为避免前端误以为授权成功，此处明确返回 501。");
+        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(body);
     }
 
     private String statusToString(Integer status) {

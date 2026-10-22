@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,17 +28,27 @@ import java.util.UUID;
 @Tag(name = "notifications", description = "通知与消息")
 public class NotificationsController {
 
+    /**
+     * 旧的 WebSocket 占位端点。
+     *
+     * <p><b>已废弃</b>：真正的 WebSocket 端点是 {@code /ws}（STOMP），
+     * 由 {@code WebSocketConfig} 注册。这里的 {@code /ws/notifications}
+     * 是个**普通 HTTP GET**，跟 WebSocket 握手毫无关系 ——
+     * 返回 426「Upgrade Required」会让人以为是握手被拒，
+     * 实际是路径根本不对。
+     *
+     * <p>现在明确返回 404 + 指向正确的端点。
+     */
     @GetMapping("/ws/notifications")
-    @Operation(summary = "WebSocket 长连接（实时通知）")
-    public ResponseEntity<Void> websocketHandshake(
-            @RequestParam String token) {
-        // 实际 WebSocket 握手由 WebSocketConfig 的握手拦截器处理
-        // 此端点占位返回 101（升级）或 426（升级必需）
-        return ResponseEntity.status(426)
-            .header(HttpHeaders.UPGRADE, "websocket")
-            .header(HttpHeaders.CONNECTION, "Upgrade")
-            .header("Sec-WebSocket-Protocol", "edam-notifications-v1")
-            .build();
+    @Operation(summary = "（已废弃）请改用 WebSocket 端点 /ws")
+    public ResponseEntity<Map<String, Object>> websocketHandshake(
+            @RequestParam(required = false) String token) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "deprecated_endpoint");
+        body.put("detail", "该端点不是 WebSocket 端点。真正的实时通知通道是 /ws"
+            + "（STOMP over WebSocket），需用 Authorization 头或 ?token= 传 JWT，"
+            + "订阅 /topic/notifications/* 主题。");
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
     @GetMapping("/notifications")

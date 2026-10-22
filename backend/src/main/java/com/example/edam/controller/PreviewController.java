@@ -1,6 +1,6 @@
 package com.example.edam.controller;
 
-import com.example.edam.service.DocumentService;
+import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -12,11 +12,15 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-
 /**
  * 文档预览 Controller（v3.2 V-1 补全）
  * 对应 openapi.yaml tag: preview
+ *
+ * <p><b>已从占位实现改为真实实现</b>：原实现返回写死的 HTML 字符串和
+ * {@code "ENCRYPTED_DOC_<id>"} 字节流 —— 前端以为拿到了文档预览/加密文件，
+ * 实际拿到的是占位文本。现在统一走
+ * {@link DocumentPreviewService}（从 MinIO 读真实内容，可选叠加动态水印），
+ * 与 {@code GET /documents/{id}/preview} 行为一致。
  */
 @Slf4j
 @RestController
@@ -25,49 +29,66 @@ import java.nio.charset.StandardCharsets;
 @Tag(name = "preview", description = "文档预览")
 public class PreviewController {
 
-    private final DocumentService documentService;
+    private final DocumentPreviewService previewService;
 
+    /**
+     * 文档预览（含动态明水印）。
+     *
+     * @param format html（默认）→ 浏览器直接内联渲染；json → 返回元信息 + base64
+     */
     @GetMapping("/{doc_id}")
     @Operation(summary = "文档预览（含 Canvas 动态明水印）")
-    public ResponseEntity<String> preview(
+    public ResponseEntity<?> preview(
             @PathVariable("doc_id") Long docId,
             @RequestParam(required = false, defaultValue = "html") String format,
             @CurrentUserId(required = false) Long userId) {
 
         log.info("doc_preview doc_id={} format={} user_id={}", docId, format, userId);
-        // v3.2 占位实现：返回 HTML 含 Canvas 水印（实际由前端渲染）
-        String html = """
-            <!DOCTYPE html>
-            <html><head><title>EDAM 文档预览</title></head>
-            <body>
-              <div id="watermark" style="position:fixed;top:50%%;left:50%%;transform:translate(-50%%,-50%%);opacity:0.3;font-size:48px;color:#888;pointer-events:none;">
-                USER_%d - %s
-              </div>
-              <div id="content"><p>文档内容占位（doc_id=%d）</p></div>
-            </body></html>
-            """.formatted(userId != null ? userId : 0, java.time.OffsetDateTime.now(), docId);
+        DocumentPreviewService.PreviewContent content = previewService.load(docId, userId, true);
 
+        if ("json".equalsIgnoreCase(format)) {
+            return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Watermark-Enabled", "true")
+                .body(java.util.Map.of(
+                    "doc_id", docId,
+                    "mime", content.mime(),
+                    "filename", content.filename(),
+                    "size", content.bytes().length,
+                    "watermark", true,
+                    "content_base64", java.util.Base64.getEncoder().encodeToString(content.bytes())));
+        }
+
+        // html：直接内联返回文档内容（PDF / 图片 / 文本）
         return ResponseEntity.ok()
-            .contentType(MediaType.TEXT_HTML)
+            .contentType(MediaType.parseMediaType(content.mime()))
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                DocumentPreviewService.contentDisposition(content.inline(), content.filename()))
             .header("X-Watermark-Enabled", "true")
-            .body(html);
+            .body(content.bytes());
     }
 
+    /**
+     * 下载文档原文。
+     *
+     * <p>原实现返回 {@code "ENCRYPTED_DOC_<id>"} 字节流并打上
+     * {@code X-Encryption: AES-256-GCM} 头 —— 那不是加密文档，只是一句字符串。
+     * 现在返回 MinIO 里的真实原文（attachment 下载，不内联）。
+     */
     @GetMapping("/{doc_id}/download")
-    @Operation(summary = "下载已加密文档")
+    @Operation(summary = "下载文档原文")
     public ResponseEntity<ByteArrayResource> download(
             @PathVariable("doc_id") Long docId,
             @CurrentUserId Long userId) {
 
         log.info("doc_download doc_id={} user_id={}", docId, userId);
-        // v3.2 占位实现：返回加密文档字节流（实际从 MinIO 获取）
-        byte[] encrypted = ("ENCRYPTED_DOC_" + docId).getBytes(StandardCharsets.UTF_8);
-        ByteArrayResource resource = new ByteArrayResource(encrypted);
+        DocumentPreviewService.PreviewContent content = previewService.load(docId, userId, false);
+        ByteArrayResource resource = new ByteArrayResource(content.bytes());
 
         return ResponseEntity.ok()
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
-            .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=doc_" + docId + ".enc")
-            .header("X-Encryption", "AES-256-GCM")
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                DocumentPreviewService.contentDisposition(false, content.filename()))
             .body(resource);
     }
 }

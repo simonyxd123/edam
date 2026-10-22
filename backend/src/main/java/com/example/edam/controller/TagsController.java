@@ -1,89 +1,137 @@
 package com.example.edam.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.example.edam.model.VideoTag;
+import com.example.edam.repository.TagRepository;
+import com.example.edam.repository.VideoTagRepository;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 标签管理 Controller（v3.2 V-1 补全）
  * 对应 openapi.yaml tag: tags
  *
- * 注：v3.2 占位实现，使用内存存储；生产应使用持久化存储（Repository + DB）
+ * <p><b>存储</b>：表 {@code tag} 一直在 schema 里，但此前没有 model，
+ * 整个功能用 {@code static ConcurrentHashMap} 实现 ——
+ * 重启即丢、多实例不共享、任何登录用户都能增删全局标签。
+ * 现在改为真正的 DB 存储（Repository）。
  */
 @Slf4j
 @RestController
 @RequiredArgsConstructor
-@Tag(name = "tags", description = "标签管理")
+@io.swagger.v3.oas.annotations.tags.Tag(name = "tags", description = "标签管理")
 public class TagsController {
 
-    private static final ConcurrentHashMap<Long, Tag> TAGS = new ConcurrentHashMap<>();
-    private static final AtomicLong ID_GEN = new AtomicLong(1);
-
-    static {
-        // 预置标签
-        TAGS.put(1L, new Tag(1L, "机密", "confidential", "both", "#FF0000", 0));
-        TAGS.put(2L, new Tag(2L, "财务", "finance", "document", "#0000FF", 0));
-        TAGS.put(3L, new Tag(3L, "人事", "hr", "document", "#00AA00", 0));
-    }
+    private final TagRepository tagRepository;
+    private final VideoTagRepository videoTagRepository;
 
     @GetMapping("/tags")
     @Operation(summary = "标签列表")
-    public List<Map<String, Object>> list(
+    public List<com.example.edam.model.Tag> list(
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String keyword) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        TAGS.values().stream()
-            .filter(t -> type == null || type.equals(t.type))
-            .filter(t -> keyword == null || t.name.contains(keyword))
-            .forEach(t -> result.add(t.toMap()));
-        return result;
+        LambdaQueryWrapper<com.example.edam.model.Tag> wrapper = new LambdaQueryWrapper<>();
+        if (type != null && !type.isBlank()) {
+            wrapper.eq(com.example.edam.model.Tag::getType, type);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            wrapper.like(com.example.edam.model.Tag::getName, keyword);
+        }
+        wrapper.orderByAsc(com.example.edam.model.Tag::getId);
+        return tagRepository.selectList(wrapper);
     }
 
     @PostMapping("/tags")
     @Operation(summary = "创建标签")
-    public ResponseEntity<Map<String, Object>> create(@RequestBody CreateTagRequest request) {
-        long id = ID_GEN.incrementAndGet();
-        Tag tag = new Tag(id, request.name, request.code, request.type, request.color, 0);
-        TAGS.put(id, tag);
-        return ResponseEntity.status(201).body(tag.toMap());
+    @PreAuthorize("hasAuthority('tag:manage')")
+    @Transactional
+    public ResponseEntity<com.example.edam.model.Tag> create(@RequestBody CreateTagRequest request) {
+        if (request.getName() == null || request.getName().isBlank()) {
+            throw new IllegalArgumentException("标签名不能为空");
+        }
+        com.example.edam.model.Tag tag = new com.example.edam.model.Tag();
+        tag.setName(request.getName().trim());
+        tag.setCode(request.getCode());
+        tag.setType(request.getType() == null ? "both" : request.getType());
+        tag.setColor(request.getColor());
+        tag.setUseCount(0);
+        tagRepository.insert(tag);
+        return ResponseEntity.status(201).body(tag);
     }
 
     @GetMapping("/tags/{tag_id}")
     @Operation(summary = "标签详情")
-    public ResponseEntity<Map<String, Object>> getById(@PathVariable("tag_id") Long tagId) {
-        Tag t = TAGS.get(tagId);
-        return t == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(t.toMap());
+    public ResponseEntity<com.example.edam.model.Tag> getById(@PathVariable("tag_id") Long tagId) {
+        com.example.edam.model.Tag t = tagRepository.selectById(tagId);
+        return t == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(t);
     }
 
     @DeleteMapping("/tags/{tag_id}")
     @Operation(summary = "删除标签")
+    @PreAuthorize("hasAuthority('tag:manage')")
+    @Transactional
     public ResponseEntity<Void> delete(@PathVariable("tag_id") Long tagId) {
-        TAGS.remove(tagId);
+        tagRepository.deleteById(tagId);
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * 给视频添加标签。
+     *
+     * <p><b>状态</b>：写 {@code video_tag} 关联表。关联表
+     * {@code video_tag(id, video_id, tag_id)} 已在 schema 里。
+     */
     @PostMapping("/videos/{video_id}/tags")
     @Operation(summary = "给视频添加标签")
+    @PreAuthorize("hasAuthority('video:edit')")
+    @Transactional
     public ResponseEntity<Map<String, Object>> addToVideo(
             @PathVariable("video_id") Long videoId,
             @RequestBody Map<String, List<Long>> body) {
-        log.info("video_tag_added video_id={} tag_ids={}", videoId, body.get("tag_ids"));
-        return ResponseEntity.ok(Map.of("video_id", videoId, "tag_ids", body.get("tag_ids")));
+        List<Long> tagIds = body.get("tag_ids");
+        if (tagIds == null || tagIds.isEmpty()) {
+            throw new IllegalArgumentException("tag_ids 不能为空");
+        }
+        // 校验标签都存在，避免写入悬空关联
+        for (Long tagId : tagIds) {
+            if (tagRepository.selectById(tagId) == null) {
+                throw new IllegalArgumentException("标签不存在: " + tagId);
+            }
+        }
+        // 写关联表（uk_video_tag 保证幂等：重复添加会撞唯一键 → 先查后写）
+        for (Long tagId : tagIds) {
+            boolean exists = videoTagRepository.selectCount(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VideoTag>()
+                    .eq(VideoTag::getVideoId, videoId)
+                    .eq(VideoTag::getTagId, tagId)) > 0;
+            if (!exists) {
+                VideoTag vt = new VideoTag();
+                vt.setVideoId(videoId);
+                vt.setTagId(tagId);
+                videoTagRepository.insert(vt);
+            }
+        }
+        log.info("video_tag_added video_id={} tag_ids={}", videoId, tagIds);
+        return ResponseEntity.ok(Map.of("video_id", videoId, "tag_ids", tagIds));
     }
 
     @DeleteMapping("/videos/{video_id}/tags")
     @Operation(summary = "从视频移除标签")
+    @PreAuthorize("hasAuthority('video:edit')")
+    @Transactional
     public ResponseEntity<Void> removeFromVideo(@PathVariable("video_id") Long videoId) {
+        videoTagRepository.delete(
+            new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VideoTag>()
+                .eq(VideoTag::getVideoId, videoId));
         log.info("video_tag_removed video_id={}", videoId);
         return ResponseEntity.noContent().build();
     }
@@ -94,18 +142,5 @@ public class TagsController {
         private String type;       // video / document / both
         private String code;       // URL 友好的英文代号
         private String color;      // #RRGGBB
-    }
-
-    private record Tag(Long id, String name, String code, String type, String color, int useCount) {
-        Map<String, Object> toMap() {
-            Map<String, Object> m = new java.util.LinkedHashMap<>();
-            m.put("id", id);
-            m.put("name", name);
-            m.put("code", code);
-            m.put("type", type);
-            m.put("color", color);
-            m.put("use_count", useCount);
-            return m;
-        }
     }
 }

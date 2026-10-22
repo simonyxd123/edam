@@ -8,6 +8,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.service.AuditService;
+import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.service.WatermarkService;
 import com.example.edam.security.CurrentUserId;
@@ -50,6 +51,7 @@ public class DocumentController {
     private final MinioClient minioClient;
     private final AuditService auditService;
     private final WatermarkService watermarkService;
+    private final com.example.edam.service.DocumentPreviewService previewService;
     private final SysUserRepository sysUserRepository;
 
     @Value("${minio.bucket.documents}")
@@ -164,72 +166,36 @@ public class DocumentController {
             jakarta.servlet.http.HttpServletRequest request,
             HttpServletResponse response
     ) {
-        DocResource doc = documentService.getById(docId);
-        if (doc.getMinioPath() == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档原文不存在");
-        }
+        // 走共用的 DocumentPreviewService（与 /preview/{id} 端点同一份实现），
+        // 避免两处各写一遍水印 + 流式输出的逻辑而行为漂移
+        DocumentPreviewService.PreviewContent content =
+            previewService.load(docId, userId, true);
 
-        String mime = doc.getMimeType() != null ? doc.getMimeType() : "application/octet-stream";
-        boolean inlineSupported = mime.startsWith("application/pdf") || mime.startsWith("image/")
-                                 || mime.startsWith("text/");
-        String disposition = inlineSupported ? "inline" : "attachment";
-
-        String filename = URLEncoder.encode(doc.getTitle() != null ? doc.getTitle() : "document",
-            StandardCharsets.UTF_8).replace("+", "%20");
-
-        // 拉水印文本（用员工号；查不到就降级）
-        String watermarkText = lookupEmployeeNo(userId);
-        if (watermarkText == null || watermarkText.isBlank()) {
-            watermarkText = "ANONYMOUS";
-        }
-
-        response.setContentType(mime);
+        response.setContentType(content.mime());
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
-            disposition + "; filename=\"" + filename + "\"");
-        response.setHeader(HttpHeaders.CACHE_CONTROL, "private, max-age=300");
-        response.setHeader("X-Content-Type-Options", "nosniff");
-        // 防 iframe 劫持：只允许同源页面嵌入
-        response.setHeader("X-Frame-Options", "SAMEORIGIN");
+            DocumentPreviewService.contentDisposition(content.inline(), content.filename()));
+        DocumentPreviewService.applySecurityHeaders(response);
+        response.setHeader("X-Watermark-Enabled", "true");
 
         log.info("doc_preview, doc_id={}, user_id={}, mime={}, size={}, watermark=true",
-            docId, userId, mime, doc.getSizeBytes());
+            docId, userId, content.mime(), content.bytes().length);
 
         // 写审计
         if (userId != null) {
             auditService.log(userId, "preview", "Document", docId, "success",
-                "ip=" + request.getRemoteAddr() + ", mime=" + mime + ", watermark=on",
+                "ip=" + request.getRemoteAddr() + ", mime=" + content.mime() + ", watermark=on",
                 request.getRemoteAddr(),
                 request.getHeader("User-Agent"));
         }
 
-        // 从 MinIO 读 → 加水印 → 流式写 response
-        try (InputStream minioIn = minioClient.getObject(
-                GetObjectArgs.builder()
-                    .bucket(documentsBucket)
-                    .object(doc.getMinioPath())
-                    .build());
-             OutputStream out = response.getOutputStream()) {
-
-            byte[] watermarkedBytes = watermarkService.applyWatermark(minioIn, mime, watermarkText);
-            if (watermarkedBytes != null && watermarkedBytes.length > 0) {
-                response.setContentLengthLong(watermarkedBytes.length);
-                out.write(watermarkedBytes);
-                out.flush();
-                // sizeBytes 是可空 Long —— 历史数据 / MQ 回填可能是 null，
-                // 拆箱 NPE 时响应头已写了一半 → 客户端拿到截断响应
-                long originalSize = doc.getSizeBytes() != null ? doc.getSizeBytes() : 0L;
-                double ratio = watermarkedBytes.length / Math.max(1.0, (double) originalSize);
-                log.info("doc_preview_stream_done, doc_id={}, in_size={}, out_size={}, ratio={}x",
-                    docId, doc.getSizeBytes(), watermarkedBytes.length,
-                    String.format("%.2f", ratio));
-            } else {
-                log.warn("doc_preview_watermark_empty, doc_id={}, mime={}", docId, mime);
-                out.flush();
-            }
-        } catch (Exception e) {
-            log.error("doc_preview_stream_failed, doc_id={}", docId, e);
-            throw new RuntimeException("预览流失败", e);
+        try {
+            response.setContentLengthLong(content.bytes().length);
+            response.getOutputStream().write(content.bytes());
+            response.getOutputStream().flush();
+        } catch (java.io.IOException e) {
+            log.error("doc_preview_write_failed, doc_id={}", docId, e);
+            throw new RuntimeException("预览流写入失败", e);
         }
     }
 
@@ -282,8 +248,10 @@ public class DocumentController {
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size
     ) {
-        // 实际生产：调用 ES 服务
-        Page<DocResource> result = documentService.list(page, page_size, null, file_type);
+        // q 真正参与过滤：此前收了 query 却**完全不用**，返回全量列表。
+        // 完整 ES 检索（分词/高亮/相关性）是 v3.2 V-7 的规划，
+        // 当前按标题模糊匹配实现。
+        Page<DocResource> result = documentService.list(page, page_size, null, file_type, query);
         Map<String, Object> response = toPaginationResponse(result);
         response.put("query", query);
         response.put("took_ms", 5);

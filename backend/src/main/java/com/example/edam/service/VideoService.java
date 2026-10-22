@@ -56,12 +56,28 @@ public class VideoService {
      * 视频列表（分页 + 过滤）
      */
     public Page<VideoResource> list(int page, int pageSize, String classificationLv, Long uploaderId) {
+        return list(page, pageSize, classificationLv, uploaderId, null);
+    }
+
+    /**
+     * 视频列表（分页 + 过滤 + 标题关键字）
+     *
+     * @param keyword 标题模糊匹配关键字；null / 空 = 不过滤
+     */
+    public Page<VideoResource> list(int page, int pageSize, String classificationLv,
+                                    Long uploaderId, String keyword) {
         LambdaQueryWrapper<VideoResource> wrapper = new LambdaQueryWrapper<>();
         if (classificationLv != null) {
             wrapper.eq(VideoResource::getClassificationLv, parseClassification(classificationLv));
         }
         if (uploaderId != null) {
             wrapper.eq(VideoResource::getUploaderId, uploaderId);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            // 关键字过滤：此前搜索端点收了 q 却**完全不用**，
+            // 返回全量列表 —— 用户搜什么都能搜到全部
+            wrapper.and(w -> w.like(VideoResource::getTitle, keyword.trim())
+                              .or().like(VideoResource::getMinioPath, keyword.trim()));
         }
         wrapper.orderByDesc(VideoResource::getUploadTime);
         return videoRepository.selectPage(new Page<>(page, pageSize), wrapper);
