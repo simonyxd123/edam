@@ -83,6 +83,14 @@ db:migrate:
     # Detected applied migration not resolved locally
     # 迁移脚本的唯一权威目录：backend/src/main/resources/db/migration
     # （与后端运行时 Spring Flyway 读的 classpath:db/migration 完全一致）
+    # 迁移前先做静态校验（不需要真库也能查）：
+    #   1. model 字段 ↔ 运行时 schema 是否匹配
+    #   2. 迁移链是否自洽（无悬空 ALTER / 重复版本）
+    #   3. 全新库上每条外键两端类型是否兼容
+    # 这三项能提前抓到 "Unknown column" 与 "Error 3780 are incompatible"
+    - python dev/db/_validate_model_schema.py
+    - python dev/db/_validate_migrations.py
+    - python dev/db/_validate_fk_types.py
     - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration,filesystem:dev/db/seed migrate
     - |
       TABLES=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'")

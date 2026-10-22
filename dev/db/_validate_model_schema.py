@@ -32,7 +32,8 @@ def build_schema():
 
     tables = {}          # table → set(columns)
     created_once = set()  # 已经 CREATE 过的表（后续 CREATE IF NOT EXISTS 不生效）
-    problems = []
+    problems = []        # 真正会导致迁移失败的问题
+    warnings = []        # 需要人工确认、但不阻断
 
     for v, p in files:
         ver = f"{v[0]}.{v[1]}"
@@ -43,10 +44,14 @@ def build_schema():
         ):
             t, body = m.group(1), m.group(2)
             if t in created_once:
-                # IF NOT EXISTS → 空操作，最终结构不变
-                problems.append(
+                # IF NOT EXISTS → 空操作，最终结构不变。
+                # 这是**警告**而非错误：只要后续有 ALTER 把缺的列补齐
+                # （例如 V20260820 重复建 sys_session，由
+                #  V20260830_2000 补齐那 7 列），最终结构依然正确 ——
+                # 真正的正确性由下面的 model 字段核对来判定。
+                warnings.append(
                     f"[{ver}] {p.name}: 表 {t} 已被前面的迁移创建，"
-                    f"本次 CREATE IF NOT EXISTS 不会生效"
+                    f"本次 CREATE IF NOT EXISTS 不生效（后续 ALTER 需补齐差异列）"
                 )
                 continue
             cols = set()
@@ -75,7 +80,7 @@ def build_schema():
             for cm in re.finditer(r'MODIFY COLUMN `?(\w+)`?', body, re.I):
                 tables[t].add(cm.group(1))
 
-    return tables, problems
+    return tables, problems, warnings
 
 
 def snake(n):
@@ -83,7 +88,7 @@ def snake(n):
 
 
 def main():
-    tables, problems = build_schema()
+    tables, problems, warnings = build_schema()
 
     print(f"运行时表数: {len(tables)}\n")
 
@@ -116,11 +121,16 @@ def main():
         print("✅ 所有 model 字段都能在运行时 schema 里找到")
 
     if problems:
-        print(f"\n迁移链问题 {len(problems)} 处:")
+        print(f"\n迁移链阻断性问题 {len(problems)} 处:")
         for x in problems:
             print("  ", x)
     else:
-        print("✅ 迁移链无重复建表 / 悬空 ALTER")
+        print("✅ 迁移链无悬空 ALTER / 悬空 INSERT")
+
+    if warnings:
+        print(f"\n需人工确认 {len(warnings)} 处（不阻断）:")
+        for x in warnings:
+            print("  ", x)
 
     return 1 if (mismatches or problems) else 0
 

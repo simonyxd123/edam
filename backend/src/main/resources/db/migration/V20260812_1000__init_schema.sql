@@ -12,6 +12,51 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ----------------------------------------------------------------------------
+-- 【前置自检】检测到"被旧 schema 污染"的库就立刻给出可操作提示
+-- ----------------------------------------------------------------------------
+-- 背景：本项目历史上存在**两套**迁移（backend 的 V1/V2/V3 与本套 V2026*），
+-- 两者结构不同（列集、外键整数字符号性都不同）。若某个库先被旧套建过，
+-- 本脚本里的 `CREATE TABLE IF NOT EXISTS` 会**静默跳过**已存在的旧表，
+-- 到文件末尾加外键约束时才会报
+--   Error 3780: Referencing column 'dept_id' and referenced column 'id'
+--   in foreign key constraint 'fk_user_dept' are incompatible.
+-- —— 报错位置离病因很远，排查成本高。
+--
+-- 这里提前检测并给出明确指引（执行 dev/db/reset-dev-db.sql 重建）。
+-- 检测方式：旧 schema 的 sys_user.dept_id 是 **signed BIGINT**，
+-- 本套 schema 是 BIGINT UNSIGNED —— 用 information_schema 就能判定。
+--
+-- 注：Flyway 的 MySQL 解析器支持 DELIMITER 指令。
+-- 检测方式：旧 schema 的 FK 相关列是 **signed BIGINT**，
+-- 本套 schema 是 BIGINT UNSIGNED —— 用 information_schema 就能判定。
+--
+-- 这里用一条**恒成功**的 SELECT 输出提示，而不是 SIGNAL 抛错：
+--   * SIGNAL 需要在存储程序里用（CREATE PROCEDURE），
+--     而 CREATE ROUTINE 是全局权限，生产用最小权限数据库账号时
+--     反而会把迁移本身搞挂 —— 为了一个提示不值得。
+--   * 这条 SELECT 的结果会出现在 Flyway 的 migrate 输出里，
+--     迁移若随后失败，日志里紧挨着就有可操作指引。
+--
+-- 注意：Flyway 的 MySQL 解析器支持 DELIMITER 指令（此处不再需要）。
+SET @edam_legacy_col_cnt = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND COLUMN_NAME IN ('dept_id', 'uploader_id', 'user_id', 'role_id',
+                          'permission_id', 'video_id', 'doc_id', 'applicant_id')
+      AND DATA_TYPE = 'bigint'
+      AND COLUMN_TYPE NOT LIKE '%unsigned%'
+);
+
+SELECT IF(@edam_legacy_col_cnt > 0,
+    '⚠️ EDAM 迁移预检：检测到本库存在旧版 schema 的表（backend V1/V2/V3 遗留，'
+    'FK 相关整数字为 signed BIGINT），与本套 V2026* 迁移不兼容。'
+    '若后续报 Error 3780 (foreign key ... are incompatible)，'
+    '请先执行 dev/db/reset-dev-db.sql 重建数据库（会清空数据）再重启后端。',
+    '✓ EDAM 迁移预检通过：未检测到旧版 schema 遗留'
+) AS edam_schema_precheck;
+
+-- ----------------------------------------------------------------------------
 -- 一、用户与权限
 -- ----------------------------------------------------------------------------
 
