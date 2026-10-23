@@ -44,6 +44,16 @@ const MAX_UPLOAD_LABEL = '8 GB';
 const pollingVideoIds = ref<Set<number>>(new Set());
 const pollTimers = new Map<number, number>();
 const MAX_POLL_SECONDS = 600;  // 最多轮询 10 分钟
+/**
+ * 组件是否已卸载。
+ *
+ * <p>原来的实现里，onBeforeUnmount 只清了**当时已登记**的 timeout。
+ * 若 tick 正卡在 await axios.get(...) 里，此刻它的 timer 还没登记 →
+ * 卸载后 await resolve，代码仍会 setTimeout 排下一个 3 秒的 tick，
+ * 且从此再无人清理 → **已卸载的组件继续请求最长 10 分钟**，
+ * 回调里的 ElMessage.warning 还会弹到别的页面上。
+ */
+let disposed = false;
 
 function startHlsPolling(videoId: number) {
   if (pollingVideoIds.value.has(videoId)) return;
@@ -51,6 +61,7 @@ function startHlsPolling(videoId: number) {
 
   const start = Date.now();
   const tick = async () => {
+    if (disposed) return;
     if (Date.now() - start > MAX_POLL_SECONDS * 1000) {
       stopHlsPolling(videoId);
       ElMessage.warning(`video_id=${videoId} HLS 处理超时，请手动查看列表`);
@@ -80,6 +91,7 @@ function startHlsPolling(videoId: number) {
     } catch (e: any) {
       // 404 / 500 都静默处理（不弹"视频不存在"toast）
       // 短间隔重试，避免长期阻塞 UI
+      if (disposed) return;
       const t = window.setTimeout(tick, 3000);
       pollTimers.set(videoId, t);
     }
@@ -206,6 +218,7 @@ function getClassificationTag(lv: string) {
 
 onMounted(() => loadData());
 onBeforeUnmount(() => {
+  disposed = true;   // 让在途的 tick 立即停止，不再排下一个
   // 清理所有轮询
   for (const id of Array.from(pollTimers.keys())) stopHlsPolling(id);
 });

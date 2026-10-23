@@ -2,6 +2,7 @@
  * 视频相关 API
  */
 import { api } from './client';
+import type { PageResult } from './types';
 
 export interface Video {
   id: number;
@@ -18,15 +19,6 @@ export interface Video {
   tags?: string[];
 }
 
-export interface PageResult<T> {
-  items: T[];
-  pagination: {
-    page: number;
-    page_size: number;
-    total: number;
-    total_pages: number;
-  };
-}
 
 export const videoApi = {
   list: (params: { page?: number; page_size?: number; classification_lv?: string }) =>

@@ -2,6 +2,7 @@
  * 外发审批 API
  */
 import { api } from './client';
+import type { PageResult } from './types';
 
 export interface Approval {
   id: number;
@@ -23,15 +24,6 @@ export interface Approval {
   decided_at?: string;
 }
 
-export interface PageResult<T> {
-  items: T[];
-  pagination: {
-    page: number;
-    page_size: number;
-    total: number;
-    total_pages: number;
-  };
-}
 
 export const distributionApi = {
   list: (params: { page?: number; page_size?: number; status?: string; applicant_id?: number }) =>

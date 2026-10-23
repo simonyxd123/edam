@@ -2,6 +2,7 @@
  * 文档相关 API
  */
 import { api } from './client';
+import type { PageResult } from './types';
 
 export interface Document {
   id: number;
@@ -17,15 +18,6 @@ export interface Document {
   preview_status: 'pending' | 'processing' | 'ready' | 'failed';
 }
 
-export interface PageResult<T> {
-  items: T[];
-  pagination: {
-    page: number;
-    page_size: number;
-    total: number;
-    total_pages: number;
-  };
-}
 
 export const documentApi = {
   list: (params: { page?: number; page_size?: number; classification_lv?: string; file_type?: string }) =>

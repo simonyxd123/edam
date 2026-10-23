@@ -30,6 +30,16 @@ const UPLOAD_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无进展即中止
 class ApiClient {
   private instance: AxiosInstance;
 
+  /**
+   * 正在进行的 refresh 请求（单例锁）。
+   *
+   * <p>并发请求同时收到 401 时，只有第一个会真正发 refresh 请求，
+   * 其余等待同一个 Promise —— 否则 refresh_token 会被并发消费，
+   * 后到的那些拿到 401 → 把用户登出。
+   */
+  private refreshPromise: Promise<boolean> | null = null;
+
+
   constructor() {
     this.instance = axios.create({
       baseURL: API_BASE,
@@ -53,7 +63,7 @@ class ApiClient {
     // 响应拦截：统一错误处理
     this.instance.interceptors.response.use(
       (response) => response,
-      (error: AxiosError) => {
+      async (error: AxiosError) => {
         const status = error.response?.status;
         const data = error.response?.data as any;
 
@@ -85,6 +95,24 @@ class ApiClient {
         // 无 response 且非取消/超时 = 网络断了，不是会话失效
         const isNetworkDown = status === undefined && !isTimeout && !isCanceled;
         const isSessionInvalid = isApi && !isPublic && (status === 401 || isNetworkDown);
+
+        // ---- 401：先试 refresh，失败才算会话失效 ----
+        //
+        // access_token 只有 10 分钟（AuthService.expires_in=600），
+        // 而 refresh_token 此前**从未被使用过** → 用户连续操作 10 分钟后
+        // 下一个请求 401 → 被踢回登录页，未保存的编辑状态全丢。
+        //
+        // 现在：401 → 用 refresh_token 换新 token → 重放原请求。
+        // 单例锁保证并发请求只触发一次 refresh（否则 N 个并发 401 会打 N 次
+        // refresh，后 N-1 次因 refresh_token 已被消费而失败）。
+        // 本次请求本身就是 refresh 调用 → 不能再触发 refresh（否则死循环）
+        const isRefreshCall = (error.config as any)?.__isRefreshCall === true;
+        if (status === 401 && isApi && !isPublic && !isRefreshCall) {
+          const retried = await this.tryRefreshAndReplay(error);
+          if (retried) {
+            return retried;
+          }
+        }
 
         if (isUploadIdleAbort) {
           ElMessage.error(`上传超过 ${UPLOAD_IDLE_TIMEOUT_MS / 60000} 分钟无进展，已中止，请检查网络后重试`);
@@ -118,6 +146,78 @@ class ApiClient {
 
   async get<T = any>(url: string, params?: any, config?: AxiosRequestConfig): Promise<T> {
     return (await this.instance.get(url, { params, ...config })).data;
+  }
+
+  /**
+   * 用 refresh_token 换新的 access_token，成功后重放原请求。
+   *
+   * @param error 触发本次重试的 401 错误
+   * @returns 重放成功返回 Response；失败返回 null（走原有的会话失效处理）
+   */
+  private async tryRefreshAndReplay(error: AxiosError): Promise<any | null> {
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (!refreshToken) {
+      return null;
+    }
+
+    // 单例锁：并发 401 只触发一次 refresh
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.doRefresh(refreshToken).finally(() => {
+        this.refreshPromise = null;
+      });
+    }
+    const ok = await this.refreshPromise;
+    if (!ok) {
+      return null;
+    }
+
+    // 重放原请求：带上新的 Authorization
+    const config = error.config;
+    if (!config) {
+      return null;
+    }
+    const token = localStorage.getItem('access_token');
+    if (token) {
+      config.headers = config.headers ?? {};
+      (config.headers as any).Authorization = `Bearer ${token}`;
+    }
+    try {
+      return await this.instance.request(config);
+    } catch (e) {
+      // 重放仍失败 → 交给外层的会话失效处理
+      return null;
+    }
+  }
+
+  /**
+   * 调 /auth/refresh 换 token。
+   */
+  private async doRefresh(refreshToken: string): Promise<boolean> {
+    try {
+      // 用裸 axios（不走本实例的拦截器，避免 401 时再次触发 refresh → 死循环）
+      const resp = await axios.post<{
+        access_token: string;
+        refresh_token?: string;
+      }>(
+        `${API_BASE}/auth/refresh`,
+        { refresh_token: refreshToken },
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+      const data = resp.data;
+      if (!data?.access_token) {
+        return false;
+      }
+      localStorage.setItem('access_token', data.access_token);
+      // 后端刷新响应**不含** refresh_token（AuthService.refresh 只返新的
+      // access_token），所以保留旧的
+      if (data.refresh_token) {
+        localStorage.setItem('refresh_token', data.refresh_token);
+      }
+      return true;
+    } catch (e) {
+      console.warn('[client] refresh failed:', e);
+      return false;
+    }
   }
 
   /**

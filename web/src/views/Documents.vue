@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
@@ -38,6 +38,19 @@ const previewSrc = ref<string>('');
 const previewMime = ref<string>('');
 const previewLoading = ref(false);   // PDF 流可能几百 MB，需要 loading 防双击
 let previewBlobUrl = '';             // 非响应：记下当前 blob URL，关弹窗 / 重开时 revoke
+/**
+ * 预览加载序号（stale-guard）。
+ *
+ * <p>快速切换预览时会并发多个 fetch：先发的请求可能后到。
+ * 原来的实现里，后到的旧请求会**覆盖**新请求的 blob URL，
+ * 而它自己 revoke 掉的又可能是新 URL —— 最终 iframe 指向一个
+ * 已被 revoke 的地址 → 白屏。
+ *
+ * <p>用递增序号判定"我还是最新那个吗"，不是最新就直接丢弃自己的结果。
+ */
+let previewLoadSeq = 0;
+/** 兜底回收定时器句柄（关弹窗 / 组件卸载时要清掉） */
+let previewRevokeTimer: number | undefined;
 
 function canPreviewInline(mime: string | undefined): boolean {
   if (!mime) return false;
@@ -130,12 +143,10 @@ async function handlePreview(doc: Document) {
   // 后端 SecurityConfig 会 401，浏览器表现成 ERR_CONNECTION_REFUSED 或反复重试，
   // 在 dev/proxy 链复杂的测试环境下经常被误导成 "X.X.X.X refused to connect"。
   // Blob URL 是浏览器本地资源，不发任何 HTTP，天然绕过鉴权与同源问题。
+  const mySeq = ++previewLoadSeq;
   try {
     // 先把上一个 blob URL 释放，避免连续打开多个预览时内存泄漏
-    if (previewBlobUrl) {
-      URL.revokeObjectURL(previewBlobUrl);
-      previewBlobUrl = '';
-    }
+    releasePreviewBlob();
     const token = localStorage.getItem('access_token');
     const userId = localStorage.getItem('user_id');
     const r = await fetch(`/api/v1/documents/${doc.id}/preview`, {
@@ -148,33 +159,62 @@ async function handlePreview(doc: Document) {
       throw new Error(`HTTP ${r.status}`);
     }
     const blob = await r.blob();
+
+    // 已经有更新的预览请求了 → 丢弃本次结果（否则会覆盖新内容）
+    if (mySeq !== previewLoadSeq) {
+      return;
+    }
+
     // 给 Blob 套上对应的 MIME，否则部分浏览器会用通用 octet-stream 处理
     const typed = doc.mime_type ? blob.slice(0, blob.size, doc.mime_type) : blob;
     previewBlobUrl = URL.createObjectURL(typed);
     previewSrc.value = previewBlobUrl;
-    // 兜底回收：1 小时后兜底回收（即使弹窗异常没走到 closePreview）
-    setTimeout(() => {
-      if (previewBlobUrl) {
-        URL.revokeObjectURL(previewBlobUrl);
-        previewBlobUrl = '';
-      }
-    }, 60 * 60 * 1000);
+    // 兜底回收：1 小时后回收（即使弹窗异常没走到 closePreview）
+    schedulePreviewRevoke();
   } catch (e: any) {
+    if (mySeq !== previewLoadSeq) {
+      return;   // 已被更新的请求取代，别弹错误提示
+    }
     console.error('[Documents] preview_load_failed:', e);
     ElMessage.error('预览加载失败：' + (e?.message || '未知错误'));
     previewSrc.value = '';
   } finally {
-    previewLoading.value = false;
+    if (mySeq === previewLoadSeq) {
+      previewLoading.value = false;
+    }
   }
 }
 
-function closePreview() {
-  previewDialogVisible.value = false;
-  // 主动回收 blob URL，否则浏览器要等 ~60min 的兜底定时器才释放
+/** 释放当前 blob URL 并清掉兜底定时器 */
+function releasePreviewBlob() {
+  if (previewRevokeTimer !== undefined) {
+    clearTimeout(previewRevokeTimer);
+    previewRevokeTimer = undefined;
+  }
   if (previewBlobUrl) {
     URL.revokeObjectURL(previewBlobUrl);
     previewBlobUrl = '';
   }
+}
+
+/** 安排 1 小时后的兜底回收 */
+function schedulePreviewRevoke() {
+  if (previewRevokeTimer !== undefined) {
+    clearTimeout(previewRevokeTimer);
+  }
+  previewRevokeTimer = window.setTimeout(() => {
+    previewRevokeTimer = undefined;
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl);
+      previewBlobUrl = '';
+    }
+  }, 60 * 60 * 1000);
+}
+
+function closePreview() {
+  previewDialogVisible.value = false;
+  // 主动回收 blob URL + 兜底定时器，否则浏览器要等 ~60min 才释放
+  releasePreviewBlob();
   previewSrc.value = '';
   previewDoc.value = null;
 }
@@ -253,6 +293,13 @@ function classificationTagType(lv: string | undefined): TagType | undefined {
 }
 
 onMounted(() => loadData());
+
+// 组件卸载时必须清理：否则 blob URL 与 1 小时的兜底定时器会一直挂着
+// （切路由后浏览器仍持有预览内容，且定时器回调会打到已卸载的组件）
+onBeforeUnmount(() => {
+  previewLoadSeq++;      // 让在途的 fetch 结果作废
+  releasePreviewBlob();
+});
 </script>
 
 <template>
