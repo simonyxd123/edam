@@ -123,11 +123,43 @@ db:migrate:
 backend:test:
   stage: test
   image: maven:3.9-eclipse-temurin-17
+  # MySQL 是 Flyway 迁移的验证环境（迁移是 MySQL 方言，H2 跑不了）
+  # RabbitMQ 是因为 RabbitAdmin 启动时就要连（声明队列）
+  services:
+    - name: mysql:8.0
+      alias: mysql
+    - name: rabbitmq:3.13-alpine
+      alias: rabbitmq
+  variables:
+    MYSQL_ROOT_PASSWORD: "test"
+    MYSQL_DATABASE: "edam_test"
+    RABBITMQ_DEFAULT_USER: "edam"
+    RABBITMQ_DEFAULT_PASS: "edampass"
+    TEST_MYSQL_HOST: "mysql"
+    TEST_MYSQL_PORT: "3306"
+    TEST_MYSQL_DB: "edam_test"
+    TEST_MYSQL_USER: "root"
+    TEST_MYSQL_PASSWORD: "test"
+    TEST_RABBITMQ_HOST: "rabbitmq"
+    TEST_RABBITMQ_PORT: "5672"
+    TEST_RABBITMQ_USER: "edam"
+    TEST_RABBITMQ_PASSWORD: "edampass"
   script:
     # 必须 clean：Maven 的 resources 插件只复制/覆盖，**不删除**源里已移除
     # 的资源。删过迁移文件后，target/classes/db/migration/ 里会残留旧脚本，
     # Flyway 会同时加载两套 schema → 外键报 are incompatible（Error 3780）。
-    - mvn -B clean test -DfailIfNoTests=false
+    - |
+      for i in $(seq 1 30); do
+        if mysql -hmysql -uroot -ptest -e "SELECT 1" >/dev/null 2>&1; then
+          echo "MySQL ready"; break
+        fi
+        sleep 2
+      done
+    # 不再给 -DfailIfNoTests=false —— 现在必须有测试真的跑起来。
+    # 此前后端**零测试类**、mvn test 一直空跑，所有启动期问题
+    # （Bean 装配 / Flyway 迁移 / model↔schema 不匹配）都是在服务器上
+    # 一轮轮试出来的。ApplicationStartupTest 把这些收进 CI。
+    - mvn -B clean test
   coverage: '/Total.*?([0-9]{1,3})%/'
   artifacts:
     reports:
@@ -135,6 +167,8 @@ backend:test:
       coverage_report:
         coverage_format: jacoco
         path: target/site/jacoco/jacoco.xml
+    paths:
+      - target/surefire-reports/
   rules:
     - changes:
         - backend/**/*

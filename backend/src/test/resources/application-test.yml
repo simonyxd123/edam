@@ -1,0 +1,80 @@
+# ===================================================================
+# 测试 profile 配置
+# ===================================================================
+# 目的：让 @SpringBootTest 能连上 CI 里的 MySQL / RabbitMQ service，
+# 真实跑一遍 Flyway 迁移 + 上下文启动。
+#
+# 本仓库此前的后端测试是**零**（`mvn test` 一直空跑，还带
+# -DfailIfNoTests=false 明确允许零测试通过）—— 所有启动期问题
+# （Bean 装配、Flyway 迁移、model↔schema 不匹配）都是在服务器上
+# 一轮轮试出来的，而不是被 CI 拦住的。
+#
+# 用真 MySQL 而不是 H2：迁移脚本是 MySQL 方言
+# （DATETIME(3) / ENGINE=InnoDB / COMMENT / ALTER ... AFTER），
+# H2 的 MySQL 兼容模式跑不了，测了等于没测。
+
+spring:
+  datasource:
+    url: jdbc:mysql://${TEST_MYSQL_HOST:localhost}:${TEST_MYSQL_PORT:3306}/${TEST_MYSQL_DB:edam_test}?serverTimezone=UTC&useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${TEST_MYSQL_USER:root}
+    password: ${TEST_MYSQL_PASSWORD:test}
+    # MySQL 8 的驱动类名是 com.mysql.cj.jdbc.Driver（**jdbc**，不是 driver）
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 4
+      minimum-idle: 1
+      connection-timeout: 10000
+
+  # Flyway 必须真跑 —— 它是"迁移脚本能不能在真库上执行"的唯一验证
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  data:
+    redis:
+      host: ${TEST_REDIS_HOST:localhost}
+      port: ${TEST_REDIS_PORT:6379}
+
+  rabbitmq:
+    host: ${TEST_RABBITMQ_HOST:localhost}
+    port: ${TEST_RABBITMQ_PORT:5672}
+    username: ${TEST_RABBITMQ_USER:edam}
+    password: ${TEST_RABBITMQ_PASSWORD:edampass}
+
+  # 测试环境不需要真实对象存储（MinioConfig 只建 client，不在启动时连）
+  main:
+    allow-bean-definition-overriding: true
+
+minio:
+  endpoint: ${TEST_MINIO_ENDPOINT:http://localhost:9000}
+  access-key: minioadmin
+  secret-key: minioadmin
+  bucket:
+    videos: edam-videos
+    documents: edam-documents
+    watermarks: edam-watermarks
+
+edam:
+  jwt:
+    secret: test-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256
+  worker:
+    token: test-worker-token
+  bootstrap:
+    # 测试里让 AdminBootstrap 真的建一次管理员 —— 它的插入路径
+    # （不设 dept_id）正是这次线上故障的来源
+    admin-password: Test@123456
+    create-default-admin: true
+  rate-limit:
+    login:
+      per-ip: 100
+      per-employee: 100
+  websocket:
+    allowed-origins: ""
+
+logging:
+  level:
+    root: WARN
+    com.example.edam: INFO
+    org.flywaydb: INFO
