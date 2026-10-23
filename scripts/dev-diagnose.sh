@@ -104,8 +104,9 @@ cat <<'EOF'
   先试代价最小的 repair：
 
     cd /var/data/project/edam && git pull
-    cd backend && mvn -q -o flyway:repair       -Dflyway.url=jdbc:mysql://127.0.0.1:3306/edam?allowPublicKeyRetrieval=true       -Dflyway.user=root -Dflyway.password=rootpass       -Dflyway.locations=filesystem:src/main/resources/db/migration
-    cd backend && mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+    cd backend
+    mvn -q -o flyway:repair -Dflyway.url=jdbc:mysql://127.0.0.1:3306/edam?allowPublicKeyRetrieval=true -Dflyway.user=root -Dflyway.password=rootpass -Dflyway.locations=filesystem:src/main/resources/db/migration
+    mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
 
   若 repair 报 checksum 不匹配（说明那条迁移被改过），
   只能重建库 —— 走下面的情况 B。
