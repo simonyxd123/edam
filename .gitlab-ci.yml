@@ -72,7 +72,8 @@ db:migrate:
     MYSQL_ROOT_PASSWORD: "test"
     MYSQL_DATABASE: "edam_test"
   script:
-    - apt-get update -qq && apt-get install -y -qq curl default-mysql-client
+    # python3 是静态校验脚本的依赖（mysql:8.0 镜像里没有 python）
+    - apt-get update -qq && apt-get install -y -qq curl default-mysql-client python3
     - curl -L https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.10.0/flyway-commandline-10.10.0-linux-x64.tar.gz | tar -xz
     - mv flyway-10.10.0 /opt/flyway
     - export PATH="/opt/flyway:$PATH"
@@ -95,12 +96,23 @@ db:migrate:
     # 需要时手工执行 dev/db/seed/*.sql
     - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate
     - |
+      # 期望 35 张表（与 dev/db/_validate_model_schema.py 的统计一致）——
+      # 原来只查 >=20，缺表也照样绿灯
       TABLES=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'")
-      if [ "$TABLES" -lt 20 ]; then
-        echo "ERROR: 期望至少 20 张表，实际 $TABLES"
+      if [ "$TABLES" -lt 35 ]; then
+        echo "ERROR: 期望 35 张表，实际 $TABLES"
         exit 1
       fi
       echo "数据库表数量: $TABLES OK"
+
+      # 迁移必须全部成功（success=1），不能有失败记录
+      FAILED=$(mysql -hmysql -uroot -ptest -N -e "SELECT COUNT(*) FROM edam_test.flyway_schema_history WHERE success=0" 2>/dev/null || echo 0)
+      if [ "$FAILED" != "0" ]; then
+        echo "ERROR: flyway_schema_history 里有 $FAILED 条失败记录"
+        mysql -hmysql -uroot -ptest -e "SELECT version, description, success FROM edam_test.flyway_schema_history"
+        exit 1
+      fi
+      echo "Flyway 迁移全部成功"
   rules:
     - changes:
         - dev/db/**/*

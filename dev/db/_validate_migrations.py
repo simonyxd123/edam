@@ -38,6 +38,7 @@ def main():
         seen[v] = p
 
     tables = {}        # table -> set(columns)
+    added_by = {}      # table -> {column: "ver:migration"} 记录每列是哪来的
     created_once = set()
     problems = []
     warnings = []
@@ -67,6 +68,8 @@ def main():
                     continue
                 cols.add(head)
             tables[t] = cols
+            for c in cols:
+                added_by.setdefault(t, {})[c] = f"{ver}:{p.name}(init)"
             created_once.add(t)
             print(f"  + 表 {t}")
 
@@ -92,15 +95,32 @@ def main():
                         f"但 {t}.{after} 在该时点不存在"
                         f"（运行时报 Error 1054: Unknown column '{after}'）")
                     print(f"  [错误] {t}.{after} 不存在，无法 AFTER {after}")
+                if col in tables[t]:
+                    problems.append(
+                        f"[{ver}] {p.name}: ALTER {t} ADD COLUMN {col} —— "
+                        f"该列已存在（{added_by.get(t, {}).get(col, 'init 建表')}）"
+                        f"（运行时报 Error 1060: Duplicate column name '{col}'）")
+                    print(f"  [错误] {t}.{col} 重复添加")
                 tables[t].add(col)
+                added_by.setdefault(t, {})[col] = f"{ver}:{p.name}"
             print(f"  ~ 表 {t}" + (f" (+{len(added)} 列)" if added else ""))
 
         # --- CREATE INDEX ---
-        for m in re.finditer(r'CREATE INDEX `?\w+`? ON `?(\w+)`?', s, re.I):
-            t = m.group(1)
+        for m in re.finditer(
+            r'CREATE INDEX `?\w+`? ON `?(\w+)`?\s*\(([^)]*)\)', s, re.I
+        ):
+            t, cols = m.group(1), m.group(2)
             if t not in tables:
                 problems.append(f"[{ver}] {p.name}: CREATE INDEX 目标表 {t} 尚不存在")
                 print(f"  [错误] INDEX 目标表 {t} 尚不存在")
+            else:
+                for c in re.split(r'[,\s]+', cols):
+                    c = c.strip().strip('`')
+                    if c and c.upper() not in ('INDEX',) and c not in tables[t]:
+                        problems.append(
+                            f"[{ver}] {p.name}: CREATE INDEX ON {t}({c}) —— "
+                            f"列 {t}.{c} 不存在（Error 1072: Key column doesn't exist）")
+                        print(f"  [错误] INDEX 列 {t}.{c} 不存在")
 
         # --- INSERT INTO ---
         for m in re.finditer(r'INSERT INTO `?(\w+)`?', s, re.I):
