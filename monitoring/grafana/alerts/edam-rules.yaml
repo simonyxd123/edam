@@ -285,3 +285,17 @@ spec:
           annotations:
             summary: '密钥未在 90 天内轮转'
             description: '密钥 {{ $labels.path }} 超过 90 天未轮转'
+        # 审计写入失败（合规红线：审计记录丢失）
+        # AuditService 以前只打一行 error 日志就继续 —— 合规系统里
+        # "静默丢审计记录"是严重问题（日志本身还会被轮转掉）。
+        # 现在有 Counter，这里给它配告警。
+        - alert: AuditWriteFailure
+          expr: increase(edam_audit_write_failures_total[15m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: compliance
+            component: audit
+          annotations:
+            summary: '审计日志写入失败'
+            description: '过去 15 分钟有 {{ $value }} 次审计写入失败 —— 合规要求审计记录不可丢，需立即排查数据库'

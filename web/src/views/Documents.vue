@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api } from '@/api/client';
+import { api, apiBase } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
 import { isDialogDismissed } from '@/utils/dialog';
@@ -149,7 +149,7 @@ async function handlePreview(doc: Document) {
     releasePreviewBlob();
     const token = localStorage.getItem('access_token');
     const userId = localStorage.getItem('user_id');
-    const r = await fetch(`/api/v1/documents/${doc.id}/preview`, {
+    const r = await fetch(`${apiBase}/documents/${doc.id}/preview`, {
       headers: {
         Authorization: 'Bearer ' + (token || ''),
         'X-User-Id': userId || '',

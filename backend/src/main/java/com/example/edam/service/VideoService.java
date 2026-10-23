@@ -108,9 +108,19 @@ public class VideoService {
             wrapper.eq(VideoResource::getUploaderId, uploaderId);
         }
         wrapper.orderByDesc(VideoResource::getId);
-        // 多取 1 个用于判断 has_more
-        wrapper.last("LIMIT " + (limit + 1));
-        java.util.List<VideoResource> result = videoRepository.selectList(wrapper);
+        // 多取 1 个用于判断 has_more。
+        //
+        // 原来写成 wrapper.last("LIMIT " + (limit + 1)) —— 把 int 拼进原生 SQL。
+        // 当前调用方（VideoListController）已经把 limit 夹在 1~100，所以暂时
+        // 不可注入，但这是"一旦上层漏掉夹取就变成注入"的形状。
+        //
+        // MyBatis-Plus 3.5.7 的 last() 只有 last(boolean, String) 重载，
+        // **不支持参数化**，所以换用 Page 对象：selectPage 会生成参数化的
+        // `LIMIT ?, ?`（偏移固定 0，等价于 `LIMIT size`）。
+        // searchCount 关掉 —— cursor 分页不需要总数，多一次 count 纯属浪费。
+        Page<VideoResource> page = new Page<>(1, limit + 1);
+        page.setSearchCount(false);
+        java.util.List<VideoResource> result = videoRepository.selectPage(page, wrapper).getRecords();
         if (result.size() > limit) {
             return result.subList(0, limit);
         }

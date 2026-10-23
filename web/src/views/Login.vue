@@ -39,7 +39,10 @@ async function handleLogin() {
     try {
       if (form.remember) localStorage.setItem(REMEMBER_KEY, form.employee_no);
       else localStorage.removeItem(REMEMBER_KEY);
-    } catch (e) {}
+    } catch (e) {
+      // 记住账号失败（隐私模式 / localStorage 满）**不能**影响登录本身
+      console.warn('[Login] 记住账号失败（不影响登录）:', e);
+    }
     ElMessage.success('登录成功');
     const redirect = (route.query.redirect as string) || '/';
     router.push(redirect);

@@ -40,7 +40,14 @@ async function loadRoleMap() {
   try {
     const list = await rbacApi.listRoles()
     for (const r of list) roleCodeToId.value.set(r.code, r.id)
-  } catch (e) {}
+  } catch (e: any) {
+    // 这里**不能静默吞掉** —— 原来空 catch 导致 roleCodeToId 保持空，
+    // 下面的 roleIds 全部为空 → Excel 导入时角色**静默不绑定**，
+    // 用户以为绑上了。必须明确报错。
+    console.error('[Rbac] 角色列表加载失败:', e);
+    ElMessage.error('角色列表加载失败，无法绑定角色：' + (e?.message || '未知错误'));
+    throw e;
+  }
 }
 const importPreview = ref<Array<{
   username: string;
@@ -142,7 +149,13 @@ async function doImport() {
     ElMessage.warning('没有可导入的有效行');
     return;
   }
-  await loadRoleMap();
+  // loadRoleMap 失败会抛 —— 这里接住并中止导入，
+  // 否则会在 roleCodeToId 为空的情况下导入出一堆"没绑角色"的用户
+  try {
+    await loadRoleMap();
+  } catch {
+    return;
+  }
   importing.value = true;
   importResult.value = { total: validRows.length, success: 0, failed: 0, errors: [] };
   for (const row of validRows) {

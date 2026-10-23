@@ -1,0 +1,48 @@
+# ===================================================================
+# 换行符规范
+# ===================================================================
+# 关键：**数据库迁移脚本必须全平台统一用 LF**。
+#
+# Flyway 的 checksum 是对**文件原始字节**算的：
+#   - CI 的 db:migrate job 用 `-locations=filesystem:...` 读**源码目录**
+#   - 后端运行时用 `classpath:db/migration` 读 **target/classes 里的副本**
+#   - 开发者的 Windows 工作区 checkout 出来是 CRLF，CI 是 LF
+# → 同一份迁移在两处的 checksum 不同 → Flyway 报
+#   "Detected failed migration" / checksum mismatch
+#
+# 本仓库曾因此在服务器上连续三轮启动失败，且报错位置离病因很远。
+#
+# 规则：所有文本文件用 LF；只有 Windows 批处理脚本保留 CRLF
+#（cmd.exe 能处理 LF，但 CRLF 更保险）。
+
+* text=auto eol=lf
+
+# 数据库迁移与 schema 脚本 —— checksum 必须逐字节一致
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.xml   text eol=lf
+*.java  text eol=lf
+*.ts    text eol=lf
+*.vue   text eol=lf
+*.py    text eol=lf
+*.sh    text eol=lf
+*.md    text eol=lf
+
+# 二进制，不做换行符转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.mp4   binary
+*.xlsx  binary
+*.jar   binary
+
+# Windows 批处理保留 CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
