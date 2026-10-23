@@ -95,8 +95,22 @@ if [ -n "$SIGNED" ] && [ "$SIGNED" != "(无)" ]; then
 fi
 
 say "6. 结论与下一步"
+
+# 有失败迁移记录时，先给出针对性的修复路径：
+#   flyway repair（清掉失败记录）比重建库代价小得多。
+#   但若失败迁移已被改过（checksum 变了），repair 会拒绝 → 必须重建。
 cat <<'EOF'
-按顺序执行（一步到位）：
+【情况 A】有失败迁移记录（success=0），但代码已是最新：
+  先试代价最小的 repair：
+
+    cd /var/data/project/edam && git pull
+    cd backend && mvn -q -o flyway:repair       -Dflyway.url=jdbc:mysql://127.0.0.1:3306/edam?allowPublicKeyRetrieval=true       -Dflyway.user=root -Dflyway.password=rootpass       -Dflyway.locations=filesystem:src/main/resources/db/migration
+    cd backend && mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+
+  若 repair 报 checksum 不匹配（说明那条迁移被改过），
+  只能重建库 —— 走下面的情况 B。
+
+【情况 B】没有失败记录 / repair 也不行 —— 一键重置：
 
     cd /var/data/project/edam
     git pull

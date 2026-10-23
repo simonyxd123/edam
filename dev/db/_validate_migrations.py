@@ -123,13 +123,31 @@ def main():
                         print(f"  [错误] INDEX 列 {t}.{c} 不存在")
 
         # --- INSERT INTO ---
-        for m in re.finditer(r'INSERT INTO `?(\w+)`?', s, re.I):
-            t = m.group(1)
+        # 注意：要校验**显式列清单**里的每一列都存在。
+        # 只校验"表存在"是不够的 —— 这正是 V20260830_1000__rbac_seed.sql
+        # 踩过的坑：它 INSERT INTO sys_permission (code, name, resource_type,
+        # action, description)，而 action/description 两列是
+        # V20260830_0100__align_model_columns.sql 才加的 —— 版本号排晚了
+        # → 运行时 Error 1054: Unknown column 'action' in 'field list'
+        for m in re.finditer(
+            r'INSERT(?: IGNORE)? INTO `?(\w+)`?\s*\(([^)]*)\)', s, re.I
+        ):
+            t, collist = m.group(1), m.group(2)
             if t not in tables:
                 problems.append(f"[{ver}] {p.name}: INSERT 目标表 {t} 尚不存在")
                 print(f"  [错误] INSERT 目标表 {t} 尚不存在")
-            else:
-                print(f"  + 写入 {t}")
+                continue
+            for c in collist.split(','):
+                c = c.strip().strip('`')
+                if not c or c.upper() == 'IGNORE':
+                    continue
+                if c not in tables[t]:
+                    problems.append(
+                        f"[{ver}] {p.name}: INSERT INTO {t}({c}) —— "
+                        f"列 {t}.{c} 在该时点不存在"
+                        f"（运行时报 Error 1054: Unknown column '{c}' in 'field list'）")
+                    print(f"  [错误] INSERT 列 {t}.{c} 不存在")
+            print(f"  + 写入 {t}")
 
     print(f"\n最终表数: {len(tables)}")
     if problems:
