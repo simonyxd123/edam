@@ -16,8 +16,17 @@ CREATE INDEX idx_deleted_at ON sys_role (deleted_at);
 -- ----------------------------------------------------------------------------
 -- 2. sys_role_permission 表添加乐观锁字段
 -- ----------------------------------------------------------------------------
+-- 注意：这里**不能**写 `AFTER created_at` ——
+-- V20260812_1000（init）建的 sys_role_permission 只有
+-- id / permission_id / role_id，**没有 created_at** 列，
+-- 写了 AFTER created_at 会直接报
+--   Error 1054: Unknown column 'created_at' in 'sys_role_permission'
+-- （该迁移在服务端首次运行时就是这么失败的。）
+--
+-- created_at / constraint_def 由 V20260830_2000__align_model_columns.sql
+-- 补齐（那才是与 Java model 对齐的地方）。
 ALTER TABLE sys_role_permission
-    ADD COLUMN version INT UNSIGNED NOT NULL DEFAULT 0 AFTER created_at;
+    ADD COLUMN version INT UNSIGNED NOT NULL DEFAULT 0;
 
 -- ----------------------------------------------------------------------------
 -- 3. sys_user_role 表添加乐观锁字段
