@@ -18,6 +18,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIG_DIR = ROOT / 'backend/src/main/resources/db/migration'
 
 
+def strip_sql_comments(sql):
+    """剥离 SQL 注释 —— 迁移文件里的说明性注释常带示例 SQL，
+    不剥离会被当成真实语句校验 → 误报。"""
+    out = []
+    for line in sql.splitlines():
+        idx = line.find('--')
+        if idx >= 0:
+            line = line[:idx]
+        out.append(line)
+    return chr(10).join(out)
+
+
 def version_of(path):
     m = re.match(r'^V(\d+)_(\d+)__', path.name)
     return (int(m.group(1)), int(m.group(2))) if m else None
@@ -44,7 +56,7 @@ def main():
     warnings = []
 
     for v, p in files:
-        s = p.read_text(encoding='utf-8')
+        s = strip_sql_comments(p.read_text(encoding='utf-8'))
         ver = f"{v[0]}.{v[1]}"
         print(f"\n=== {ver}  {p.name} ===")
 

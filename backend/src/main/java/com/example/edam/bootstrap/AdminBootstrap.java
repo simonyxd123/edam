@@ -72,6 +72,19 @@ public class AdminBootstrap implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        try {
+            bootstrap();
+        } catch (Exception e) {
+            // 自举失败是**运维问题**，不该让整个后端起不来 ——
+            // 之前这里抛异常会直接终止应用（进程 exit 1），
+            // 管理员还得先想办法把服务弄起来才能进管理界面建账号。
+            // 这里降级为 error 日志，服务照常启动，运维再手工建账号。
+            log.error("admin_bootstrap_failed —— 初始管理员账号未创建，"
+                + "请通过管理接口或 SQL 手工创建。", e);
+        }
+    }
+
+    private void bootstrap() {
         SysUser admin = userRepository.findByEmployeeNo(DEFAULT_ADMIN_EMPLOYEE_NO);
         if (admin == null) {
             // dev profile：没配密码就用 admin123，方便本地起服务
@@ -104,6 +117,11 @@ public class AdminBootstrap implements CommandLineRunner {
             admin.setPasswordHash(passwordEncoder.encode(adminPassword));
             admin.setRealName("系统管理员");
             admin.setEmail("admin@example.com");
+            // 不设 deptId：初始管理员没有"部门归属"这回事。
+            // sys_user.dept_id 曾经是 NOT NULL 无默认值 → 插入直接报
+            // "Field 'dept_id' doesn't have a default value"，整个应用起不来。
+            // 现已由 V20260830_5000 改为可空（与 model 的 Long 类型一致）。
+            admin.setDeptId(null);
             admin.setStatus(1);
             admin.setMfaEnabled(0);
             admin.setFailedLoginCount(0);
