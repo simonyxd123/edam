@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.DocResponse;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DocResource;
@@ -98,8 +99,8 @@ public class DocumentController {
         Map<String, Object> response = new HashMap<>();
         response.put("doc_id", doc.getId());
         response.put("file_hash", doc.getFileHash());
-        response.put("watermark_status", statusToString(doc.getWatermarkStatus()));
-        response.put("preview_status", statusToString(doc.getPreviewStatus()));
+        response.put("watermark_status", ResourceEnums.processStatus(doc.getWatermarkStatus()));
+        response.put("preview_status", ResourceEnums.processStatus(doc.getPreviewStatus()));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
@@ -258,17 +259,6 @@ public class DocumentController {
         return response;
     }
 
-    private String statusToString(Integer status) {
-        if (status == null) return "pending";
-        return switch (status) {
-            case 0 -> "pending";
-            case 1 -> "processing";
-            case 2 -> "ready";
-            case 3 -> "failed";
-            case 4 -> "skipped";
-            default -> "unknown";
-        };
-    }
 
     private Map<String, Object> toPaginationResponse(Page<DocResource> page) {
         // 统一分页壳（见 dto/PaginationResponses）—— 逐条转 DTO（Integer → String 枚举映射）

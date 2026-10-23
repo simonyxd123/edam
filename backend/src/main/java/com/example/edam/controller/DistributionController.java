@@ -3,6 +3,7 @@ package com.example.edam.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
+import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DistributionApproval;
 import com.example.edam.repository.DistributionApprovalRepository;
@@ -116,7 +117,7 @@ public class DistributionController {
             approvalId, decision, approverId);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("status", statusToString(approval.getStatus()));
+        response.put("status", ResourceEnums.approvalStatus(approval.getStatus()));
         return ResponseEntity.ok(response);
     }
 
@@ -154,17 +155,6 @@ public class DistributionController {
         };
     }
 
-    private String statusToString(Integer status) {
-        if (status == null) return "pending";
-        return switch (status) {
-            case 0 -> "pending";
-            case 1 -> "approved";
-            case 2 -> "rejected";
-            case 3 -> "expired";
-            case 4 -> "revoked";
-            default -> "unknown";
-        };
-    }
 
     private Map<String, Object> toResponse(DistributionApproval a) {
         Map<String, Object> response = new HashMap<>();
@@ -181,7 +171,7 @@ public class DistributionController {
         response.put("max_open_count", a.getMaxOpenCount());
         response.put("allow_forward", a.getAllowForward() != null && a.getAllowForward());
         response.put("allow_print", a.getAllowPrint() != null && a.getAllowPrint());
-        response.put("status", statusToString(a.getStatus()));
+        response.put("status", ResourceEnums.approvalStatus(a.getStatus()));
         response.put("current_open_count", a.getCurrentOpenCount());
         response.put("created_at", a.getCreatedAt());
         response.put("decided_at", a.getFinalDecisionAt());

@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.VideoResponse;
 import com.example.edam.dto.VideoStatusUpdateRequest;
@@ -72,8 +73,8 @@ public class VideoController {
         Map<String, Object> response = new HashMap<>();
         response.put("video_id", video.getId());
         response.put("file_hash", video.getFileHash());
-        response.put("hls_status", statusToString(video.getHlsStatus()));
-        response.put("fingerprint_status", statusToString(video.getFingerprintStatus()));
+        response.put("hls_status", ResourceEnums.hlsStatus(video.getHlsStatus()));
+        response.put("fingerprint_status", ResourceEnums.hlsStatus(video.getFingerprintStatus()));
         response.put("estimated_processing_sec", 60);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
@@ -120,8 +121,8 @@ public class VideoController {
         VideoResource updated = videoService.getById(videoId);
         Map<String, Object> resp = new HashMap<>();
         resp.put("video_id", updated.getId());
-        resp.put("hls_status", statusToString(updated.getHlsStatus()));
-        resp.put("fingerprint_status", statusToString(updated.getFingerprintStatus()));
+        resp.put("hls_status", ResourceEnums.hlsStatus(updated.getHlsStatus()));
+        resp.put("fingerprint_status", ResourceEnums.hlsStatus(updated.getFingerprintStatus()));
         return ResponseEntity.ok(resp);
     }
 
@@ -181,16 +182,6 @@ public class VideoController {
         return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(body);
     }
 
-    private String statusToString(Integer status) {
-        if (status == null) return "pending";
-        return switch (status) {
-            case 0 -> "pending";
-            case 1 -> "processing";
-            case 2 -> "ready";
-            case 3 -> "failed";
-            default -> "unknown";
-        };
-    }
 
     /**
      * 校验 Worker 回调令牌。

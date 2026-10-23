@@ -45,6 +45,24 @@ public final class ResourceEnums {
         };
     }
 
+    /**
+     * 外发审批状态：0=pending 1=approved 2=rejected 3=expired 4=revoked
+     *
+     * <p>与视频/文档的状态语义不同（那边是 processing/ready/failed），
+     * 所以单独一个方法，不强行合并。
+     */
+    public static String approvalStatus(Integer status) {
+        if (status == null) return "pending";
+        return switch (status) {
+            case 0 -> "pending";
+            case 1 -> "approved";
+            case 2 -> "rejected";
+            case 3 -> "expired";
+            case 4 -> "revoked";
+            default -> "unknown";
+        };
+    }
+
     /** 水印 / 预览状态：0=pending 1=processing 2=ready 3=failed 4=skipped */
     public static String processStatus(Integer status) {
         if (status == null) return "pending";
