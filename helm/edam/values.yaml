@@ -55,6 +55,9 @@ backend:
     MINIO_ENDPOINT: http://minio.edam.svc.cluster.local:9000
     RABBITMQ_HOST: rabbitmq.edam.svc.cluster.local
     RABBITMQ_PORT: "5672"
+    # 初始管理员：production 不配 ADMIN_INITIAL_PASSWORD 就不建任何账号
+    ADMIN_INITIAL_PASSWORD: ""
+    CREATE_DEFAULT_ADMIN: "false"
   probes:
     liveness:
       enabled: true

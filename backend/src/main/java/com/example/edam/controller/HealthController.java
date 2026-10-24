@@ -51,6 +51,16 @@ public class HealthController {
         result.put("status", allOk ? "ok" : "degraded");
         result.put("version", version);
         result.put("components", components);
+        // 初始管理员自举状态。
+        //
+        // 自举失败不阻断启动（服务仍可用），但症状是"服务正常却登不进去" ——
+        // 前端只显示"工号或密码错误"，数据库里 sys_user 一条都没有。
+        // 不把状态暴露出来，排查时完全没线索。
+        result.put("admin_bootstrap", com.example.edam.bootstrap.AdminBootstrap.getBootstrapStatus());
+        String bootstrapError = com.example.edam.bootstrap.AdminBootstrap.getBootstrapError();
+        if (bootstrapError != null) {
+            result.put("admin_bootstrap_error", bootstrapError);
+        }
         return allOk ? result : Map.of("status", "down", "components", components);
     }
 

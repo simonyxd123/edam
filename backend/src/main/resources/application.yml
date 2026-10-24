@@ -119,6 +119,8 @@ edam:
   bootstrap:
     admin-password: ${ADMIN_INITIAL_PASSWORD:}
     create-default-admin: ${CREATE_DEFAULT_ADMIN:false}
+    # 初始管理员归属部门 id；留空则自动取 sys_dept 第一条
+    admin-dept-id: ${ADMIN_DEPT_ID:}
   rate-limit:
     login:
       per-ip: 5
