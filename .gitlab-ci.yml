@@ -187,7 +187,10 @@ worker:test:
     - pip install -r worker/requirements.txt
     - pip install -r worker/requirements-dev.txt
   script:
-    - cd worker && pytest --cov=. --cov-report=xml --cov-report=term
+    # 明确指定 tests/ 与 --cov=src：
+    #   --cov=. 会把 tests/ 自己也算进覆盖率，数字虚高
+    #   pytest.ini 里配了 pythonpath = src，否则 import edam_worker 全挂
+    - cd worker && pytest tests/ --cov=src --cov-report=xml --cov-report=term
   artifacts:
     reports:
       coverage_report:
