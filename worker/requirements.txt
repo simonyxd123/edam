@@ -1,23 +1,22 @@
 # EDAM Worker 运行时依赖
 # Python 3.10+
+#
+# 依赖清单已按**实际 import** 收敛（原清单里有 10 个从未被 import 的包：
+# pika / sqlalchemy / aiomysql / pymysql / alembic / redis / python-multipart
+# / tenacity / PyYAML / gmssl）。
+# 它们平白让 worker 镜像大几十 MB，并附带一整片 CVE 面。
+#
+# 特别说明：gmssl 原本是给国密用的，但后端的 SM2/SM3/SM4 是 **Java**
+# 实现（backend/src/main/java/com/example/edam/crypto/gmsm/），Python 侧
+# 并不调用国密算法，所以这里不需要 gmssl。
 
 # Web 框架
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 
-# 消息队列
+# 消息队列（只用异步的 aio-pika；同步的 pika 从未使用）
 aio-pika==9.4.3
-pika==1.3.2
-
-# 数据库
-sqlalchemy==2.0.35
-aiomysql==0.2.0
-pymysql==1.1.1
-alembic==1.13.3
-
-# 缓存
-redis[hiredis]==5.0.8
 
 # 对象存储
 minio==7.2.8
@@ -36,14 +35,9 @@ PyPDF2==3.0.1
 python-docx==1.1.2
 openpyxl==3.1.5
 
-# 国密算法
-gmssl==3.2.2
-
 # 监控
 prometheus-client==0.20.0
 
 # 工具
-python-multipart==0.0.10
-tenacity==9.0.0
 structlog==24.4.0
-PyYAML==6.0.2
+requests==2.32.3

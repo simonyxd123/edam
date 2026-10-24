@@ -2,6 +2,19 @@ import io, sys, re, yaml
 from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+
+def norm_path(p: str) -> str:
+    """归一化路径用于比对。
+
+    Spring 的 path 变量可以带正则后缀（/playback/{video_id}/segment/{filename:.+}），
+    而 OpenAPI 规范里 path 参数**不允许**正则，所以两边写法天然不同。
+    比对时统一把参数名里的正则部分去掉。
+    """
+    p = re.sub(r'\{([^}:]+):[^}]+\}', r'{\1}', p)   # {filename:.+} → {filename}
+    p = re.sub(r'//+', '/', p)
+    return p.rstrip('/') or '/'
+
+
 # 1. 扫描 Controller
 controllers_dir = Path('backend/src/main/java/com/example/edam/controller')
 implemented = {}  # {(method, path): class_name}
@@ -27,26 +40,53 @@ for java_file in sorted(controllers_dir.glob('*Controller.java')):
             full = class_path + sub
         else:
             full = class_path + '/' + sub
-        full = re.sub(r'//+', '/', full).rstrip('/') or '/'
+        full = norm_path(full)
         implemented[(method, full)] = cls
 
     for m in pattern_bare.finditer(text):
         method = m.group(1).replace('Mapping', '').upper()
         full = class_path or '/'
-        full = re.sub(r'//+', '/', full).rstrip('/') or '/'
+        full = norm_path(full)
         implemented[(method, full)] = cls
 
-    # 匹配裸注解（无括号，无参数；Java 允许 @GetMapping 后跟换行 + 其他注解 + public）
-    pattern_bare_no_paren = re.compile(
-        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)(?:\s*\n|\s+)(?:@\w+(?:\([^)]*\))?\s*\n)*\s*public\s+'
+    # 匹配裸注解（@GetMapping 后不带路径，映射到类级路径）
+    #
+    # 这里**不用正则**整块匹配 —— 原来的正则
+    #   r'@XxxMapping(?:\s*\n|\s+)(?:@\w+(?:\([^)]*\))?\s*\n)*\s*public\s+'
+    # 处理不了
+    #   @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:upload')")
+    # 这种**含嵌套括号**的全限定名注解 —— `\([^)]*\)` 遇到 'video:upload' 里的
+    # 右括号就提前结束，后面匹配不上 → POST /videos、POST /documents、
+    # POST /users 三个裸注解端点全都没被识别 → 误报"未实现"。
+    #
+    # 改成逐行扫描：看到 @XxxMapping 行就记下来，再往下找到该方法
+    # （跳过中间的其他注解行），确认后面跟着 public 方法声明。
+    mapping_re = re.compile(
+        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*'
+        r'(?:\(\s*(?:value\s*=\s*)?"([^"]*)"[^)]*\))?'
     )
-    for m in pattern_bare_no_paren.finditer(text):
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        m = mapping_re.search(line)
+        if not m:
+            continue
         method = m.group(1).replace('Mapping', '').upper()
-        full = class_path or '/'
-        full = re.sub(r'//+', '/', full).rstrip('/') or '/'
-        # 仅在未添加过时添加（避免覆盖带路径的版本）
-        if (method, full) not in implemented:
-            implemented[(method, full)] = cls
+        sub = m.group(2)      # None = 裸注解
+        if sub is not None:
+            continue           # 带路径的上面已经处理过
+        # 往下找方法声明（中间可能有其它注解）
+        for j in range(i + 1, min(i + 12, len(lines))):
+            nxt = lines[j].strip()
+            if not nxt or nxt.startswith('@'):
+                continue
+            if nxt.startswith('public ') or nxt.startswith('protected ') \
+               or nxt.startswith('private '):
+                full = class_path or '/'
+                full = norm_path(full)
+                if (method, full) not in implemented:
+                    implemented[(method, full)] = cls
+                break
+            break   # 下一行既不是注解也不是方法声明 → 这个 mapping 不对应方法
 
 # 2. 解析 OpenAPI
 with open('doc/openapi.yaml', 'r', encoding='utf-8') as f:
@@ -60,7 +100,7 @@ for path, methods in spec.get('paths', {}).items():
             tags = op.get('tags', ['untagged'])
             openapi_list.append({
                 'method': method.upper(),
-                'path': path,
+                'path': norm_path(path),
                 'tag': tags[0] if tags else 'untagged',
                 'summary': op.get('summary', ''),
             })

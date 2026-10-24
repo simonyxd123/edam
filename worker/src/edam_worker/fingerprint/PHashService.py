@@ -2,16 +2,22 @@
 pHash 帧指纹计算服务（v3.3 W-6.1）
 
 按视频 POC 决策：每视频 30+ 帧指纹，多帧投票容错
+
+⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力，不是死代码：
+   - processors/video.py 里另有一份用 imagehash 库实现的指纹提取，
+     算法与本模块**不同**（手写 DCT + 中位数阈值 vs imagehash 的
+     DCT + 缩放 + 高通滤波）→ 两边算出的指纹对不上，泄露检测无法工作
+   - 接线方式：把 processors/video.py 的 _extract_fingerprints 改用
+     PHashService，或反过来让本模块改用 imagehash
+   - 统一之前，videos/{id}/fingerprint.json 是**无人能消费**的数据
 """
 import cv2
 import numpy as np
 import logging
-import hashlib
-from typing import List, Tuple, Optional
+from typing import List
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class FrameFingerprint:
@@ -22,7 +28,6 @@ class FrameFingerprint:
     user_id: int
     video_id: int
     session_id: str
-
 
 class PHashService:
     """
@@ -144,7 +149,6 @@ class PHashService:
         """计算相似度（0-1，1 = 完全一致）"""
         distance = self.hamming_distance(hash1, hash2)
         return 1.0 - (distance / (self.HASH_SIZE * self.HASH_SIZE))
-
 
 # 单例（供其他模块使用）
 phash_service = PHashService()

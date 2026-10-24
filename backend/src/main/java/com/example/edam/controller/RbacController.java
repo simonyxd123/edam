@@ -12,6 +12,7 @@ import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysRoleRepository;
 import com.example.edam.repository.SysUserRoleRepository;
 import com.example.edam.service.AuditService;
+import com.example.edam.service.PermissionService;
 import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -47,6 +48,7 @@ public class RbacController {
     private final SysRolePermissionRepository rolePermRepository;
     private final SysUserRoleRepository userRoleRepository;
     private final AuditService auditService;
+    private final PermissionService permissionService;
 
     // ============== 权限目录（只读） ==============
 
@@ -205,6 +207,29 @@ public class RbacController {
     }
 
     // ============== 用户 ↔ 角色 ==============
+
+    /**
+     * 用户的有效权限码（含 RBAC 角色权限）。
+     *
+     * <p>原先这个端点在 {@code PermissionsController}（已废弃）里，
+     * 路径是 {@code /users/{id}/permissions}，而 openapi 契约声明的是
+     * {@code /rbac/users/{id}/permissions} —— 两边对不上。
+     * 现在统一到 {@code /rbac/*} 前缀下，与 RbacController 其余端点一致。
+     */
+    @GetMapping("/users/{user_id}/permissions")
+    @Operation(summary = "用户的有效权限（含 RBAC + 资源 ACL）")
+    public List<Map<String, Object>> getUserPermissions(
+            @PathVariable("user_id") Long userId) {
+        return permissionService.getUserPermissionCodes(userId).stream().map(code -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            String[] parts = code.split(":", 2);
+            item.put("resource_type", parts[0]);
+            item.put("action", parts.length > 1 ? parts[1] : "");
+            item.put("code", code);
+            item.put("source", "rbac");
+            return item;
+        }).toList();
+    }
 
     @GetMapping("/users/{user_id}/roles")
     @PreAuthorize("hasAuthority('user:read') or hasAuthority('role:read')")

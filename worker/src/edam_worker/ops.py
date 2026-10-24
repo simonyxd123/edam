@@ -23,7 +23,6 @@ EDAM Worker 运维接口
 """
 
 import asyncio
-import json
 import secrets
 from typing import Any, Callable, Dict, List, Optional
 
@@ -39,7 +38,6 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 # 由 main.py 在 lifespan 启动时注入，避免循环 import
 _publisher: Optional[Callable[[Dict[str, Any]], Any]] = None
 
-
 def register_publisher(fn: Callable[[Dict[str, Any]], Any]) -> None:
     """main.py 在 lifespan 启动后调用本函数注入 VideoProcessor 的发布器。
 
@@ -47,7 +45,6 @@ def register_publisher(fn: Callable[[Dict[str, Any]], Any]) -> None:
     """
     global _publisher
     _publisher = fn
-
 
 # ----------------------------------------------------------------
 # Pydantic 模型
@@ -88,7 +85,6 @@ class ReprocessRequest(BaseModel):
             raise ValueError("input_path 不允许包含 ..")
         return v
 
-
 # ----------------------------------------------------------------
 # 鉴权
 # ----------------------------------------------------------------
@@ -118,7 +114,6 @@ def _check_ops_auth(x_ops_token: str = Header(default="")) -> None:
             detail="invalid ops token",
         )
 
-
 # ----------------------------------------------------------------
 # MinIO 探测（同步，probes only）
 # ----------------------------------------------------------------
@@ -131,7 +126,6 @@ def _make_minio_client() -> Minio:
         secret_key=settings.MINIO_SECRET_KEY,
         secure=settings.MINIO_ENDPOINT.startswith("https://"),
     )
-
 
 def _probe_hls_files(video_id: int) -> Dict[str, Any]:
     """列 MinIO 上 videos/{id}/hls/*，并查 fingerprint.json 存在性。
@@ -174,7 +168,6 @@ def _probe_hls_files(video_id: int) -> Dict[str, Any]:
         out["error"] = f"{type(e).__name__}: {e}"
     return out
 
-
 # ----------------------------------------------------------------
 # 端点
 # ----------------------------------------------------------------
@@ -191,7 +184,6 @@ async def ops_health() -> Dict[str, Any]:
         "minio_bucket_videos": settings.MINIO_BUCKET_VIDEOS,
     }
 
-
 @router.get("/videos/{video_id}/hls-status")
 async def ops_hls_status(
     video_id: int,
@@ -206,7 +198,6 @@ async def ops_hls_status(
     # MinIO 列举是同步阻塞 IO（要遍历整个 hls/ 目录的数百个对象），
     # 直接在 async 路由里调会把事件循环卡住
     return await asyncio.to_thread(_probe_hls_files, video_id)
-
 
 @router.post(
     "/videos/{video_id}/reprocess-hls",

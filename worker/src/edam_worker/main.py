@@ -6,9 +6,6 @@ import asyncio
 import datetime
 import json
 import logging
-import os
-import signal
-import sys
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -34,7 +31,9 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.JSONRenderer(),
     ],
-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    # 日志级别可配（此前 LOG_LEVEL 配置项完全没被使用）
+    wrapper_class=structlog.make_filtering_bound_logger(
+        getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)),
     logger_factory=structlog.PrintLoggerFactory(),
     cache_logger_on_first_use=True,
 )
@@ -56,7 +55,6 @@ TASK_DURATION = Histogram(
     "Task processing duration (single attempt; not summed over retries)",
     ["task_type"],
 )
-
 
 class WorkerApp:
     """Worker 应用主类"""
@@ -288,9 +286,7 @@ class WorkerApp:
                 "watermark", payload, self.watermark_processor.process
             )
 
-
 worker = WorkerApp()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -301,27 +297,22 @@ async def lifespan(app: FastAPI):
     yield
     await worker.stop()
 
-
 app = FastAPI(
     title="EDAM Worker",
     version="3.1.0",
     lifespan=lifespan,
 )
 
-
 @app.get("/health/live")
 async def health_live():
     return {"status": "alive"}
-
 
 @app.get("/health/ready")
 async def health_ready():
     return {"status": "ok"}
 
-
 # 运维接口（受 OPS_ENABLED / OPS_TOKEN 控制；fail-closed）
 app.include_router(ops_router)
-
 
 # ----------------------------------------------------------------
 # /health/worker：worker 自检（RabbitMQ / MinIO / Backend + 最近一次任务）
@@ -336,7 +327,6 @@ def _make_minio_client() -> Minio:
         secret_key=settings.MINIO_SECRET_KEY,
         secure=settings.MINIO_ENDPOINT.startswith("https://"),
     )
-
 
 def _probe_minio() -> Dict[str, Any]:
     """同步探测 MinIO：bucket 是否可达。一律 3s 兜底。"""
@@ -355,7 +345,6 @@ def _probe_minio() -> Dict[str, Any]:
             "endpoint": settings.MINIO_ENDPOINT,
             "error": f"{type(e).__name__}: {e}",
         }
-
 
 def _probe_backend() -> Dict[str, Any]:
     """同步探测后端 Spring Boot /actuator/health/liveness。一律 3s 兜底。"""
@@ -384,7 +373,6 @@ def _probe_backend() -> Dict[str, Any]:
         "url": candidates[0],
         "error": last_error,
     }
-
 
 @app.get("/health/worker")
 async def health_worker():
@@ -425,17 +413,14 @@ async def health_worker():
         **checks,
     }
 
-
 def handle_signal(signum, frame):
     """处理 SIGTERM / SIGINT 优雅关闭"""
     log.info("signal_received", signum=signum)
     asyncio.create_task(worker.stop())
     sys.exit(0)
 
-
 signal.signal(signal.SIGTERM, handle_signal)
 signal.signal(signal.SIGINT, handle_signal)
-
 
 if __name__ == "__main__":
     import uvicorn

@@ -39,7 +39,6 @@ public class UserController {
     private final PasswordEncoder passwordEncoder;
     private final com.example.edam.service.PasswordService passwordService;
     private final com.example.edam.security.PasswordPolicy passwordPolicy;
-    private final JwtTokenProvider jwtTokenProvider;
     private final AuditService auditService;
 
     @GetMapping

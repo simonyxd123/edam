@@ -2,16 +2,18 @@
 DCT 文档水印嵌入服务（v3.3 W-6.2）
 
 替代 POC 阶段：使用 blind-watermark 库生产集成
+
+⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力。
+   processors/document.py 里走的是 processors/watermark.py 的
+   WatermarkProcessor（图片走 DCT、PDF 走增量更新、Office 走隐写），
+   两者职责有重叠。接线时需要先定哪套是权威实现。
 """
-import io
 import os
 import logging
-import tempfile
-from typing import Tuple, Optional, Dict, Any
+from typing import Optional, Dict
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class WatermarkEmbedResult:
@@ -23,7 +25,6 @@ class WatermarkEmbedResult:
     embedding_strength: float = 0.10
     duration_ms: int = 0
     error: Optional[str] = None
-
 
 class DocWatermarkService:
     """
@@ -160,7 +161,6 @@ class DocWatermarkService:
                 input_path, output_path, watermark_text
             )
         return results
-
 
 # 单例
 doc_watermark_service = DocWatermarkService()

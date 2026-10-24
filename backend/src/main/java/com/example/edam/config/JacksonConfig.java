@@ -36,7 +36,6 @@ public class JacksonConfig {
     private static final ZoneId ZONE_ID = ZoneId.of(TIME_ZONE);
 
     /** 前端展示格式 */
-    private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SS");
     private static final DateTimeFormatter DATE_FMT     = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter TIME_FMT     = DateTimeFormatter.ofPattern("HH:mm:ss");
 

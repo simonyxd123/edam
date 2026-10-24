@@ -71,7 +71,6 @@ public class PlaybackController {
         String m3u8Url = String.format("/api/v1/playback/%d/playlist.m3u8?token=%s",
             videoId, token);
         // segment URL 模板（给前端展示用，实际由 m3u8 内容决定）
-        String keyUrl = String.format(keyUrlTemplate, videoId);
 
         Map<String, Object> response = new HashMap<>();
         response.put("session_id", sessionId);

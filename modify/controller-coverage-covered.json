@@ -101,14 +101,14 @@
     "method": "POST",
     "path": "/playback/{video_id}/token",
     "tag": "playback",
-    "summary": "获取播放 Token",
+    "summary": "签发播放 token",
     "impl": "PlaybackController"
   },
   {
     "method": "GET",
     "path": "/playback/{video_id}/key",
     "tag": "playback",
-    "summary": "获取 HLS AES 密钥",
+    "summary": "HLS AES-128 密钥",
     "impl": "PlaybackController"
   },
   {
@@ -162,24 +162,31 @@
   },
   {
     "method": "GET",
-    "path": "/permissions",
+    "path": "/rbac/permissions",
     "tag": "permissions",
-    "summary": "权限列表",
-    "impl": "PermissionsController"
+    "summary": "权限目录列表",
+    "impl": "RbacController"
   },
   {
     "method": "GET",
-    "path": "/roles",
+    "path": "/rbac/roles",
     "tag": "permissions",
     "summary": "角色列表",
-    "impl": "PermissionsController"
+    "impl": "RbacController"
+  },
+  {
+    "method": "POST",
+    "path": "/rbac/roles",
+    "tag": "permissions",
+    "summary": "创建角色",
+    "impl": "RbacController"
   },
   {
     "method": "GET",
-    "path": "/users/{user_id}/permissions",
+    "path": "/rbac/users/{user_id}/permissions",
     "tag": "permissions",
     "summary": "用户的有效权限（含 RBAC + 资源 ACL）",
-    "impl": "PermissionsController"
+    "impl": "RbacController"
   },
   {
     "method": "GET",
@@ -453,5 +460,117 @@
     "tag": "admin",
     "summary": "从备份恢复（高危）",
     "impl": "AdminController"
+  },
+  {
+    "method": "PUT",
+    "path": "/auth/profile",
+    "tag": "auth",
+    "summary": "修改当前用户个人资料",
+    "impl": "AuthController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/change-password",
+    "tag": "auth",
+    "summary": "自助修改密码",
+    "impl": "AuthController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/sso/exchange",
+    "tag": "auth",
+    "summary": "SSO 一次性登录码换 token",
+    "impl": "AuthController"
+  },
+  {
+    "method": "PUT",
+    "path": "/rbac/roles/{role_id}",
+    "tag": "permissions",
+    "summary": "更新角色",
+    "impl": "RbacController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/rbac/roles/{role_id}",
+    "tag": "permissions",
+    "summary": "删除角色",
+    "impl": "RbacController"
+  },
+  {
+    "method": "POST",
+    "path": "/rbac/roles/{role_id}/permissions",
+    "tag": "permissions",
+    "summary": "给角色分配权限",
+    "impl": "RbacController"
+  },
+  {
+    "method": "GET",
+    "path": "/rbac/users/{user_id}/roles",
+    "tag": "permissions",
+    "summary": "查用户的角色",
+    "impl": "RbacController"
+  },
+  {
+    "method": "POST",
+    "path": "/rbac/users/{user_id}/roles",
+    "tag": "permissions",
+    "summary": "给用户分配角色",
+    "impl": "RbacController"
+  },
+  {
+    "method": "PUT",
+    "path": "/users/{user_id}/password",
+    "tag": "users",
+    "summary": "管理员重置用户密码",
+    "impl": "UserController"
+  },
+  {
+    "method": "PATCH",
+    "path": "/videos/{video_id}/status",
+    "tag": "videos",
+    "summary": "Worker 回调更新处理状态",
+    "impl": "VideoController"
+  },
+  {
+    "method": "GET",
+    "path": "/playback/{video_id}/playlist.m3u8",
+    "tag": "playback",
+    "summary": "HLS 播放列表",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "GET",
+    "path": "/playback/{video_id}/segment/{filename}",
+    "tag": "playback",
+    "summary": "HLS 加密分片",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "GET",
+    "path": "/documents/{doc_id}/preview",
+    "tag": "documents",
+    "summary": "文档预览（带动态明水印）",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/documents/search",
+    "tag": "documents",
+    "summary": "文档检索",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/dashboard/stats",
+    "tag": "dashboard",
+    "summary": "仪表盘统计",
+    "impl": "DashboardController"
+  },
+  {
+    "method": "GET",
+    "path": "/v2/videos",
+    "tag": "videos",
+    "summary": "视频列表（cursor 分页）",
+    "impl": "VideoListController"
   }
 ]

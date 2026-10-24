@@ -9,11 +9,11 @@
 
 | 指标 | 数值 |
 | --- | --- |
-| OpenAPI 端点总数 | 65 |
-| Controller 实现端点数 | 66 |
-| 已覆盖 | 65 (100.0%) |
+| OpenAPI 端点总数 | 82 |
+| Controller 实现端点数 | 82 |
+| 已覆盖 | 82 (100.0%) |
 | ⚠️ 未实现（OpenAPI 缺失） | **0** |
-| 多余（实现但 OpenAPI 无） | 1 |
+| 多余（实现但 OpenAPI 无） | 0 |
 
 **覆盖率 100%** — 所有 OpenAPI 端点均有 Controller 实现。
 
@@ -23,13 +23,11 @@
 
 ## 三、多余端点（实现但 OpenAPI 未定义）
 
-| 方法 | 路径 | 实现位置 |
-| --- | --- | --- |
-| `GET` | `/documents/search` | `DocumentController.java` |
+无多余。
 
 ## 四、已覆盖端点清单
 
-共 65 个端点，详见 `controller-coverage-covered.json` 备份文件。
+共 82 个端点，详见 `controller-coverage-covered.json` 备份文件。
 
 ## 五、优先级建议
 

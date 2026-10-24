@@ -6,20 +6,21 @@
 - 逐帧计算 pHash
 - 与指纹库匹配（多帧投票）
 - 命中阈值告警
+
+⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力。
+   前置条件：与 PHashService 的算法统一（见该模块的说明），
+   否则匹配命中率会接近 0。
 """
 import cv2
-import numpy as np
 import logging
 import time
 import uuid
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from .PHashService import phash_service, FrameFingerprint
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class DetectionMatch:
@@ -29,7 +30,6 @@ class DetectionMatch:
     frame_index: int
     hamming_distance: int
     similarity: float
-
 
 @dataclass
 class DetectionResult:
@@ -53,7 +53,6 @@ class DetectionResult:
             return False
         avg_similarity = sum(m.similarity for m in self.matches) / len(self.matches)
         return avg_similarity > 0.80
-
 
 class LeakDetectionService:
     """
@@ -178,7 +177,6 @@ class LeakDetectionService:
             len(result.matches), result.duration_ms
         )
         return result
-
 
 # 单例
 leak_detection_service = LeakDetectionService()

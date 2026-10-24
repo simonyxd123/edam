@@ -591,7 +591,7 @@ paths:
                 format: binary
 
   # ===== 权限管理 =====
-  /permissions:
+  /rbac/permissions:
     get:
       tags: [permissions]
       summary: 权限列表
@@ -605,7 +605,7 @@ paths:
                 items:
                   $ref: '#/components/schemas/Permission'
 
-  /roles:
+  /rbac/roles:
     get:
       tags: [permissions]
       summary: 角色列表
@@ -619,7 +619,7 @@ paths:
                 items:
                   $ref: '#/components/schemas/Role'
 
-  /users/{user_id}/permissions:
+  /rbac/users/{user_id}/permissions:
     parameters:
       - in: path
         name: user_id
@@ -1451,6 +1451,544 @@ paths:
                 type: object
                 properties:
                   task_id: { type: string }
+
+
+  # ===================================================================
+  # 以下端点在实现中已存在，但此前契约里缺失 —— 补齐后 SDK 生成器
+  # （scripts/generate-sdks.sh / generate-postman.sh）才能产出可用客户端
+  # ===================================================================
+
+  /auth/profile:
+    put:
+      tags: [auth]
+      summary: 修改当前用户个人资料
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                phone: { type: string }
+                real_name: { type: string }
+      responses:
+        '200':
+          description: 更新后的用户信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+
+  /auth/change-password:
+    post:
+      tags: [auth]
+      summary: 自助修改密码
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string }
+                new_password: { type: string }
+      responses:
+        '200':
+          description: 修改成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changed: { type: boolean }
+
+  /auth/sso/exchange:
+    post:
+      tags: [auth]
+      summary: SSO 一次性登录码换 token
+      description: |
+        SSO 回调成功后重定向只带一个一次性 code（不带 token，避免 token
+        进浏览器历史 / 反代 access log / Referer）。用该 code 换 token。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: 登录码无效或已使用
+
+  /rbac/permissions:
+    get:
+      tags: [permissions]
+      summary: 权限目录列表
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 权限列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PermissionDTO'
+
+  /rbac/roles:
+    get:
+      tags: [permissions]
+      summary: 角色列表
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+    post:
+      tags: [permissions]
+      summary: 创建角色
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Role'
+      responses:
+        '200':
+          description: 创建结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+
+  /rbac/roles/{role_id}:
+    put:
+      tags: [permissions]
+      summary: 更新角色
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Role'
+      responses:
+        '200':
+          description: 更新结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+    delete:
+      tags: [permissions]
+      summary: 删除角色
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+                  deleted: { type: boolean }
+
+  /rbac/roles/{role_id}/permissions:
+    post:
+      tags: [permissions]
+      summary: 给角色分配权限
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permission_ids]
+              properties:
+                permission_ids:
+                  type: array
+                  items: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 分配结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role_id: { type: integer, format: int64 }
+                  assigned_count: { type: integer }
+
+  /rbac/users/{user_id}/roles:
+    get:
+      tags: [permissions]
+      summary: 查用户的角色
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserRole'
+    post:
+      tags: [permissions]
+      summary: 给用户分配角色
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_ids]
+              properties:
+                role_ids:
+                  type: array
+                  items: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 分配结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: integer, format: int64 }
+                  assigned_count: { type: integer }
+
+  /users/{user_id}/password:
+    put:
+      tags: [users]
+      summary: 管理员重置用户密码
+      description: 返回一次性临时密码，用户首次登录时必须修改
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '200':
+          description: 重置结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  temp_password: { type: string }
+                  must_change_password: { type: boolean }
+
+  /videos/{video_id}/status:
+    patch:
+      tags: [videos]
+      summary: Worker 回调更新处理状态
+      description: |
+        仅供内部 Worker 调用，需带 X-Worker-Token 头。
+        未配置该 token 时一律拒绝（fail-closed）。
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: X-Worker-Token
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hls_status: { type: integer }
+                hls_path: { type: string }
+                fingerprint_status: { type: integer }
+                fingerprint_path: { type: string }
+                duration_sec: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 更新后的状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  video_id: { type: integer, format: int64 }
+                  hls_status: { type: string }
+                  fingerprint_status: { type: string }
+        '401':
+          description: Worker token 无效
+
+  /playback/{video_id}/token:
+    post:
+      tags: [playback]
+      summary: 签发播放 token
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 播放 token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id: { type: string }
+                  m3u8_url: { type: string }
+                  token: { type: string }
+                  expires_at: { type: string }
+                  key_url: { type: string }
+                  watermark_template: { type: string }
+
+  /playback/{video_id}/playlist.m3u8:
+    get:
+      tags: [playback]
+      summary: HLS 播放列表
+      description: |
+        Hls.js 不能带 Authorization 头，所以 token 走 query string，
+        服务端校验后改写分片与 AES 密钥的 URL。
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: m3u8 内容
+          content:
+            application/vnd.apple.mpegurl:
+              schema: { type: string }
+        '401':
+          description: token 无效
+
+  /playback/{video_id}/segment/{filename}:
+    get:
+      tags: [playback]
+      summary: HLS 加密分片
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: filename
+          in: path
+          required: true
+          schema: { type: string }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 分片内容（AES-128 加密）
+          content:
+            video/mp2t:
+              schema: { type: string, format: binary }
+        '401':
+          description: token 无效
+
+  /playback/{video_id}/key:
+    get:
+      tags: [playback]
+      summary: HLS AES-128 密钥
+      description: |
+        密钥由 worker 转码时随机生成，存 MinIO 的 videos/{id}/key.bin。
+        Hls.js 拉 key 时不能带自定义头，所以 token 走 query string。
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 16 字节 AES-128 密钥
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401':
+          description: token 无效
+
+  /documents/{doc_id}/preview:
+    get:
+      tags: [documents]
+      summary: 文档预览（带动态明水印）
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 文档内容
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
+  /documents/search:
+    get:
+      tags: [documents]
+      summary: 文档检索
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: file_type
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: 检索结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DocResource'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  query: { type: string }
+                  took_ms: { type: integer }
+
+  /dashboard/stats:
+    get:
+      tags: [dashboard]
+      summary: 仪表盘统计
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 统计数据
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v2/videos:
+    get:
+      tags: [videos]
+      summary: 视频列表（cursor 分页）
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: cursor
+          in: query
+          description: 上一页返回的游标
+          schema: { type: string }
+        - name: classification_lv
+          in: query
+          schema: { type: string }
+        - name: uploader_id
+          in: query
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VideoResource'
+                  has_more: { type: boolean }
+                  next_cursor: { type: string }
 
 components:
   securitySchemes:

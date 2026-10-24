@@ -38,14 +38,14 @@ class Settings:
     # HLS
     HLS_SEGMENT_DURATION: int = int(os.getenv("HLS_SEGMENT_DURATION", "10"))
     HLS_PLAYLIST_TYPE: str = os.getenv("HLS_PLAYLIST_TYPE", "vod")
-    HLS_KEY_URL: str = os.getenv("HLS_KEY_URL", "https://api.example.com/api/v1/playback/{video_id}/key")
+    # 注：原先这里有个 HLS_KEY_URL（默认 https://api.example.com/...），
+    # 已删除 —— HLS 密钥现在由 worker 自己生成（AES-128 随机 key），
+    # 存在 MinIO 的 videos/{id}/key.bin，由后端 getKey 端点按 token 下发。
+    # 那个占位域名从来没有被真正使用过，留着只会误导。
 
     # 帧指纹
-    FINGERPRINT_KEYFRAME_INTERVAL: int = int(os.getenv("FINGERPRINT_KEYFRAME_INTERVAL", "30"))  # 秒
-    FINGERPRINT_HASH_SIZE: int = int(os.getenv("FINGERPRINT_HASH_SIZE", "64"))  # bits
+    FINGERPRINT_KEYFRAME_INTERVAL: int = int(os.getenv("FINGERPRINT_KEYFRAME_INTERVAL", "30"))
 
-    # 水印
-    WATERMARK_STRENGTH: float = float(os.getenv("WATERMARK_STRENGTH", "0.1"))
 
     # 监控
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "true").lower() == "true"
