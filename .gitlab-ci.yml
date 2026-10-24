@@ -77,7 +77,14 @@ db:migrate:
     - curl -L https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.10.0/flyway-commandline-10.10.0-linux-x64.tar.gz | tar -xz
     - mv flyway-10.10.0 /opt/flyway
     - export PATH="/opt/flyway:$PATH"
-    - sleep 30  # 等待 MySQL 启动
+    # 等 MySQL 就绪（固定 sleep 30 在慢机器上不够、在快机器上白等）
+    - |
+      for i in $(seq 1 30); do
+        if mysql -hmysql -uroot -ptest -e "SELECT 1" >/dev/null 2>&1; then
+          echo "MySQL ready"; break
+        fi
+        sleep 2
+      done
     # 一次 migrate，locations 指向包含 migration + seed 的共同父目录。
     # 原来分两次 migrate：两次调用共用默认的 flyway_schema_history 表，
     # 第二次会因为"已应用但本次 locations 里找不到"直接报错
@@ -211,9 +218,15 @@ worker:test:
 # 不用 Prism（job 镜像里没有 docker）。
 e2e:test:
   stage: test
-  image: mcr.microsoft.com/playwright:v1.45.0-jammy
+  # 镜像 tag 必须与 e2e/package-lock.json 锁定的 playwright 版本一致 ——
+  # 原来用 v1.45.0-jammy，但 lock 里是 1.62.1，镜像自带的浏览器是 1.45.0 的，
+  # 而 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 又不让 npm 下载
+  # → playwright 1.62.1 找不到 1.45.0 的浏览器，必挂
+  image: mcr.microsoft.com/playwright:v1.62.1-jammy
   variables:
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    # 浏览器在镜像里的位置（playwright 1.40+ 用复数形式）
+    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     # CI 里不用连真实后端，全部打 mock
     CI: "true"
   before_script:
@@ -221,7 +234,11 @@ e2e:test:
   script:
     # 只跑 chromium：firefox/webkit 在这个镜像里还得额外下浏览器，
     # CI 阶段没必要拖这么久
-    - cd e2e && npx playwright test --project=chromium --reporter=list,junit
+    #
+    # 注意：**不要再 cd e2e** —— before_script 和 script 在同一个 shell 里
+    # 执行，before_script 已经 cd 到 e2e/ 了，再 cd 一次会变成 e2e/e2e
+    # （worker:test 之前踩过同一个坑）
+    - npx playwright test --project=chromium --reporter=list,junit
   artifacts:
     when: always
     paths:
