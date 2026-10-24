@@ -99,6 +99,11 @@ db:migrate:
     - python dev/db/_validate_model_schema.py
     - python dev/db/_validate_migrations.py
     - python dev/db/_validate_fk_types.py
+    # 后端端口在 9 处来源里必须一致（application.yml / 前端 vite proxy /
+    # helm 三处 / worker 回调 / Prometheus / OpenAPI）——
+    # 曾经是三方不一致（application.yml 8080、vite proxy 8092），
+    # 改一处忘另一处就是前端全 502
+    - python dev/db/_validate_ports.py
     # locations 只含迁移目录 —— seed（k6 压测用户等）不进迁移链，
     # 需要时手工执行 dev/db/seed/*.sql
     - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate

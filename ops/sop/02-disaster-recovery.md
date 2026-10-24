@@ -156,7 +156,7 @@ kubectl set env statefulset/edam-mysql MYSQL_HOST=mysql-slave
 kubectl scale deployment edam-edam-backend --replicas=3
 
 # 6. 验证
-kubectl exec -it <backend-pod> -- curl -s http://localhost:8080/health/ready
+kubectl exec -it <backend-pod> -- curl -s http://localhost:8092/health/ready
 ```
 
 ### 5.2 跨可用区切换

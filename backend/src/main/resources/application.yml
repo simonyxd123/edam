@@ -1,5 +1,8 @@
 server:
-  port: 8080
+  # 开发期统一端口：前端 vite proxy 默认指向 8092（web/vite.config.ts），
+  # 此前这里是 8080，与前端代理 / 启动脚本 / helm 值三方不一致，
+  # 导致"改了 application.yml 但前端还是 502"这类问题反复出现。
+  port: 8092
   servlet:
     context-path: /api/v1
   tomcat:

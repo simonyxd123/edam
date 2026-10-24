@@ -34,7 +34,7 @@ cd dev && docker compose up -d && cd ..
 
 # 2. 后端（开发端口 8092）
 cd backend
-mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+mvn spring-boot:run          # application.yml 已是 8092，不用带参数
 
 # 3. Worker（另开终端）
 cd worker/src
@@ -80,15 +80,19 @@ cd /var/data/project/edam && ./scripts/dev-diagnose.sh
 
 | 组件 | 位置 | 端口 |
 |---|---|---|
-| 后端 application.yml | `server.port` | **8080**（Spring 内嵌 Tomcat 默认） |
-| 后端 **开发期** | 启动参数 | **8092**（前端 vite proxy 默认指向它） |
+| 后端 | `application.yml` 的 `server.port` | **8092** |
+| 后端 | helm `backend.service.port` / `SERVER_PORT` | **8092** |
 | 前端 vite dev server | `web/vite.config.ts` | **5173** |
+| 前端 vite proxy 目标 | `web/vite.config.ts` | `http://localhost:8092` |
 | Worker | `worker/src/edam_worker/config.py` | 8001（HTTP）/ 9100（metrics） |
+| Worker 回调后端 | helm `worker.env.BACKEND_BASE_URL` | `http://edam-backend:8092/api/v1` |
 
-> 后端跑 8080 而前端代理指向 8092 —— 这是**故意的**：
-> 8092 是开发期约定端口，8080 留给生产（helm values 里 backend.service.port = 8080）。
-> 开发期用 `-Dspring-boot.run.arguments=--server.port=8092` 启动即可。
-> 忘了加这个参数 → 前端所有请求 502。
+> **全链路统一 8092**（application.yml / helm / 前端代理 / worker 回调 /
+> Prometheus 抓取 / OpenAPI server url）。
+>
+> 此前是"application.yml 8080 + 前端代理 8092 + 启动参数再覆盖 8092"三方
+> 不一致 —— 改 application.yml 还得记得同步启动参数，漏一次就是前端全 502。
+> 现在开发期直接 `mvn spring-boot:run` 就是 8092，不用带任何参数。
 
 ---
 
@@ -200,7 +204,7 @@ sudo pkill -f 'edam_worker.main'      # 干掉残留的 worker
 后端必须跑在 **8092**：
 
 ```bash
-mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+mvn spring-boot:run          # application.yml 已是 8092，不用带参数
 ```
 
 ### 数据持久化

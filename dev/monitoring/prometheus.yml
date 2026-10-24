@@ -13,7 +13,7 @@ scrape_configs:
     # 所有 backend 告警永远不触发
     metrics_path: '/api/v1/actuator/prometheus'
     static_configs:
-      - targets: ['host.docker.internal:8080']
+      - targets: ['host.docker.internal:8092']
         labels:
           service: 'backend'
           tier: 'application'

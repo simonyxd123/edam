@@ -62,9 +62,8 @@ cd ../web && npm install && npm run dev
 # 注意端口：
 # - 前端是 5173 不是 3000（3000 是 compose 里的 Grafana）
 # - 开发期后端跑 8092（前端 vite proxy 默认指向它）；
-#   application.yml 里 server.port=8080 是 Spring 内嵌 Tomcat 的默认，
-#   生产用 8080。开发期要跑 8092 就加 -Dserver.port=8092：
-#     cd backend && mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8092
+#   全链路统一 8092（application.yml / helm / 前端 vite proxy / worker 回调）：
+#     cd backend && mvn spring-boot:run          # application.yml 已是 8092，不用带参数
 # - worker 的包在 worker/src/ 下，没有 PYTHONPATH 会 ModuleNotFoundError：
 #     cd worker && PYTHONPATH=src python -m uvicorn edam_worker.main:app --reload --port 8001
 ```

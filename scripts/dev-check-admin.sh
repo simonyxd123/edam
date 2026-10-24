@@ -100,7 +100,7 @@ done
 say "6. 健康端点里的自举状态"
 PORT="${BACKEND_PORT:-8092}"
 for u in "http://127.0.0.1:${PORT}/api/v1/health/ready" \
-         "http://127.0.0.1:8080/api/v1/health/ready"; do
+         "http://127.0.0.1:8080/api/v1/health/ready"; do   # 8080 = 旧端口，8092 = 现行
   OUT=$(curl -s --max-time 3 "$u" 2>/dev/null)
   if [ -n "$OUT" ]; then
     echo "  $u"

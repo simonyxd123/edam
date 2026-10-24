@@ -41,10 +41,10 @@ backend:
     targetMemoryUtilizationPercentage: 80
   service:
     type: ClusterIP
-    port: 8080
+    port: 8092
   env:
     SPRING_PROFILES_ACTIVE: production
-    SERVER_PORT: 8080
+    SERVER_PORT: 8092
     LOG_LEVEL: INFO
     # 关键配置通过 Secret 注入
     VAULT_ADDR: http://vault:8200
@@ -106,7 +106,7 @@ worker:
     # 原先没配 → 落到代码默认值 http://localhost:8092 → 在 K8s 里
     # worker 打到自己的 8092 端口，必失败，且没有任何日志能看出来。
     # 注意后端有 context-path=/api/v1
-    BACKEND_BASE_URL: http://edam-backend:8080/api/v1
+    BACKEND_BASE_URL: http://edam-backend:8092/api/v1
     MINIO_ENDPOINT: http://minio.edam.svc.cluster.local:9000
     MINIO_ROOT_USER: minioadmin
     MINIO_ROOT_PASSWORD: minioadmin

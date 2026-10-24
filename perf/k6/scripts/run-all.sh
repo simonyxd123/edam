@@ -17,7 +17,7 @@ K6_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RESULT_DIR="${K6_ROOT}/results"
 mkdir -p "${RESULT_DIR}"
 
-BASE_URL="${BASE_URL:-http://localhost:8080/api/v1}"
+BASE_URL="${BASE_URL:-http://localhost:8092/api/v1}"
 ENV_NAME="${ENV_NAME:-dev}"
 TS=$(date +%Y%m%d-%H%M%S)
 

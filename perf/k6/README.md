@@ -97,7 +97,7 @@ k6 run --out json=results/stress.json scripts/stress-test.js
 ```bash
 cd perf/k6
 ./scripts/run-all.sh
-# 默认压测 localhost:8080
+# 默认压测 localhost:8092
 
 # 自定义环境
 BASE_URL=http://staging.example.com/api/v1 ENV_NAME=staging ./scripts/run-all.sh

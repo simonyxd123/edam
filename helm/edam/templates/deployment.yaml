@@ -19,7 +19,7 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: "/api/v1/actuator/prometheus"
-        prometheus.io/port: "8080"
+        prometheus.io/port: "8092"
     spec:
       serviceAccountName: {{ include "edam.serviceAccountName" . }}
       securityContext:

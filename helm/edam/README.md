@@ -61,7 +61,7 @@ kubectl get ingress -n edam
 kubectl logs -f -n edam -l app.kubernetes.io/component=backend
 
 # 端口转发调试
-kubectl port-forward -n edam svc/edam-edam-backend 8080:8080
+kubectl port-forward -n edam svc/edam-edam-backend 8092:8092
 ```
 
 ## 关键配置
