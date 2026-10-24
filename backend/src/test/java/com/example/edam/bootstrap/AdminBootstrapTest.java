@@ -118,26 +118,47 @@ class AdminBootstrapTest {
     }
 
     @Test
-    @DisplayName("插入失败：状态可见 + 不抛异常（服务照常启动）")
-    void failureIsVisibleButNonFatal() {
+    @DisplayName("dev profile 插入失败：fail fast（服务起不来是明确的，不是神秘的登录失败）")
+    void devFailureFailsFast() {
         when(userRepository.findByEmployeeNo("E000001")).thenReturn(null);
         when(jdbcTemplate.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class)))
             .thenReturn(List.of(4L));
         SysRole adminRole = new SysRole();
         adminRole.setCode("admin");
         when(roleRepository.selectList(any())).thenReturn(List.of(adminRole));
-        // 插入失败
         doThrow(new RuntimeException("Field 'dept_id' doesn't have a default value"))
             .when(userRepository).insert(any(SysUser.class));
 
         AdminBootstrap b = newBootstrap("dev", "", false, "");
-        // 不抛异常 —— 服务必须能起来
-        assertDoesNotThrow(() -> b.run());
-        // 但状态必须可见
+        // dev 下没有初始管理员 = 环境不可用（登录页都进不去）→ 必须明确失败
+        assertThrows(IllegalStateException.class, () -> b.run(),
+            "dev profile 下自举失败必须 fail fast —— 静默降级会让症状变成"
+                + "'服务正常但登不进去'，排查成本极高");
+        // 状态仍要可见
         assertEquals("failed", AdminBootstrap.getBootstrapStatus());
         assertNotNull(AdminBootstrap.getBootstrapError());
         assertTrue(AdminBootstrap.getBootstrapError().contains("dept_id"),
             "错误信息应包含原始原因");
+    }
+
+    @Test
+    @DisplayName("production profile 插入失败：降级不阻断（服务要能起来）")
+    void productionFailureDegradesGracefully() {
+        when(userRepository.findByEmployeeNo("E000001")).thenReturn(null);
+        when(jdbcTemplate.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class)))
+            .thenReturn(List.of(4L));
+        SysRole adminRole = new SysRole();
+        adminRole.setCode("admin");
+        when(roleRepository.selectList(any())).thenReturn(List.of(adminRole));
+        doThrow(new RuntimeException("boom"))
+            .when(userRepository).insert(any(SysUser.class));
+
+        AdminBootstrap b = newBootstrap("production", "SomeStrongPassword", true, "");
+        // production：不抛异常，服务照常启动
+        assertDoesNotThrow(() -> b.run());
+        // 但状态必须可见（运维能从 /health/ready 看到）
+        assertEquals("failed", AdminBootstrap.getBootstrapStatus());
+        assertNotNull(AdminBootstrap.getBootstrapError());
     }
 
     @Test

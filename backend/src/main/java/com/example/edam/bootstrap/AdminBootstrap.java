@@ -110,13 +110,6 @@ public class AdminBootstrap implements CommandLineRunner {
             bootstrapStatus = "ok";
             bootstrapError = null;
         } catch (Exception e) {
-            // 自举失败是**运维问题**，不该让整个后端起不来 ——
-            // 之前这里抛异常会直接终止应用（进程 exit 1），
-            // 管理员还得先想办法把服务弄起来才能进管理界面建账号。
-            // 这里降级为 error 日志，服务照常启动，运维再手工建账号。
-            //
-            // 但降级**不能等于静默**：状态写进 /health/ready，
-            // 且日志给出可操作的排查指引（见下方提示）。
             bootstrapStatus = "failed";
             bootstrapError = e.getClass().getSimpleName() + ": " + e.getMessage();
             log.error("admin_bootstrap_failed —— 初始管理员账号未创建。"
@@ -129,6 +122,23 @@ public class AdminBootstrap implements CommandLineRunner {
                 + "2) 确认启动的是 dev profile（生产 profile 不配 "
                 + "edam.bootstrap.admin-password 就不建账号）；"
                 + "3) 用 scripts/dev-check-admin.sh 一键查全。", e);
+
+            // dev 环境**必须 fail fast**。
+            //
+            // 没有初始管理员的 dev 环境是**不可用**的：登录页进不去、
+            // 管理界面进不去、只能改库或加环境变量才能救。
+            // 静默降级在这里等于把"明确的启动失败"变成"神秘的登录失败" ——
+            // 之前就是这么排查了好几轮。
+            //
+            // 生产环境相反：管理员账号要走运维通道建，
+            // 自举失败不该让整个后端起不来（那会连监控都看不到）。
+            if (isDevProfile()) {
+                throw new IllegalStateException(
+                    "dev profile 下初始管理员创建失败，服务无法登录。"
+                    + "详见上面的 admin_bootstrap_failed 日志。", e);
+            }
+            log.warn("admin_bootstrap_failed —— production profile 不阻断启动，"
+                + "请通过运维通道手工创建管理员账号。");
         }
     }
 

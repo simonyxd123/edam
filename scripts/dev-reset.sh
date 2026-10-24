@@ -98,6 +98,65 @@ if [ "$START" = "1" ]; then
     -Dspring-boot.run.arguments=--server.port=8092 \
     > "$REPO_ROOT/backend/backend.log" 2>&1 &
   echo "    PID=$!  日志: backend/backend.log"
+
+  # ---- 4. 验证：等应用起来 + 确认初始管理员真的建出来了 -------------
+  #
+  # 不能"启动完就退出让你自己看" —— 之前就是启动成功但账号没建成，
+  # 用户只看到"工号或密码错误"，排查了好几轮。
+  # 这里主动等 + 主动查，查不到就把原因摆出来。
+  echo
+  echo "==> 等待后端就绪并验证初始管理员…"
+  READY=0
+  for i in $(seq 1 60); do
+    if curl -s --max-time 2 "http://127.0.0.1:8092/api/v1/health/ready" >/dev/null 2>&1; then
+      READY=1; break
+    fi
+    sleep 2
+  done
+
+  if [ "$READY" != "1" ]; then
+    echo "    ✗ 后端 60 秒内没就绪。日志尾部："
+    tail -30 "$REPO_ROOT/backend/backend.log" 2>/dev/null | sed 's/^/      /'
+    exit 1
+  fi
+
+  echo "    后端已就绪"
+  HEALTH=$(curl -s --max-time 3 "http://127.0.0.1:8092/api/v1/health/ready" 2>/dev/null)
+  BOOTSTRAP=$(echo "$HEALTH" | grep -o '"admin_bootstrap":"[^"]*"' | cut -d'"' -f4)
+  echo "    admin_bootstrap = ${BOOTSTRAP:-未知}"
+
+  if [ "$BOOTSTRAP" = "failed" ]; then
+    echo
+    echo "    ✗ 初始管理员创建失败。错误详情："
+    echo "$HEALTH" | grep -o '"admin_bootstrap_error":"[^"]*"' | sed 's/^/      /'
+    echo
+    echo "    日志里的 admin_bootstrap_failed 段落："
+    grep -A12 "admin_bootstrap_failed" "$REPO_ROOT/backend/backend.log" 2>/dev/null | head -20 | sed 's/^/      /'
+    exit 1
+  fi
+
+  # 直接查库确认（比只看健康端点更可靠）
+  if command -v mysql >/dev/null 2>&1; then
+    CNT=$(mysql -h"${MYSQL_HOST:-127.0.0.1}" -P"${MYSQL_PORT:-3306}" \
+            -u"${MYSQL_USER:-root}" -p"${MYSQL_ROOT_PASSWORD:-rootpass}" -N -B \
+            "${MYSQL_DATABASE:-edam}" \
+            -e "SELECT COUNT(*) FROM sys_user WHERE employee_no='E000001';" 2>/dev/null)
+  elif command -v docker >/dev/null 2>&1; then
+    CNT=$(docker exec -i edam-mysql mysql -uroot \
+            -p"${MYSQL_ROOT_PASSWORD:-rootpass}" -N -B "${MYSQL_DATABASE:-edam}" \
+            -e "SELECT COUNT(*) FROM sys_user WHERE employee_no='E000001';" 2>/dev/null)
+  else
+    CNT=""
+  fi
+
+  if [ -n "$CNT" ] && [ "$CNT" = "0" ]; then
+    echo
+    echo "    ✗ sys_user 里仍然没有 E000001 —— 初始管理员没建成。"
+    echo "      跑 ./scripts/dev-check-admin.sh 看详细诊断。"
+    exit 1
+  fi
+  [ -n "$CNT" ] && echo "    ✓ 初始管理员 E000001 已建出（sys_user 命中 $CNT 行）"
+
   echo
   echo "完成后可访问："
   echo "  前端  http://192.168.10.2:5173/   （另开终端 cd web && npm run dev）"

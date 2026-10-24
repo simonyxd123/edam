@@ -45,6 +45,9 @@ class ApplicationStartupTest {
     @Autowired
     private SysUserRepository userRepository;
 
+    @Autowired
+    private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
     @Test
     @Transactional
     @DisplayName("上下文能启动，且能插入只设部分字段的用户")
@@ -78,5 +81,24 @@ class ApplicationStartupTest {
         // 这里再确认一下关键表存在（迁移漏建表的情况）
         assertNotNull(userRepository.selectCount(null),
             "sys_user 表应存在且可查询");
+    }
+
+    /**
+     * 初始管理员必须真的被建出来。
+     *
+     * <p>这是**真 MySQL** 上的端到端验证 —— 之前 AdminBootstrap 的插入
+     * 失败被静默吞掉，症状是"服务正常但登不进去"（前端只显示
+     * "工号或密码错误"，库里 sys_user 一条都没有）。本用例在 CI 上
+     * 跑真迁移 + 真插入，任何一步断了都会红。
+     */
+    @Test
+    @DisplayName("初始管理员 E000001 已被建出，且密码可用")
+    void initialAdminAccountIsCreated() {
+        SysUser admin = userRepository.findByEmployeeNo("E000001");
+        assertNotNull(admin,
+            "初始管理员未创建 —— 查 backend/backend.log 里的 admin_bootstrap_failed");
+        assertNotNull(admin.getPasswordHash(), "管理员必须有密码 hash");
+        assertTrue(passwordEncoder.matches("Test@123456", admin.getPasswordHash()),
+            "管理员密码必须能通过校验（测试配置里用的是 Test@123456）");
     }
 }
