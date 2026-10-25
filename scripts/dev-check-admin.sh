@@ -94,13 +94,28 @@ echo "  初始管理员   : $(q "SELECT IFNULL(CONCAT(employee_no,' / ',username
 
 say "5. 后端进程与自举日志"
 # 应用日志位置：dev-reset.sh 写 backend/backend.log；手工 nohup 跑写 ./nohup.out
+LOG_FOUND=""
 for f in backend/backend.log backend/nohup.out nohup.out; do
   if [ -f "$f" ]; then
+    LOG_FOUND="$f"
     echo "  --- $f ---"
     grep -iE "admin_bootstrap|default admin|admin user already exists" "$f" 2>/dev/null | tail -5 | sed 's/^/    /'
     grep -iE "doesn.t have a default value|Field .* doesn" "$f" 2>/dev/null | tail -3 | sed 's/^/    /'
   fi
 done
+
+# 后端没起来时，把日志尾部直接打出来 ——
+# 让人不用再手动 tail 一次、日志再贴一次（省一轮往返）。
+# 后端起不来的原因几乎总在最后几十行里（异常堆栈）。
+if [ -n "$LOG_FOUND" ]; then
+  echo
+  echo "  --- $LOG_FOUND 尾部 40 行 ---"
+  tail -40 "$LOG_FOUND" | sed 's/^/    /'
+  echo
+  echo "  --- 关键错误行 ---"
+  grep -nE "ERROR|Caused by:|Exception|BUILD FAILURE|Address already in use|Communications link" \
+    "$LOG_FOUND" 2>/dev/null | tail -15 | sed 's/^/    /'
+fi
 
 say "6. 健康端点里的自举状态"
 PORT="${BACKEND_PORT:-8092}"

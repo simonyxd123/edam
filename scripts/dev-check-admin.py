@@ -98,6 +98,14 @@ def main():
             "先确认后端在跑：\n"
             "    curl -s http://127.0.0.1:8092/api/v1/health/ready | head -20\n"
             "    tail -50 backend/backend.log")
+        actions.append(
+            "如果 health 不通 —— 后端进程已经退出了（dev profile 下自举失败会\n"
+            "fail fast 直接退出，这是刻意的：宁可启动就报错，也不要\n"
+            "'服务正常但登不进去'）。直接重启看它报什么：\n"
+            "    cd backend && rm -rf target && mvn spring-boot:run 2>&1 | tail -60")
+        actions.append(
+            "最省事：一键重置（清 target + 重建库 + 启动 + 验证）：\n"
+            "    ./scripts/dev-reset.sh")
 
     # 8) 角色缺失（admin 角色绑不上）
     if roles and 'admin' not in roles:
