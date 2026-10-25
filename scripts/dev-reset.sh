@@ -36,7 +36,8 @@ for arg in "$@"; do
 done
 
 MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
-MYSQL_PORT="${MYSQL_PORT:-3306}"
+# 对外端口 3307（容器内是 3306）—— 与 dev/docker-compose.yml 一致
+MYSQL_PORT="${MYSQL_PORT:-3307}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASS="${MYSQL_ROOT_PASSWORD:-rootpass}"
 MYSQL_DB="${MYSQL_DATABASE:-edam}"
@@ -137,7 +138,7 @@ if [ "$START" = "1" ]; then
 
   # 直接查库确认（比只看健康端点更可靠）
   if command -v mysql >/dev/null 2>&1; then
-    CNT=$(mysql -h"${MYSQL_HOST:-127.0.0.1}" -P"${MYSQL_PORT:-3306}" \
+    CNT=$(mysql -h"${MYSQL_HOST:-127.0.0.1}" -P"$MYSQL_PORT" \
             -u"${MYSQL_USER:-root}" -p"${MYSQL_ROOT_PASSWORD:-rootpass}" -N -B \
             "${MYSQL_DATABASE:-edam}" \
             -e "SELECT COUNT(*) FROM sys_user WHERE employee_no='E000001';" 2>/dev/null)

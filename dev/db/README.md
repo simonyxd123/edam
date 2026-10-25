@@ -36,23 +36,23 @@ docker-compose exec mysql mysql -uroot -prootpass edam < dev/db/migration/V_xxx_
 
 ```bash
 # 迁移到最新
-flyway -url=jdbc:mysql://localhost:3306/edam \
+flyway -url=jdbc:mysql://localhost:3307/edam \
        -user=root -password=xxx \
        -locations=filesystem:dev/db/migration \
        migrate
 
 # 查看状态
-flyway -url=jdbc:mysql://localhost:3306/edam \
+flyway -url=jdbc:mysql://localhost:3307/edam \
        -user=root -password=xxx \
        info
 
 # 修复（重新对齐 Flyway 元数据表）
-flyway -url=jdbc:mysql://localhost:3306/edam \
+flyway -url=jdbc:mysql://localhost:3307/edam \
        -user=root -password=xxx \
        repair
 
 # 回滚（需要先有 U__xxx.sql）
-flyway -url=jdbc:mysql://localhost:3306/edam \
+flyway -url=jdbc:mysql://localhost:3307/edam \
        -user=root -password=xxx \
        -locations=filesystem:dev/db/migration \
        undo

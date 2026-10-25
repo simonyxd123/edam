@@ -104,6 +104,10 @@ db:migrate:
     # 曾经是三方不一致（application.yml 8080、vite proxy 8092），
     # 改一处忘另一处就是前端全 502
     - python dev/db/_validate_ports.py
+    # MySQL 端口：容器内 3306 / 对外 3307。
+    # 此前 compose 是 3306:3306，而 application.yml 与三个诊断脚本
+    # 用的是 3307 → **诊断脚本看的是另一个库**，排查时全是误导
+    - python dev/db/_validate_mysql_port.py
     # locations 只含迁移目录 —— seed（k6 压测用户等）不进迁移链，
     # 需要时手工执行 dev/db/seed/*.sql
     - flyway -url=jdbc:mysql://mysql:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate

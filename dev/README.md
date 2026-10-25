@@ -66,7 +66,7 @@ cd /var/data/project/edam && ./scripts/dev-diagnose.sh
 
 | 服务 | 端口 | 用途 | 默认账号 |
 | --- | --- | --- | --- |
-| MySQL | 3306 | 业务数据库 | root/rootpass, edam/edampass |
+| MySQL | **3307**（容器内 3306） | 业务数据库 | root/rootpass, edam/edampass |
 | Redis | 6379 | 缓存 | 无 |
 | MinIO | 9000/9001 | 对象存储 | minioadmin/minioadmin |
 | RabbitMQ | 5672/15672 | 消息队列 | edam/edampass |

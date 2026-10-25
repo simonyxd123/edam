@@ -32,7 +32,10 @@ services:
       - --max_connections=500
       - --innodb_buffer_pool_size=2G
     ports:
-      - "3306:3306"
+      # 容器内 3306，对外（宿主机）3307 —— 与 application.yml 的
+      # MYSQL_PORT=3307 一致。原值 3306:3306 会让宿主机上的
+      # 3306 端口与 MySQL 冲突（宿主机自己可能就装了 MySQL）。
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       # ⚠️ 这里**故意不挂** docker-entrypoint-initdb.d。

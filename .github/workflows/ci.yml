@@ -94,7 +94,7 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: test
           MYSQL_DATABASE: edam_test
-        ports: ['3306:3306']
+        ports: ['3307:3306']   # 容器内 3306，对外 3307（与 dev 环境一致）
         options: --health-cmd="mysqladmin ping" --health-interval=10s
     steps:
       - uses: actions/checkout@v4
@@ -107,11 +107,11 @@ jobs:
 
       - name: 执行迁移
         run: |
-          flyway -url=jdbc:mysql://127.0.0.1:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/migration migrate
+          flyway -url=jdbc:mysql://127.0.0.1:3307/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate
 
       - name: 执行种子数据
         run: |
-          flyway -url=jdbc:mysql://127.0.0.1:3306/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:dev/db/seed migrate
+          flyway -url=jdbc:mysql://127.0.0.1:3307/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate
 
       - name: 校验表数量
         run: |

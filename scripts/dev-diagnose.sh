@@ -23,7 +23,8 @@ say() { echo; echo "$SEP"; echo "$*"; echo "$SEP"; }
 
 # ---- MySQL 连接参数（与 dev/docker-compose.yml 一致）------------------
 MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
-MYSQL_PORT="${MYSQL_PORT:-3306}"
+# 对外端口 3307（容器内是 3306）—— 与 dev/docker-compose.yml 一致
+MYSQL_PORT="${MYSQL_PORT:-3307}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASS="${MYSQL_ROOT_PASSWORD:-rootpass}"
 MYSQL_DB="${MYSQL_DATABASE:-edam}"

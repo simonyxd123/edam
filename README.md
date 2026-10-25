@@ -358,11 +358,11 @@ cd e2e/cypress && npx cypress run
 
 ```bash
 # 启动迁移
-flyway -url=jdbc:mysql://localhost:3306/edam -user=root -password=xxx \
+flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
        -locations=filesystem:dev/db/migration migrate
 
 # 回滚
-flyway -url=jdbc:mysql://localhost:3306/edam -user=root -password=xxx \
+flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
        -locations=filesystem:dev/db/migration undo
 ```
 
