@@ -54,6 +54,8 @@ if [ -n "$FAILED" ] && [ "$FAILED" != "0" ]; then
 fi
 
 say "2. 关键迁移是否已应用"
+HIT1000=0
+HIT5000=0
 for v in 20260830.1000 20260830.5000; do
   HIT=$(q "SELECT COUNT(*) FROM flyway_schema_history WHERE version='$v' AND success=1;")
   if [ "$HIT" = "1" ]; then
@@ -61,6 +63,7 @@ for v in 20260830.1000 20260830.5000; do
   else
     echo "  $v  ❌ 未应用"
   fi
+  if [ "$v" = "20260830.1000" ]; then HIT1000="$HIT"; else HIT5000="$HIT"; fi
 done
 
 say "3. sys_user 表的 dept_id 约束（admin 插入失败的头号原因）"
@@ -86,6 +89,7 @@ if [ "$USERS" = "0" ]; then
 fi
 ROLES=$(q "SELECT IFNULL(GROUP_CONCAT(code SEPARATOR ', '),'(无)') FROM sys_role;")
 echo "  sys_role 角色 : ${ROLES:-?}"
+ADMIN_COUNT=$(q "SELECT COUNT(*) FROM sys_user WHERE employee_no='E000001';")
 echo "  初始管理员   : $(q "SELECT IFNULL(CONCAT(employee_no,' / ',username),'(不存在)') FROM sys_user WHERE employee_no='E000001';")"
 
 say "5. 后端进程与自举日志"
@@ -100,10 +104,14 @@ done
 
 say "6. 健康端点里的自举状态"
 PORT="${BACKEND_PORT:-8092}"
+BOOTSTRAP="not-run"
+BOOTSTRAP_ERROR=""
+HEALTH=""
 for u in "http://127.0.0.1:${PORT}/api/v1/health/ready" \
          "http://127.0.0.1:8080/api/v1/health/ready"; do   # 8080 = 旧端口，8092 = 现行
   OUT=$(curl -s --max-time 3 "$u" 2>/dev/null)
   if [ -n "$OUT" ]; then
+    HEALTH="$OUT"
     echo "  $u"
     echo "  $OUT" | python -c "
 import json,sys
@@ -119,24 +127,42 @@ except Exception:
   fi
 done
 
+# 从健康端点 JSON 里取出自举状态与错误
+if [ -n "$HEALTH" ]; then
+  BOOTSTRAP=$(echo "$HEALTH" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get('admin_bootstrap') or 'not-run')
+except Exception:
+    print('not-run')
+" 2>/dev/null || echo "not-run")
+  BOOTSTRAP_ERROR=$(echo "$HEALTH" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get('admin_bootstrap_error') or '')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+fi
+
 say "结论与下一步"
-cat <<'EOF'
-如果第 3 节显示 dept_id 是 NOT NULL：
-    → 直接修：
-        mysql -h127.0.0.1 -uroot -p edam -e \
-          "ALTER TABLE sys_user MODIFY COLUMN dept_id BIGINT UNSIGNED NULL;"
-      然后重启后端，AdminBootstrap 会自动建出 E000001 / admin123。
 
-如果第 2 节显示 V20260830.5000 未应用：
-    → ./scripts/dev-reset.sh（重建库 + 跑完整套迁移 + 启动）
+# 把采集到的诊断数据交给判定脚本，输出**唯一结论** + 可直接执行的命令
+# （原先是一堆"如果 A 则 B"的分支，跑完还要人自己对着 if 判断）
+DEPT_NULLABLE=$(q "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='$MYSQL_DB' AND TABLE_NAME='sys_user' AND COLUMN_NAME='dept_id';")
 
-如果第 3、4 节都正常但第 6 节显示 admin_bootstrap=failed：
-    → 看第 5 节的 error 堆栈，按里面的提示处理
-    → 常见：应用跑的是 production profile（不配 edam.bootstrap.admin-password
-      就不建账号），或 sys_user 缺列
-
-如果 admin_bootstrap=ok 但用户表仍空：
-    → 检查应用连的是不是同一个库（MYSQL_HOST/PORT/DB 与本脚本一致）
-
-账号：工号 E000001 / 密码 admin123（dev profile 自动创建）
-EOF
+exec python3 "$REPO_ROOT/scripts/dev-check-admin.py" \
+  "host=$MYSQL_HOST" \
+  "port=$MYSQL_PORT" \
+  "db=$MYSQL_DB" \
+  "failed_migrations=${FAILED:-0}" \
+  "has_5000=$([ "${HIT5000:-0}" = "1" ] && echo 1 || echo 0)" \
+  "has_1000=$([ "${HIT1000:-0}" = "1" ] && echo 1 || echo 0)" \
+  "dept_nullable=${DEPT_NULLABLE:-}" \
+  "user_count=${USERS:-}" \
+  "admin_count=${ADMIN_COUNT:-}" \
+  "roles=${ROLES:-}" \
+  "bootstrap=$BOOTSTRAP" \
+  "bootstrap_error=$BOOTSTRAP_ERROR"
