@@ -39,6 +39,11 @@ vi.mock('element-plus', () => ({
 
 vi.mock('@/utils/session', () => ({
   handleSessionInvalid: vi.fn(),
+  // 会话恢复计数：真实实现里 api 客户端续期时会登记，
+  // 让全局 XHR/fetch 包装器不抢先登出（见 utils/session.ts 的说明）
+  beginSessionRecovery: vi.fn(),
+  endSessionRecovery: vi.fn(),
+  isSessionRecovering: () => false,
   // 与真实实现一致：baseURL + url 拼起来判断（axios 的 config.url 是相对路径）
   isApiCall: (url: string, baseURL?: string) =>
     !!(baseURL || url) && `${baseURL ?? ''}${url ?? ''}`.includes('/api/'),
@@ -147,5 +152,21 @@ describe('api client 的 refresh 流程', () => {
     const handler = responseErrorHandler;
     await expect(handler(make401())).rejects.toBeTruthy();
     expect(h.postMock).not.toHaveBeenCalled();
+  });
+
+  it('续期期间登记"正在恢复"，结束后注销', async () => {
+    // main.ts 的全局 XHR/fetch 包装器看到 401 就会清 token 跳登录页。
+    // 它若抢在续期之前跑，refresh_token 已被清掉，续期就无从谈起 ——
+    // 静默续期会退化成"每 10 分钟被踢回登录页"（access_token TTL 就 10 分钟）。
+    // 所以续期必须登记自己正在处理，全局包装器据此让路。
+    const { beginSessionRecovery, endSessionRecovery } = await import('@/utils/session');
+    h.postMock.mockResolvedValueOnce({ data: { access_token: 'new-access' } });
+    h.mockInstance.request.mockResolvedValueOnce({ data: { ok: true }, status: 200 });
+
+    const handler = responseErrorHandler;
+    await handler(make401());
+
+    expect(beginSessionRecovery).toHaveBeenCalledTimes(1);
+    expect(endSessionRecovery).toHaveBeenCalledTimes(1);
   });
 });

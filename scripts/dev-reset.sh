@@ -109,15 +109,32 @@ if [ "$START" = "1" ]; then
   echo "==> 等待后端就绪并验证初始管理员…"
   READY=0
   for i in $(seq 1 60); do
-    if curl -s --max-time 2 "http://127.0.0.1:8092/api/v1/health/ready" >/dev/null 2>&1; then
+    # -f：HTTP 非 2xx 即失败。
+    # /health/ready 在 MySQL 不可用时返回 503（探针必须能失败，否则 K8s
+    # 会把坏 Pod 留在 Endpoints 里继续接流量）。所以这里要的是 **200**，
+    # 而不是"服务端有响应"——后者会把没就绪的后端当成就绪。
+    if curl -sf --max-time 2 "http://127.0.0.1:8092/api/v1/health/ready" >/dev/null 2>&1; then
       READY=1; break
     fi
     sleep 2
   done
 
   if [ "$READY" != "1" ]; then
-    echo "    ✗ 后端 60 秒内没就绪。日志尾部："
+    echo "    ✗ 后端 120 秒内没就绪。日志尾部："
     tail -30 "$REPO_ROOT/backend/backend.log" 2>/dev/null | sed 's/^/      /'
+    echo
+    echo "    就绪状态（503 = MySQL 不可用，Pod 不会接流量）："
+    curl -s --max-time 3 "http://127.0.0.1:8092/api/v1/health/ready" 2>/dev/null \
+      | python -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+    print('      status          :', d.get('status'))
+    for name, c in (d.get('components') or {}).items():
+        print('      %-8s : %s' % (name, c.get('status')))
+except Exception:
+    print('      (无响应)')
+" 2>/dev/null || echo "      (无法解析)"
     exit 1
   fi
 

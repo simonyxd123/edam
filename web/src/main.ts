@@ -12,7 +12,7 @@ import router from './router';
 import './styles/main.scss';
 import { formatDateTime, formatDate, formatTime } from './utils/date';
 import { permission } from './utils/permission';
-import { handleSessionInvalid, isPublicEndpoint } from './utils/session';
+import { handleSessionInvalid, isPublicEndpoint, isSessionRecovering } from './utils/session';
 
 const app = createApp(App);
 
@@ -65,7 +65,9 @@ window.fetch = async function (
     return ORIG_FETCH(input, init);
   }
   const resp = await ORIG_FETCH(input, init);
-  if (resp.status === 401) {
+  if (resp.status === 401 && !isSessionRecovering()) {
+    // 正在用 refresh_token 续期时不要登出：续期成功后原请求会被重放，
+    // 这里抢先清 token 会把续期材料一起清掉（详见 utils/session.ts 的说明）。
     handleSessionInvalid('fetch:401');
   }
   return resp;
@@ -89,7 +91,14 @@ console.log('[global] fetch wrapper installed');
     };
     xhr.addEventListener('readystatechange', function () {
       if (xhr.readyState === 4) {
-        if (isApiPath(url ?? undefined) && !isPublicEndpoint(url ?? undefined) && xhr.status === 401) {
+        // 正在用 refresh_token 续期时不要登出（详见 utils/session.ts 的说明）：
+        // 续期成功后原请求会被重放，这里抢先清 token 会把续期材料一起清掉。
+        if (
+          isApiPath(url ?? undefined) &&
+          !isPublicEndpoint(url ?? undefined) &&
+          xhr.status === 401 &&
+          !isSessionRecovering()
+        ) {
           handleSessionInvalid('xhr:401');
         }
       }
@@ -105,7 +114,8 @@ console.log('[global] fetch wrapper installed');
     const reason = e?.reason as { response?: { status?: number }; config?: { url?: string } } | undefined;
     if (reason?.response?.status === 401) {
       const u = reason.config?.url || '';
-      if (isApiPath(u) && !isPublicEndpoint(u)) {
+      // 同上：续期进行中不登出
+      if (isApiPath(u) && !isPublicEndpoint(u) && !isSessionRecovering()) {
         handleSessionInvalid('unhandledrejection:401');
       }
     }

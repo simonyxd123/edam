@@ -67,11 +67,23 @@ backend:
       path: /api/v1/health/live
       initialDelaySeconds: 60
       periodSeconds: 10
+      # /health/live 只看进程自己，很快；但默认 timeoutSeconds=1 太紧，
+      # JVM 启动/GC 停顿就能把它顶掉 → 探针失败 → Pod 被重启。
+      # 放大到 5s：宁可探针晚点判失败，也别因为一次 GC 就重启 Pod。
+      timeoutSeconds: 5
+      # 连续 3 次失败才重启（默认 3）。这里显式写出来是为了让"重启"这件事
+      # 有据可查 —— 排查 CrashLoopBackOff 时第一眼就能看到阈值。
+      failureThreshold: 3
     readiness:
       enabled: true
       path: /api/v1/health/ready
       initialDelaySeconds: 30
       periodSeconds: 5
+      # /health/ready 会真探 MySQL/Redis/RabbitMQ（并发探测，最坏 ~1.5s），
+      # K8s 默认只等 1s ⇒ 探针必然超时 ⇒ **健康**的 Pod 被摘出 Endpoints。
+      timeoutSeconds: 5
+      # 失败 3 次（连续 15s）才摘流量：单次抖动不至于把 Pod 摘出去。
+      failureThreshold: 3
   serviceMonitor:
     enabled: true
     interval: 30s

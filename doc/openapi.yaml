@@ -917,16 +917,25 @@ paths:
       description: |
         检查应用是否准备好接收流量（含依赖健康）。
         K8s 配置：readinessProbe httpGet /health/ready
+
+        **503 的判定**：MySQL 不可用时返回 503 —— K8s 的 httpGet 探针只看
+        HTTP 状态码（不看 body），所以必须真的返回 503 才能把这个 Pod 从
+        Endpoints 摘掉。Redis / RabbitMQ 是共享依赖，故障时只降级为
+        `degraded` 并保持 200（把所有副本一起摘出去救不回共享组件，
+        反而把局部故障放大成整体不可用）。
+
+        503 的响应体**依然携带** `admin_bootstrap` —— 运维排查"服务起来了
+        但登不进去"时最需要的就是这个字段，它不能随 503 一起消失。
       security: []
       responses:
         '200':
-          description: 就绪
+          description: 就绪（status = ok 或 degraded）
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthCheck'
         '503':
-          description: 未就绪
+          description: 未就绪（MySQL 不可用，status = down）
           content:
             application/json:
               schema:
@@ -938,7 +947,10 @@ paths:
       summary: 各依赖组件健康状态
       description: |
         详细返回 MySQL、Redis、MinIO、Vault、RabbitMQ 等依赖的状态。
-        管理员使用，含敏感信息（如 DB 连接池统计）。
+        管理员使用，含敏感信息（如 DB 连接池统计），**需要 JWT 鉴权**。
+
+        与 /health/ready 的区别：这里做全量探测（含 MinIO / Vault），耗时更高；
+        ready 只做决定"能不能接流量"所需的那几个。
       responses:
         '200':
           description: 详细健康状态
@@ -2057,9 +2069,41 @@ components:
         status:
           type: string
           enum: [ok, degraded, down]
+          description: |
+            ok = 依赖全好；degraded = 共享依赖故障（仍能接流量）；
+            down = MySQL 不可用（不能接流量）。
         version: { type: string, description: 服务版本 }
         uptime_sec: { type: integer }
         timestamp: { type: string, format: date-time }
+        components:
+          type: object
+          description: 决定就绪与否的那几个依赖的明细
+          properties:
+            mysql:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+            redis:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+            rabbitmq:
+              type: object
+              properties:
+                status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
+        admin_bootstrap:
+          type: string
+          enum: [not-run, ok, failed]
+          description: |
+            初始管理员自举状态。failed = 服务起来了但没人能登录
+            （生产 profile 不阻断启动，所以这个字段是排查"服务正常但登不进去"的
+            唯一线索 —— 503 时也必须带上）。
+        admin_bootstrap_error:
+          type: string
+          description: 自举失败的原始原因（仅 admin_bootstrap=failed 时出现）
 
     ComponentsHealth:
       type: object
@@ -2067,6 +2111,7 @@ components:
         overall:
           type: string
           enum: [ok, degraded, down]
+        timestamp: { type: string, format: date-time }
         components:
           type: object
           properties:
@@ -2099,6 +2144,7 @@ components:
               type: object
               properties:
                 status: { type: string, enum: [ok, down] }
+                latency_ms: { type: integer }
                 queue_depth: { type: integer }
 
     Pagination:

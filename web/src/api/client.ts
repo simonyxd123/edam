@@ -4,7 +4,7 @@
  */
 import axios, { type AxiosInstance, type AxiosError, type AxiosRequestConfig } from 'axios';
 import { ElMessage } from 'element-plus';
-import { handleSessionInvalid, isApiCall, isPublicEndpoint } from '@/utils/session';
+import { handleSessionInvalid, isApiCall, isPublicEndpoint, beginSessionRecovery, endSessionRecovery } from '@/utils/session';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -106,11 +106,19 @@ class ApiClient {
         // 单例锁保证并发请求只触发一次 refresh（否则 N 个并发 401 会打 N 次
         // refresh，后 N-1 次因 refresh_token 已被消费而失败）。
         // 本次请求本身就是 refresh 调用 → 不能再触发 refresh（否则死循环）
-        const isRefreshCall = (error.config as any)?.__isRefreshCall === true;
+        const isRefreshCall = (error.config as any).__isRefreshCall === true;
         if (status === 401 && isApi && !isPublic && !isRefreshCall) {
-          const retried = await this.tryRefreshAndReplay(error);
-          if (retried) {
-            return retried;
+          // 登记"正在续期"：main.ts 的全局 fetch / XHR 包装器看到 401 就会
+          // 直接清 token 跳登录页。它若比这里先跑，refresh_token 已经被清掉，
+          // 续期就无从谈起 —— 静默续期会退化成"每 10 分钟被踢回登录页"。
+          beginSessionRecovery();
+          try {
+            const retried = await this.tryRefreshAndReplay(error);
+            if (retried) {
+              return retried;
+            }
+          } finally {
+            endSessionRecovery();
           }
         }
 

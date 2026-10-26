@@ -173,9 +173,14 @@ class MockHandler(BaseHTTPRequestHandler):
         return None
 
     # 需要 JWT 的端点前缀（与后端 SecurityConfig 的 anyRequest().authenticated() 对齐）
+    #
+    # /health/components 也要鉴权：它返回 DB 连接池、Redis 内存、磁盘用量等
+    # 内部信息（OpenAPI 里该端点声明的 401 就是这个意思），且后端 SecurityConfig
+    # 只放行了 /health、/health/live、/health/ready 三个端点。
     PROTECTED_PREFIXES = ("/users", "/roles", "/permissions", "/audit", "/videos",
                           "/documents", "/distribution", "/notifications",
-                          "/webhooks", "/tags", "/watermarks", "/playback")
+                          "/webhooks", "/tags", "/watermarks", "/playback",
+                          "/health/components")
 
     def _has_valid_token(self):
         """检查 Authorization 头（mock 只校验 token 存在且在 SESSIONS/已签发集合里）。
@@ -202,14 +207,29 @@ class MockHandler(BaseHTTPRequestHandler):
         if path == "/health/live":
             return self._send_json(200, {"status": "alive", "uptime_sec": 100, "pid": 1})
         if path == "/health/ready":
-            return self._send_json(200, {"status": "ok", "version": "3.1.0"})
-        if path == "/health/components":
+            # 与后端 HealthController 同构：status + components + admin_bootstrap
             return self._send_json(200, {
-                "overall": "ok",
+                "status": "ok",
+                "version": "3.1.0",
+                "uptime_sec": 100,
                 "components": {
                     "mysql": {"status": "ok", "latency_ms": 1},
                     "redis": {"status": "ok", "latency_ms": 1},
-                }
+                    "rabbitmq": {"status": "ok", "latency_ms": 1},
+                },
+                "admin_bootstrap": "ok",
+            })
+        if path == "/health/components":
+            return self._send_json(200, {
+                "overall": "ok",
+                "timestamp": now_iso(),
+                "components": {
+                    "mysql": {"status": "ok", "latency_ms": 1, "pool_active": 1, "pool_idle": 4},
+                    "redis": {"status": "ok", "latency_ms": 1, "memory_used_mb": 16},
+                    "minio": {"status": "ok", "latency_ms": 1, "disk_used_gb": 10},
+                    "vault": {"status": "ok", "latency_ms": 1, "sealed": False},
+                    "rabbitmq": {"status": "ok", "latency_ms": 1, "queue_depth": 0},
+                },
             })
         if path == "/auth/me":
             return self._handle_auth_me()

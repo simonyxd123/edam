@@ -56,6 +56,38 @@ export function handleSessionInvalid(reason: string, showMessage = true): void {
 }
 
 /**
+ * 正在进行中的会话恢复（用 refresh_token 换新 token 并重放原请求）计数。
+ *
+ * <p><b>为什么需要它</b>：后端对"未认证"返回 <b>401</b>（契约如此，
+ * 见 {@code doc/openapi.yaml}）。而 {@code main.ts} 里挂了全局 fetch / XHR
+ * 包装器，只要响应是 401 就直接 {@link handleSessionInvalid} 清 token 跳登录页。
+ *
+ * <p>问题在于<b>时序</b>：XHR 的 {@code readystatechange} 监听器里，
+ * 全局包装器可能先于 axios 自己的处理被调用 —— 包装器一旦清了 token，
+ * axios 随后想用 refresh_token 续期时已经拿不到了，于是
+ * "静默续期"退化成"每 10 分钟被踢回登录页"（access_token TTL 就 10 分钟）。
+ *
+ * <p>解决办法：让 api 客户端在<b>决定</b>用 refresh_token 续期时登记
+ * "正在恢复"，全局包装器看到有人在处理这个 401 就不再重复登出。
+ */
+let sessionRecoveries = 0;
+
+/** 登记一次会话恢复（refresh_token 续期） */
+export function beginSessionRecovery(): void {
+  sessionRecoveries += 1;
+}
+
+/** 结束一次会话恢复 */
+export function endSessionRecovery(): void {
+  sessionRecoveries = Math.max(0, sessionRecoveries - 1);
+}
+
+/** 当前是否有人正在用 refresh_token 续期 */
+export function isSessionRecovering(): boolean {
+  return sessionRecoveries > 0;
+}
+
+/**
  * 判断某个 URL 是否是后端 API 路径。
  *
  * <p>注意：axios 的 `config.url` 是**相对路径**（如 `/videos`），

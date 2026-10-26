@@ -156,7 +156,11 @@ kubectl set env statefulset/edam-mysql MYSQL_HOST=mysql-slave
 kubectl scale deployment edam-edam-backend --replicas=3
 
 # 6. 验证
-kubectl exec -it <backend-pod> -- curl -s http://localhost:8092/health/ready
+# 注意 context-path：后端配了 server.servlet.context-path=/api/v1，
+# 少了前缀 → 404 → 灾备时误判"后端没起来"。
+# 另外现在 MySQL 不可用时这个端点返回 **503**（探针要能失败），
+# 所以要看退出码用 -f，别只看有没有输出。
+kubectl exec -it <backend-pod> -- curl -sf http://localhost:8092/api/v1/health/ready
 ```
 
 ### 5.2 跨可用区切换

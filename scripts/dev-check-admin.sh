@@ -122,6 +122,9 @@ PORT="${BACKEND_PORT:-8092}"
 BOOTSTRAP="not-run"
 BOOTSTRAP_ERROR=""
 HEALTH=""
+# 注意：/health/ready 在 MySQL 不可用时返回 **503**（K8s 探针必须能失败）。
+# 这里刻意不加 -f：即使 503，body 里仍有 admin_bootstrap —— 那正是排查
+# "服务起来了但登不进去" 时唯一要看的东西。
 for u in "http://127.0.0.1:${PORT}/api/v1/health/ready" \
          "http://127.0.0.1:8080/api/v1/health/ready"; do   # 8080 = 旧端口，8092 = 现行
   OUT=$(curl -s --max-time 3 "$u" 2>/dev/null)
@@ -132,6 +135,9 @@ for u in "http://127.0.0.1:${PORT}/api/v1/health/ready" \
 import json,sys
 try:
     d=json.load(sys.stdin)
+    print('    status          :', d.get('status'))
+    for name, c in (d.get('components') or {}).items():
+        print('      %-8s     : %s' % (name, c.get('status')))
     print('    admin_bootstrap :', d.get('admin_bootstrap'))
     if d.get('admin_bootstrap_error'):
         print('    error           :', d['admin_bootstrap_error'])

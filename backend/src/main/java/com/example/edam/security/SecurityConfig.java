@@ -24,9 +24,15 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RestAuthenticationEntryPoint authenticationEntryPoint;
+    private final RestAccessDeniedHandler accessDeniedHandler;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
+                          RestAuthenticationEntryPoint authenticationEntryPoint,
+                          RestAccessDeniedHandler accessDeniedHandler) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.authenticationEntryPoint = authenticationEntryPoint;
+        this.accessDeniedHandler = accessDeniedHandler;
     }
 
     @Bean
@@ -40,7 +46,7 @@ public class SecurityConfig {
                 // SSO：登录跳转 / 回调 / 元数据 / 一次性登录码交换
                 // 都要匿名可达（回调发生在用户还没拿到 token 的时候）
                 .requestMatchers("/auth/sso/**").permitAll()
-                .requestMatchers("/health/**").permitAll()
+                .requestMatchers("/health", "/health/live", "/health/ready").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 .requestMatchers("/ws/**").permitAll()
                 // Worker 内部回调：Worker → Backend 更新视频状态
@@ -57,7 +63,13 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated()
             )
-            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+            // 未认证 → 401、已认证但权限不足 → 403，都带 Problem Details body。
+            // 不配这一段的话，Spring Security 默认对未认证请求返回 403 空 body，
+            // 前端 client.ts 的 "401 → 用 refresh_token 换新 token" 流程就永远不会触发。
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint(authenticationEntryPoint)
+                .accessDeniedHandler(accessDeniedHandler));
         return http.build();
     }
 
