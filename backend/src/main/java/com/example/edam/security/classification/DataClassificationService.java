@@ -2,12 +2,12 @@ package com.example.edam.security.classification;
 
 import com.example.edam.model.DataClassificationAudit;
 import com.example.edam.repository.DataClassificationAuditRepository;
+import com.example.edam.util.TimeUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -179,7 +179,7 @@ public class DataClassificationService {
         audit.setChangedBy(changedBy);
         audit.setChangeMethod(changeMethod);
         audit.setRuleId(ruleId);
-        audit.setChangedAt(LocalDateTime.now());
+        audit.setChangedAt(TimeUtil.nowUtcLocalDateTime());
         auditRepository.insert(audit);
 
         log.info("classification_change resource={}:{} {} -> {} reason={}",

@@ -5,6 +5,7 @@ import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.util.TimeUtil;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -246,7 +247,7 @@ public class WebAuthnController {
             return ResponseEntity.notFound().build();
         }
         credentialRepository.revoke(opt.get().getId(),
-            LocalDateTime.now(), "用户主动撤销");
+            TimeUtil.nowUtcLocalDateTime(), "用户主动撤销");
         log.info("webauthn_credential_revoked credential_id={} user_id={}",
             credentialId, userId);
         return ResponseEntity.noContent().build();

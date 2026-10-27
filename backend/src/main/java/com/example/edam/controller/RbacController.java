@@ -14,6 +14,7 @@ import com.example.edam.repository.SysUserRoleRepository;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.PermissionService;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.util.TimeUtil;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -23,7 +24,6 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -164,7 +164,7 @@ public class RbacController {
             throw new IllegalArgumentException("系统预置角色不可删除");
         }
         // 软删除角色 + 清关联
-        role.setDeletedAt(LocalDateTime.now());
+        role.setDeletedAt(TimeUtil.nowUtcLocalDateTime());
         roleRepository.updateById(role);
         rolePermRepository.deleteByRoleId(roleId);
         userRoleRepository.delete(
@@ -263,7 +263,7 @@ public class RbacController {
                 ur.setUserId(userId);
                 ur.setRoleId(rid);
                 ur.setGrantedBy(operatorId);
-                ur.setGrantedAt(java.time.LocalDateTime.now());  // 手动填：MetaObjectHandler 不可靠
+                // grantedAt 由 MyMetaObjectHandler 自动填（UTC），不用手动设
                 userRoleRepository.insert(ur);
                 n++;
             }

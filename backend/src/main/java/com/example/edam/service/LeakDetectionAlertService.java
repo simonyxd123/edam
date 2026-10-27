@@ -2,13 +2,13 @@ package com.example.edam.service;
 
 import com.example.edam.model.LeakDetection;
 import com.example.edam.repository.LeakDetectionRepository;
+import com.example.edam.util.TimeUtil;
 import com.example.edam.websocket.NotificationController;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
 
 /**
  * 泄露检测告警服务（v3.3 W-6.4）
@@ -58,7 +58,7 @@ public class LeakDetectionAlertService {
         detection.setMatchedFrames(matchedFrames);
         detection.setTotalFrames(totalFrames);
         detection.setStatus("pending");
-        detection.setDetectedAt(LocalDateTime.now());
+        detection.setDetectedAt(TimeUtil.nowUtcLocalDateTime());
         leakRepository.insert(detection);
 
         log.warn(
@@ -119,7 +119,7 @@ public class LeakDetectionAlertService {
         LeakDetection detection = leakRepository.findById(detectionId);
         if (detection == null) return;
         detection.setStatus("confirmed");
-        detection.setReviewedAt(LocalDateTime.now());
+        detection.setReviewedAt(TimeUtil.nowUtcLocalDateTime());
         detection.setReviewedBy(reviewerId);
         detection.setReviewNote(note);
         leakRepository.updateById(detection);
@@ -135,7 +135,7 @@ public class LeakDetectionAlertService {
         LeakDetection detection = leakRepository.findById(detectionId);
         if (detection == null) return;
         detection.setStatus("dismissed");
-        detection.setReviewedAt(LocalDateTime.now());
+        detection.setReviewedAt(TimeUtil.nowUtcLocalDateTime());
         detection.setReviewedBy(reviewerId);
         detection.setReviewNote(note);
         leakRepository.updateById(detection);

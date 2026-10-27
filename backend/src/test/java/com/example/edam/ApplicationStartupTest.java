@@ -1,7 +1,9 @@
 package com.example.edam;
 
 import com.example.edam.model.SysUser;
+import com.example.edam.model.SysUserRole;
 import com.example.edam.repository.SysUserRepository;
+import com.example.edam.repository.SysUserRoleRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +46,9 @@ class ApplicationStartupTest {
 
     @Autowired
     private SysUserRepository userRepository;
+
+    @Autowired
+    private SysUserRoleRepository userRoleRepository;
 
     @Autowired
     private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
@@ -100,5 +105,46 @@ class ApplicationStartupTest {
         assertNotNull(admin.getPasswordHash(), "管理员必须有密码 hash");
         assertTrue(passwordEncoder.matches("Test@123456", admin.getPasswordHash()),
             "管理员密码必须能通过校验（测试配置里用的是 Test@123456）");
+    }
+
+    /**
+     * 自动填充的列必须真的被填上 —— 在<b>真 MySQL</b> 上验证。
+     *
+     * <p>这条直接复现过一次服务器启动失败：
+     * {@code Column 'granted_at' cannot be null}。
+     *
+     * <p>根因：{@code MyMetaObjectHandler} 走 MP 的
+     * {@code strictInsertFill}，而它要求"属性名 + 属性类型完全相等"才填充。
+     * handler 里写死的是 {@code OffsetDateTime.class}，
+     * 而 {@code SysUserRole.grantedAt} 是 {@code LocalDateTime}
+     * ⇒ 填充被<b>静默跳过</b> ⇒ 插入 NULL ⇒ 撞 NOT NULL 约束
+     * ⇒ {@code AdminBootstrap} 绑定 admin 角色时抛异常
+     * ⇒ dev profile 下 fail fast ⇒ 整个后端起不来。
+     *
+     * <p>注意：MP 对标了 {@code fill} 的字段，生成 INSERT 语句时是
+     * <b>无条件</b>带上该列的（{@code withInsertFill} 为真时不加 {@code <if>} 判空），
+     * 所以 DB 侧的 {@code DEFAULT CURRENT_TIMESTAMP(3)} 根本没机会生效 ——
+     * 值只能由 handler 提供。
+     */
+    @Test
+    @Transactional
+    @DisplayName("标了 fill 的时间列在真 MySQL 上确实被填上（granted_at 这类 NOT NULL 列）")
+    void filledTimestampColumnsAreNotNull() {
+        SysUserRole ur = new SysUserRole();
+        ur.setUserId(999001L);
+        ur.setRoleId(999001L);
+        ur.setGrantedBy(999001L);
+        // 故意**不设** grantedAt —— 它必须由 MyMetaObjectHandler 自动填上。
+        // 填不上就是插入 NULL，直接撞 sys_user_role.granted_at 的 NOT NULL 约束。
+
+        userRoleRepository.insert(ur);
+
+        assertNotNull(ur.getGrantedAt(),
+            "granted_at 必须被自动填充 —— 填不上就是插入 NULL，"
+            + "AdminBootstrap 绑 admin 角色时会撞 NOT NULL 约束导致后端起不来");
+
+        SysUserRole saved = userRoleRepository.selectById(ur.getId());
+        assertNotNull(saved, "插入后应能按主键查回");
+        assertNotNull(saved.getGrantedAt(), "落库的 granted_at 不能是 NULL");
     }
 }

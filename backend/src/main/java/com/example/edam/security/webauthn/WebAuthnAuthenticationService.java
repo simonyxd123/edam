@@ -3,12 +3,12 @@ package com.example.edam.security.webauthn;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
+import com.example.edam.util.TimeUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.security.Signature;
-import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.Optional;
@@ -72,7 +72,7 @@ public class WebAuthnAuthenticationService {
 
         // 5. 更新 counter（防重放）
         long newCounter = credential.getCounter() + 1;
-        credentialRepository.updateCounter(credential.getId(), newCounter, LocalDateTime.now());
+        credentialRepository.updateCounter(credential.getId(), newCounter, TimeUtil.nowUtcLocalDateTime());
 
         // 6. 更新用户最后登录时间
         user.setLastLoginAt(OffsetDateTime.now());

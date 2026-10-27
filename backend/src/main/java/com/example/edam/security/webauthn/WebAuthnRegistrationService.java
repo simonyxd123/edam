@@ -3,13 +3,13 @@ package com.example.edam.security.webauthn;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
+import com.example.edam.util.TimeUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
-import java.time.LocalDateTime;
 import java.util.Base64;
 
 /**
@@ -67,8 +67,8 @@ public class WebAuthnRegistrationService {
         credential.setBackupEligible(false);
         credential.setBackupState(false);
         credential.setName(request.getName() != null ? request.getName() : "未命名密钥");
-        credential.setLastUsedAt(LocalDateTime.now());
-        credential.setCreatedAt(LocalDateTime.now());
+        credential.setLastUsedAt(TimeUtil.nowUtcLocalDateTime());
+        credential.setCreatedAt(TimeUtil.nowUtcLocalDateTime());
         credential.setRevoked(false);
         credentialRepository.insert(credential);
 
