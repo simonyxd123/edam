@@ -131,18 +131,24 @@ MySQL 侧 `--default-time-zone=+00:00`、JDBC 侧 `serverTimezone=UTC`，
 
 ---
 
-## 四、顺带修掉的另外三个"定时炸弹"
+## 四、顺带修掉的另外两个"定时炸弹"
 
-同一个根因，还藏着三处**必炸**的插入路径（都是 NOT NULL 的时间列）：
+同一个根因，还藏着两处**必炸**的插入路径（都是 NOT NULL 的时间列）：
 
 | 位置 | 表 | 字段 | 触发时机 |
 |---|---|---|---|
 | `RbacController:203` | `sys_role_permission` | `created_at` | 给角色分配权限 |
 | `WebhookDeliveryService:101` | `webhook_delivery` | `created_at` | 记录 webhook 投递 |
-| `SysPermission` 插入 | `sys_permission` | `created_at` | 新建权限 |
 
-这三处之前只要被调用就必然抛 `DataIntegrityConstraintViolationException`。
+这两处之前只要被调用就必然抛 `DataIntegrityConstraintViolationException`。
 现在一并修好。
+
+> 补充说明：`sys_permission.created_at` 的**模型字段**（`SysPermission.createdAt`）
+> 同样是 `LocalDateTime` + `fill=INSERT`，也受同一个类型不匹配影响；
+> 但它今天**没有 Java 侧插入路径** —— 权限目录由迁移脚本
+> `V20260830_1000__rbac_seed.sql` 用裸 SQL 灌种子，DB 默认值能生效。
+> 所以它属于"模型层面的隐患"而非"线上正在炸的路径"。
+
 
 ---
 

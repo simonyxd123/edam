@@ -1,15 +1,21 @@
 package com.example.edam;
 
 import com.example.edam.model.SysUser;
+import com.example.edam.model.SysRolePermission;
 import com.example.edam.model.SysUserRole;
+import com.example.edam.model.WebhookDelivery;
+import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.SysUserRoleRepository;
+import com.example.edam.repository.WebhookDeliveryRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -49,6 +55,12 @@ class ApplicationStartupTest {
 
     @Autowired
     private SysUserRoleRepository userRoleRepository;
+
+    @Autowired
+    private SysRolePermissionRepository rolePermRepository;
+
+    @Autowired
+    private WebhookDeliveryRepository deliveryRepository;
 
     @Autowired
     private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
@@ -146,5 +158,55 @@ class ApplicationStartupTest {
         SysUserRole saved = userRoleRepository.selectById(ur.getId());
         assertNotNull(saved, "插入后应能按主键查回");
         assertNotNull(saved.getGrantedAt(), "落库的 granted_at 不能是 NULL");
+    }
+
+    /**
+     * 同一个根因还炸在另外两条插入路径上 —— 一并锁住。
+     *
+     * <p>它们和 {@code sys_user_role.granted_at} 是同一个毛病：
+     * 字段类型是 {@code LocalDateTime} / {@code Instant}，而 handler 只填
+     * {@code OffsetDateTime} ⇒ 静默跳过 ⇒ 插 NULL ⇒ 撞 NOT NULL。
+     *
+     * <ul>
+     *   <li>{@code sys_role_permission.created_at}（LocalDateTime）
+     *       —— 给角色分配权限时插</li>
+     *   <li>{@code webhook_delivery.created_at}（Instant）
+     *       —— 记录 webhook 投递时插</li>
+     * </ul>
+     *
+     * <p>这两个功能此前只要被调用就必然抛
+     * {@code DataIntegrityConstraintViolationException}，只是还没人点到。
+     */
+    @Test
+    @Transactional
+    @DisplayName("另外两条 NOT NULL 时间列的插入路径也能通（角色权限 / webhook 投递）")
+    void otherNotNullTimestampColumnsAreFilled() {
+        // 1) sys_role_permission.created_at（LocalDateTime）
+        SysRolePermission srp = new SysRolePermission();
+        srp.setRoleId(999002L);
+        srp.setPermissionId(999002L);
+        // 故意不设 createdAt
+
+        rolePermRepository.insert(srp);
+
+        assertNotNull(srp.getCreatedAt(),
+            "sys_role_permission.created_at 必须被自动填充 —— 填不上则分配权限时必炸");
+        assertNotNull(rolePermRepository.selectById(srp.getId()).getCreatedAt(),
+            "落库的 sys_role_permission.created_at 不能是 NULL");
+
+        // 2) webhook_delivery.created_at（Instant）
+        WebhookDelivery delivery = new WebhookDelivery();
+        delivery.setWebhookId(999003L);
+        delivery.setEvent("video.view");
+        delivery.setPayload("{}");
+        delivery.setDeliveredAt(Instant.now());
+        // 故意不设 createdAt
+
+        deliveryRepository.insert(delivery);
+
+        assertNotNull(delivery.getCreatedAt(),
+            "webhook_delivery.created_at 必须被自动填充 —— 填不上则记录投递时必炸");
+        assertNotNull(deliveryRepository.selectById(delivery.getId()).getCreatedAt(),
+            "落库的 webhook_delivery.created_at 不能是 NULL");
     }
 }
