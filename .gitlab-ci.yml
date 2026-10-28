@@ -175,16 +175,19 @@ backend:test:
     # 此前后端**零测试类**、mvn test 一直空跑，所有启动期问题
     # （Bean 装配 / Flyway 迁移 / model↔schema 不匹配）都是在服务器上
     # 一轮轮试出来的。ApplicationStartupTest 把这些收进 CI。
-    - mvn -B clean test
+    #
+    # 必须 cd backend：pom.xml 在 backend/ 下，仓库根目录没有 ——
+    # 在根目录跑 mvn 会报 "no POM in this directory"。
+    - cd backend && mvn -B clean test
   coverage: '/Total.*?([0-9]{1,3})%/'
   artifacts:
     reports:
-      junit: target/surefire-reports/TEST-*.xml
+      junit: backend/target/surefire-reports/TEST-*.xml
       coverage_report:
         coverage_format: jacoco
-        path: target/site/jacoco/jacoco.xml
+        path: backend/target/site/jacoco/jacoco.xml
     paths:
-      - target/surefire-reports/
+      - backend/target/surefire-reports/
   rules:
     - changes:
         - backend/**/*
