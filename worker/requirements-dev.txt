@@ -7,3 +7,7 @@ pytest==8.3.3
 pytest-asyncio==0.24.0
 pytest-cov==5.0.0
 pytest-mock==3.14.0
+# 静态检查：卡"undefined name"（删了 import 却留着调用 ⇒ 启动即崩）。
+# 2026-10-23 就是这么把 worker 弄崩的，CI 整整 6 天没报警。
+# 见 modify/2026-10-29-fix-worker-startup-crash.md
+pyflakes==3.2.0

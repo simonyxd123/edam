@@ -109,6 +109,14 @@ sudo systemctl enable --now edam-worker
 **为什么 worker 不用 `--reload`**：`--reload` 是开发用的，进程会被子进程接管、
 systemd 认不出主进程，stop/restart 会失灵。生产一律 `python3 -m edam_worker.main`。
 
+> ⚠️ **`--reload` 还有一个更阴的副作用**：uvicorn 的 reloader 在子进程退出后会
+> **自动把它再拉起来**（默认 0.25s 一次）。worker 启动即崩时，它就变成
+> "无限重启循环" —— 日志里反复刷同一段 Traceback，真正的错误被淹没在循环里，
+> 看起来像"服务在跑但没干活"。2026-10-29 那次就是这么被误导的：
+> 真实错误是 `NameError: name 'signal' is not defined`。
+>
+> 排查启动问题时请**去掉 `--reload`** 跑一次，让错误一次性暴露出来。
+
 ---
 
 ## 五、排障：视频还是 404 / 转码不动
@@ -135,6 +143,8 @@ journalctl -u edam-worker -n 200 --no-pager | grep -i "callback\|status\|token"
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `systemctl is-active` = inactive | 进程挂了 | `Restart=always` 应自动拉起；查 `journalctl` 找崩溃原因 |
+| **启动即崩**，日志里有 Traceback | 代码版本旧于 2026-10-29 的启动修复 | `git pull` 后重启；见 `modify/2026-10-29-fix-worker-startup-crash.md` |
+| 日志反复刷同一段 Traceback，进程却"在重启" | 用了 `--reload`，reloader 把崩溃变成无限重启循环 | 去掉 `--reload` 跑一次，让错误一次性暴露 |
 | worker 活着，`queue_depth > 0` 不降 | 不消费 / 回调失败 | `journalctl` 里有无 task 报错；`WORKER_TOKEN` 是否与后端一致 |
 | `queue_depth > 0`，日志里全是连接错误 | RabbitMQ/MinIO 不可达 | 修依赖；**不要**怪 worker |
 | `hls_status` 一直 pending，但队列已空 | 回调被后端拒了 | `WORKER_TOKEN` 与后端 `edam.worker.token` 不一致 |

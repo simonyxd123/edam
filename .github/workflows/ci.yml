@@ -218,6 +218,22 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: 静态检查（未定义名字）
+        run: |
+          cd worker
+          # 只卡"undefined name"这一类致命问题：
+          # 2026-10-23 的"死代码清理"删掉了 main.py 的 import signal/sys
+          # 却留着调用，worker 自此启动即崩、且从 2026-10-23 到 2026-10-29
+          # 一次都没起来过 —— 整整 6 天没有任何 CI 报警。
+          # 未使用的 import 之类风格问题不在此卡（src/ 已经是干净的）。
+          python -m pyflakes src/ tests/ scripts/ > /tmp/pyflakes.txt 2>&1 || true
+          if grep -q "undefined name" /tmp/pyflakes.txt; then
+            cat /tmp/pyflakes.txt
+            echo "::error::发现未定义的名字 —— worker 会在 import 阶段直接崩"
+            exit 1
+          fi
+          echo "未定义名字检查 OK"
+
       - name: 运行测试
         run: |
           cd worker

@@ -14,10 +14,11 @@ from aio_pika import DeliveryMode, Message, connect_robust, ExchangeType
 from aio_pika.abc import AbstractIncomingMessage
 from fastapi import FastAPI
 from minio import Minio
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import start_http_server
 import requests
 
 from .config import settings
+from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
 from .processors.watermark import WatermarkProcessor
@@ -38,23 +39,6 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 log = structlog.get_logger()
-
-# Prometheus 指标
-TASKS_PROCESSED = Counter(
-    "worker_tasks_processed_total",
-    "Total tasks processed (final outcome only, after retries)",
-    ["task_type", "result"],   # result ∈ {success, failed_permanent}
-)
-TASK_ATTEMPTS = Counter(
-    "worker_task_attempts_total",
-    "Total individual task processing attempts (counts retries)",
-    ["task_type", "attempt_result"],   # attempt_result ∈ {success, failed}
-)
-TASK_DURATION = Histogram(
-    "worker_task_duration_seconds",
-    "Task processing duration (single attempt; not summed over retries)",
-    ["task_type"],
-)
 
 class WorkerApp:
     """Worker 应用主类"""
@@ -413,19 +397,36 @@ async def health_worker():
         **checks,
     }
 
-def handle_signal(signum, frame):
-    """处理 SIGTERM / SIGINT 优雅关闭"""
-    log.info("signal_received", signum=signum)
-    asyncio.create_task(worker.stop())
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, handle_signal)
-signal.signal(signal.SIGINT, handle_signal)
+# ----------------------------------------------------------------
+# 关闭信号
+#
+# **这里刻意不注册自己的 SIGTERM / SIGINT handler。**
+#
+# uvicorn 自己会接管这两个信号（capture_signals）：收到 SIGTERM 后
+# 停止接受新连接 → 跑 lifespan 的关闭段 → 我们在 lifespan 里
+# ``await worker.stop()`` 关掉 RabbitMQ 连接 —— 这就是完整的优雅关闭。
+#
+# 自己再注册一遍反而有害：
+#   1. 会**覆盖** uvicorn 的 handler，lifespan 的关闭段没机会执行
+#      ⇒ RabbitMQ 连接不关、正在转码的任务被硬切 ⇒ MinIO 留半成品目录；
+#   2. 在信号处理器里 ``sys.exit(0)`` 会在主线程抛 SystemExit，
+#      直接把事件循环掀掉，连"等当前任务收尾"都不会发生。
+#
+# 历史教训：这个 handler 曾经因为一次"死代码清理"被删掉了 import 却没删调用，
+# worker 一启动就 NameError 崩掉 —— 2026-10-23 ~ 2026-10-29 期间
+# worker 从来没能真正起来过。见 modify/2026-10-29-fix-worker-startup-crash.md
+# ----------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
+    # 传 **app 对象**而不是 "edam_worker.main:app" 字符串：
+    # 字符串形式会让 uvicorn 再 import 一遍 edam_worker.main，
+    # 而 `python -m edam_worker.main` 走 runpy，模块体**已经**以
+    # __main__ 的身份执行过一遍 —— 于是模块体被执行两次。
+    # 指标注册发生在模块导入期（见 metrics.py），两次执行 ⇒
+    # DuplicateTimeseries ⇒ 启动即崩。
     uvicorn.run(
-        "edam_worker.main:app",
+        app,
         host="0.0.0.0",
         port=settings.HTTP_PORT,
         log_level="info",
