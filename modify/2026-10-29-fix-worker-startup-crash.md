@@ -211,19 +211,52 @@ if grep -q "undefined name" /tmp/pyflakes.txt; then ... exit 1; fi
 
 ## 六、遗留 / 待办
 
-1. **服务器上重新拉代码并重启 worker**（必须，否则这次修复不生效）：
-   ```bash
-   cd /var/data/project/edam && git pull
-   cd worker/src
-   nohup python3 -m uvicorn edam_worker.main:app --port 8001 > /var/log/edam/worker.log 2>&1 &
-   curl -s http://127.0.0.1:8001/health/worker | python3 -m json.tool
-   ```
-   > **不要带 `--reload`** —— 它会把崩溃变成无限重启循环，掩盖真实错误。
-   > 长期运行请用上一轮的 systemd：`sudo ./ops/worker/install.sh`
-2. **卡在队列里的那条任务会自动被消费** —— worker 起来后
-   `q.video.preprocess` 里那条消息会被取走，HLS 会生成，视频能播。
-3. **服务器是 Python 3.9，方案书要求 3.10+** —— 当前代码兼容 3.9
-   （已确认无 3.10+ 语法），但不建议长期停在 3.9（3.9 已 EOL，2025-10 起不再有安全更新）。
-   升级需要重装依赖（numpy 1.26.4 / opencv 4.10 在 3.10 上都有 wheel）。
-4. **K8s 侧的 worker 镜像同样崩过**（同一个 Dockerfile CMD）——
-   重新构建镜像 `edam/worker:latest` 后 rollout 即可。
+### 6.1 服务器上重新拉代码并重启 worker（必须，否则这次修复不生效）
+
+```bash
+cd /var/data/project/edam && git pull
+cd worker/src
+nohup python3 -m uvicorn edam_worker.main:app --port 8001 > /var/log/edam/worker.log 2>&1 &
+curl -s http://127.0.0.1:8001/health/worker | python3 -m json.tool
+```
+
+> **不要带 `--reload`** —— 它会把崩溃变成无限重启循环，掩盖真实错误。
+> 长期运行请用上一轮的 systemd：`sudo ./ops/worker/install.sh`
+
+### 6.2 ⚠️ 第二道坎：`WORKER_TOKEN` 必须是**两边一致**，否则视频还是播不了
+
+worker 起来 ⇒ 队列里那条任务被消费 ⇒ 转码完成 ⇒ **回调后端**改 `hls_status`。
+而后端的回调端点是 **fail-closed** 的（`VideoController.isValidWorkerToken`）：
+
+```java
+if (expected == null || expected.isBlank() || provided == null) return false;
+```
+
+后端读 `edam.worker.token`（默认 `${WORKER_TOKEN:}`，**留空则一律拒绝**），
+worker 发 `X-Worker-Token` 头。**任一侧没配 ⇒ 回调 401 ⇒ `hls_status` 永远
+停在 pending ⇒ 用户点播放还是 404**，而且日志里只有一行
+`video_status_update_unauthorized`，不细看会以为"转码没成功"。
+
+⇒ **起 worker 之前先确认后端那边的 `WORKER_TOKEN`**：
+
+```bash
+# 后端进程的环境变量里有没有 WORKER_TOKEN
+pid=$(pgrep -f 'edam.*jar' | head -1); tr '\0' '\n' < /proc/$pid/environ | grep WORKER_TOKEN
+# worker 用的必须和它**完全一致**
+echo $WORKER_TOKEN
+```
+
+K8s 侧已经配好了（`helm/edam/templates/{deployment,worker-deployment}.yaml`
+都从同一个 secret 取 `worker-token`），**裸机侧没人管这个** ——
+上一轮的 `ops/worker/install.sh` 会生成 `/etc/edam/worker.env` 模板，
+但里面的 `WORKER_TOKEN` 是空的，**必须手填**。
+
+### 6.3 其余
+
+- **卡在队列里的那条任务会自动被消费** —— worker 起来后
+  `q.video.preprocess` 里那条消息会被取走，HLS 会生成，视频能播。
+- **服务器是 Python 3.9，方案书要求 3.10+** —— 当前代码兼容 3.9
+  （已确认无 3.10+ 语法），但不建议长期停在 3.9（3.9 已 EOL，2025-10 起不再有安全更新）。
+  升级需要重装依赖（numpy 1.26.4 / opencv 4.10 在 3.10 上都有 wheel）。
+- **K8s 侧的 worker 镜像同样崩过**（同一个 Dockerfile CMD）——
+  重新构建镜像 `edam/worker:latest` 后 rollout 即可。
