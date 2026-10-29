@@ -267,7 +267,8 @@ class VideoProcessor:
         参考方案书 4.2 节
 
         加密（关键）：
-        - 生成 16 字节随机 key，写入 key.info（``URI key.bin`` + hex key）
+        - 生成 16 字节随机 key，写入 key.bin（原始字节）与 key.info
+          （**第一行是 URI 本身 "key.bin"，第二行是 key 的 hex**）
         - FFmpeg 用 ``-hls_key_info_file`` 做 AES-128-CBC 加密，
           每个分片用独立 IV（key.info 不写 IV 时 FFmpeg 自动生成）
         - m3u8 里的 ``URI="key.bin"`` 保持相对路径，
@@ -290,11 +291,12 @@ class VideoProcessor:
         # 上一轮残留的分片被一并上传（MinIO 存储膨胀 + 运维指标失真）
         output_dir = tempfile.mkdtemp(prefix="hls-", dir=work_dir)
         m3u8_path = os.path.join(output_dir, "playlist.m3u8")
-        key_path = os.path.join(output_dir, "key.bin")
 
         # --- 生成 AES-128 key（16 字节）与 key.info ---
+        #     key.bin 也在这一步写好 —— FFmpeg 可能真的去打开它，
+        #     而转码成功之后才写的话，FFmpeg 运行时那个文件不存在。
         key = os.urandom(16)
-        await asyncio.to_thread(self._write_key_info, output_dir, key)
+        await asyncio.to_thread(self._write_key_files, output_dir, key)
 
         # drawtext filter（转义冒号和单引号，FFmpeg filter 语法敏感）
         wm_escaped = watermark_text.replace("'", "\\'").replace(":", "\\:")
@@ -335,10 +337,19 @@ class VideoProcessor:
         ]
 
         # 异步执行 FFmpeg
+        #
+        # cwd=output_dir：key.info 里的 URI 是**相对路径**（"key.bin"），
+        # 而 FFmpeg 解析相对 URI 的基准目录，各版本不一致（有的是 key.info
+        # 所在目录，有的是进程 CWD）。把 CWD 设成 output_dir，
+        # 两种解释都指向同一个文件 ⇒ 不再受版本差异影响。
+        #
+        # m3u8 里因此写的是 URI="key.bin"（相对路径）——
+        # 后端 PlaybackController 靠这个相对路径改写成带 token 的绝对地址。
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=output_dir,
         )
         stdout, stderr = await proc.communicate()
 
@@ -376,23 +387,50 @@ class VideoProcessor:
         # 校验：加密确实生效了（m3u8 必须有 EXT-X-KEY 行）
         await self._assert_encrypted(m3u8_path)
 
-        # key.bin 留在 output_dir 里，随 _upload_hls 一起上传到
-        # videos/{id}/hls/key.bin；后端另有一份独立副本在
-        # videos/{id}/key.bin（不在 hls/ 目录下，避免被 segment 代理暴露）
-        with open(key_path, "wb") as f:
-            f.write(key)
+        # key.bin 已经在转码**之前**写好（_write_key_files），留在 output_dir 里
+        # 随 _upload_hls 一起上传到 videos/{id}/hls/key.bin；
+        # 后端另有一份独立副本在 videos/{id}/key.bin
+        # （不在 hls/ 目录下，避免被 segment 代理暴露）
 
         log.info("hls_transcode_complete", video_id=video_id, output_dir=output_dir)
         return output_dir, key
 
-    def _write_key_info(self, output_dir: str, key: bytes) -> None:
-        """写 FFmpeg 的 key.info：URI 指向同目录的 key.bin，key 为 hex。
+    def _write_key_files(self, output_dir: str, key: bytes) -> None:
+        """写 key.bin 与 key.info —— **必须在 FFmpeg 启动之前**写好。
 
-        不写 IV —— 让 FFmpeg 为每个分片生成独立 IV（HLS AES-128 规范做法）。
+        **key.info 的格式是 FFmpeg 规定的**（见 ffmpeg-formats 的
+        ``hls_key_info_file``）：
+
+            第一行：key 文件的 URI（**就是 URI 本身**）
+            第二行：key 本身（32 位十六进制）
+            可选第三行：IV（本项目不写，让 FFmpeg 为每个分片生成独立 IV）
+
+        ⚠️ **这里曾经写错成 ``"URI key.bin\\n"``** —— 那是把文档里的
+        "first line is a URI to the key file" 这句**说明文字**当成了
+        文件内容的一部分。FFmpeg 于是没把第一行当成 URI，
+        转而拿**第二行（key 的十六进制）当文件名**去打开：
+
+            [hls] Opening '.../key.info' for reading
+            [hls] Opening '42ccf808b90e06e674095a71f25f1106' for reading
+            [hls muxer] error opening key file 42ccf808b90e06e674095a71f25f1106
+            Could not write header for output file #0 ... No such file or directory
+
+        ⇒ **每一行视频都转码失败**（2026-10-29 线上发现，
+        错误信息被吞在日志里，只剩一句"FFmpeg HLS 转码失败: 3"）。
+
+        另外，**key.bin 也要提前写**：文档说第一行是"URI to the **key file**"，
+        FFmpeg 可能真的去打开它 —— 而原实现是转码**成功之后**才写 key.bin，
+        FFmpeg 运行时那个文件压根不存在。
         """
+        # key.bin（原始 16 字节）—— 提前写，FFmpeg 要用的时候它就在
+        key_path = os.path.join(output_dir, "key.bin")
+        with open(key_path, "wb") as f:
+            f.write(key)
+
+        # key.info —— 第一行只放 URI 本身，**不要**加 "URI " 前缀
         key_info_path = os.path.join(output_dir, "key.info")
         with open(key_info_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("URI key.bin\n")
+            f.write("key.bin\n")
             f.write(key.hex() + "\n")
 
     async def _assert_encrypted(self, m3u8_path: str) -> None:
