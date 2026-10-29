@@ -107,8 +107,8 @@ public class PlaybackController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
+        String objectName = String.format("videos/%d/hls/playlist.m3u8", videoId);
         try {
-            String objectName = String.format("videos/%d/hls/playlist.m3u8", videoId);
             byte[] content;
             // try-with-resources：原来 readAllBytes() 抛异常时 close() 永不执行，
             // MinIO 的 HTTP 连接直接泄漏，并发播放出错时会耗尽连接池
@@ -141,9 +141,37 @@ public class PlaybackController {
                 .header("Cache-Control", "no-store, max-age=0")
                 .body(rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         } catch (Exception e) {
-            log.error("m3u8_serve_failed, video_id={}", videoId, e);
+            // 区分两种 404：
+            //   - MinIO 里真的没这个对象（转码没跑 / 产物被删）
+            //   - MinIO 本身连不上（网络/凭据问题）
+            // 原来一律 404，把"对象存储挂了"也报成"文件不存在"，
+            // 运维查 MinIO 时会被带偏。
+            if (isMinioUnreachable(e)) {
+                log.error("m3u8_serve_failed_minio_unreachable, video_id={}", videoId, e);
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+            }
+            log.error("m3u8_serve_failed, video_id={}, object={}", videoId, objectName, e);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
+    }
+
+    /**
+     * 判断异常是不是"MinIO 本身不可达"（而不是"对象不存在"）。
+     *
+     * <p>MinIO 对"对象不存在"抛 {@code ErrorResponseException}，
+     * code = {@code NoSuchKey}；对"连不上 / 5xx / 鉴权失败"抛别的异常
+     * （{@code ServerException} / {@code InsufficientDataException} /
+     * {@code IOException} 之类）。
+     */
+    private boolean isMinioUnreachable(Exception e) {
+        if (e instanceof io.minio.errors.ErrorResponseException) {
+            String code = ((io.minio.errors.ErrorResponseException) e).errorResponse().code();
+            // NoSuchKey / NoSuchBucket 之外的 S3 错误码更可能是服务端问题
+            return code == null || !("NoSuchKey".equals(code) || "NoSuchBucket".equals(code));
+        }
+        // 连接类异常（UnknownHost / ConnectException / SocketTimeout …）
+        return e instanceof java.io.IOException
+            || e.getCause() instanceof java.io.IOException;
     }
 
     /**

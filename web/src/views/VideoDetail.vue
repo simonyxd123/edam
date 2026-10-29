@@ -31,6 +31,7 @@ onMounted(() => {
 // 路由参数变化 → 重新加载（vue-router 复用组件实例时 onMounted 不会重跑）
 watch(videoId, () => {
   // 先销毁旧实例，否则两个 hls 实例抢同一个 <video> → MediaSource 冲突
+  stopHlsPolling();
   destroyHls();
   errorMsg.value = '';
   loading.value = true;
@@ -42,6 +43,23 @@ async function loadVideo() {
     // 走项目 api 客户端（自动注入 JWT）
     const meta = await api.get<any>(`/videos/${videoId.value}`);
     video.value = meta;
+
+    // 转码没完成时**不要去拉 m3u8** ——
+    // 拉了必然 404（MinIO 里还没这个对象），Hls.js 把它当成
+    // "网络异常" 报出来，用户看到的是"网络异常，正在重试（1/3）… (HTTP 404)"，
+    // 完全看不出真正原因是"视频还在转码 / 转码失败了"。
+    const hlsStatus = meta?.hls_status;
+    if (hlsStatus === 'pending' || hlsStatus === 'processing') {
+      errorMsg.value = '视频正在转码处理中，完成后本页面会自动开始播放';
+      loading.value = false;
+      startHlsPolling();
+      return;
+    }
+    if (hlsStatus === 'failed') {
+      errorMsg.value = '视频转码失败，无法播放。请删除后重新上传，或联系管理员处理';
+      loading.value = false;
+      return;
+    }
 
     const tk = await api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
       `/playback/${videoId.value}/token`,
@@ -134,8 +152,10 @@ async function loadVideo() {
           errorMsg.value =
             `视频源不可达 (HTTP ${status ?? '??'})：` +
             (status === 404
-              ? '视频文件在对象存储中不存在，请联系管理员重新处理'
-              : '请检查网络或稍后重试');
+              ? '视频尚未转码完成，或播放产物在对象存储中不存在。请稍后重试或联系管理员处理'
+              : status === 503
+                ? '对象存储暂时不可用，请稍后重试或联系管理员'
+                : '请检查网络或稍后重试');
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           if (!recoveryAttempted) {
             recoveryAttempted = true;
@@ -192,8 +212,61 @@ function destroyHls() {
   hls.value = null;
 }
 
+/**
+ * 转码未完成时的轮询：等 hls_status 变成 ready 再自动开始播放。
+ *
+ * <p>为什么要有：视频刚上传时转码要跑一会儿（FFmpeg 切片 + AES 加密 + 指纹）。
+ * 原来详情页直接去拉 m3u8 —— 必然 404，报成"网络异常 (HTTP 404)"，
+ * 用户完全不知道是"还在转码"。这里改成先看状态、再决定要不要拉。
+ */
+const HLS_POLL_INTERVAL_MS = 3000;
+const HLS_POLL_MAX_SECONDS = 600;
+let hlsPollTimer: number | null = null;
+let hlsPollStartedAt = 0;
+
+function startHlsPolling() {
+  stopHlsPolling();
+  hlsPollStartedAt = Date.now();
+  const tick = async () => {
+    if (Date.now() - hlsPollStartedAt > HLS_POLL_MAX_SECONDS * 1000) {
+      stopHlsPolling();
+      errorMsg.value = '视频转码超时（已等待 10 分钟），请稍后刷新页面或联系管理员';
+      return;
+    }
+    try {
+      const meta = await api.get<any>(`/videos/${videoId.value}`);
+      video.value = meta;
+      const status = meta?.hls_status;
+      if (status === 'ready') {
+        stopHlsPolling();
+        errorMsg.value = '';
+        loading.value = true;
+        await loadVideo();
+        return;
+      }
+      if (status === 'failed') {
+        stopHlsPolling();
+        errorMsg.value = '视频转码失败，无法播放。请删除后重新上传，或联系管理员处理';
+        return;
+      }
+    } catch {
+      /* 轮询失败静默重试 —— 真正的错误在页面加载时已经报过了 */
+    }
+    hlsPollTimer = window.setTimeout(tick, HLS_POLL_INTERVAL_MS);
+  };
+  hlsPollTimer = window.setTimeout(tick, HLS_POLL_INTERVAL_MS);
+}
+
+function stopHlsPolling() {
+  if (hlsPollTimer !== null) {
+    clearTimeout(hlsPollTimer);
+    hlsPollTimer = null;
+  }
+}
+
 onBeforeUnmount(() => {
   // destroy + 置空，避免异步回调（如 token刷新、错误事件）触达已销毁实例
+  stopHlsPolling();
   destroyHls();
   if (videoEl.value) {
     try {

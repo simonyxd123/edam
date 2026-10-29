@@ -1850,6 +1850,16 @@ paths:
               schema: { type: string }
         '401':
           description: token 无效
+        '404':
+          description: |
+            播放产物在对象存储中不存在 —— 通常是视频还没转码完成
+            （hls_status 仍是 pending/processing），或产物已被删除。
+        '503':
+          description: |
+            对象存储（MinIO）暂时不可达。**与 404 区分开**：
+            404 是"产物不存在"，503 是"存储服务挂了" ——
+            前者提示稍后重试/联系管理员处理，后者提示稍后重试。
+            运维看日志时也能据此判断该查转码流程还是查 MinIO 连通性。
 
   /playback/{video_id}/segment/{filename}:
     get:
