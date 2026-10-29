@@ -18,6 +18,7 @@ from minio import Minio
 from PIL import Image
 
 from ..config import settings
+from ..errors import PermanentWorkerError
 
 import requests
 
@@ -56,6 +57,7 @@ class VideoProcessor:
         local_path: Optional[str] = None
         work_dir: Optional[str] = None
 
+        failed = False
         try:
             # 1. 下载视频到工作目录
             work_dir = tempfile.mkdtemp(prefix=f"edam-video-{video_id}-")
@@ -91,6 +93,7 @@ class VideoProcessor:
             log.info("video_processing_complete", video_id=video_id, duration_sec=duration_sec)
 
         except Exception as e:
+            failed = True
             log.error("video_processing_failed", video_id=video_id, error=str(e))
             # 必须 raise —— 外层 _process_with_retry 靠异常触发重试。
             # 吞掉的话任何瞬时故障（MinIO 抖动 / FFmpeg 偶发失败）都会
@@ -101,14 +104,28 @@ class VideoProcessor:
         finally:
             # 7. 不管成功失败都回调后端更新 video_resource.hls_status / fingerprint_status / duration_sec
             #    前端轮询 /videos/{id} 看到 ready/failed 后弹提示
-            await self._notify_backend_status(
-                video_id,
-                hls_status=hls_status, hls_path=hls_path,
-                fingerprint_status=fp_status, fingerprint_path=fingerprint_path,
-                duration_sec=duration_sec,
-            )
-            # 清理临时文件（HLS 分片 + 指纹 JSON 都在 work_dir 里）
-            self._cleanup_temp(work_dir)
+            try:
+                await self._notify_backend_status(
+                    video_id,
+                    hls_status=hls_status, hls_path=hls_path,
+                    fingerprint_status=fp_status, fingerprint_path=fingerprint_path,
+                    duration_sec=duration_sec,
+                )
+            except Exception as cb_err:
+                if failed:
+                    # 转码本身已经失败了 —— 回调失败**不能顶替**原始异常，
+                    # 否则排障时看到的是回调错误，真正的转码错误被吞了
+                    log.error("notify_backend_failed_after_processing_error",
+                              video_id=video_id, error_type=type(cb_err).__name__,
+                              error=str(cb_err)[:300])
+                else:
+                    # 转码成功、只是回调失败 —— 这**同样是失败**：
+                    # 后端不知道结果 ⇒ hls_status 永远停在 pending
+                    # ⇒ 用户点播放还是 404。必须冒泡出去让任务被记成失败。
+                    raise
+            finally:
+                # 临时文件一定要清（回调抛异常也不能跳过，否则 /tmp 会被撑爆）
+                self._cleanup_temp(work_dir)
 
     async def _probe_duration(self, input_path: str) -> Optional[int]:
         """
@@ -147,7 +164,21 @@ class VideoProcessor:
                                        hls_status: Optional[int] = None, hls_path: Optional[str] = None,
                                        fingerprint_status: Optional[int] = None, fingerprint_path: Optional[str] = None,
                                        duration_sec: Optional[int] = None) -> None:
-        """回调后端 PATCH /videos/{video_id}/status"""
+        """回调后端 PATCH /videos/{video_id}/status
+
+        **失败必须 raise。** 回调失败 = 后端不知道这次转码的结果
+        ⇒ video_resource.hls_status 永远停在 pending
+        ⇒ 用户点播放还是 404（2026-10-28 那次故障的形态）。
+
+        以前这里只 log 不抛，任务照样被记成"成功"、消息照样被 ACK，
+        Prometheus 显示 100% 成功率 —— 而后端什么都没收到。**静默失败**。
+
+        失败分两类，处理方式不同：
+        - **配置问题**（401/403）：重试多少次都没用 → PermanentWorkerError，
+          不重试整个任务（省下 3 倍转码开销），但必须记成失败并喊出来；
+        - **瞬时故障**（连不上 / 5xx）：先在回调层便宜地重试几次，
+          仍不行才把整个任务交给外层重试。
+        """
         url = f"{settings.BACKEND_BASE_URL}/api/v1/videos/{video_id}/status"
         payload: Dict[str, Any] = {}
         if hls_status is not None:
@@ -161,22 +192,59 @@ class VideoProcessor:
         if duration_sec is not None:
             payload["duration_sec"] = duration_sec
 
-        try:
-            # 带 X-Worker-Token —— 后端 PATCH /videos/{id}/status 已改为要求该头
-            # （原先 permitAll，谁都能把没转码的视频标成 ready）
-            headers = {}
-            if settings.WORKER_TOKEN:
-                headers["X-Worker-Token"] = settings.WORKER_TOKEN
-            resp = await asyncio.to_thread(
-                requests.patch, url, json=payload, headers=headers, timeout=10
+        # 带 X-Worker-Token —— 后端 PATCH /videos/{id}/status 已改为要求该头
+        # （原先 permitAll，谁都能把没转码的视频标成 ready）
+        headers = {}
+        if settings.WORKER_TOKEN:
+            headers["X-Worker-Token"] = settings.WORKER_TOKEN
+        else:
+            log.warning(
+                "worker_token_not_configured",
+                video_id=video_id,
+                hint=("后端要求 X-Worker-Token（fail-closed）。不配的话回调一律 401，"
+                      "转码完成了 hls_status 也不会变 —— 用户点播放还是 404"),
             )
-            if resp.status_code >= 400:
-                log.error("notify_backend_failed", video_id=video_id,
-                          status=resp.status_code, body=resp.text[:300])
+
+        max_attempts = max(1, settings.WORKER_CALLBACK_MAX_ATTEMPTS)
+        backoff = max(0.0, settings.WORKER_CALLBACK_RETRY_BACKOFF_SEC)
+        last_error = "unknown"
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await asyncio.to_thread(
+                    requests.patch, url, json=payload, headers=headers, timeout=10
+                )
+            except Exception as e:
+                # 网络层失败（后端没起来 / 连接被重置）—— 瞬时，值得重试
+                last_error = f"{type(e).__name__}: {e}"
+                log.warning("notify_backend_exception", video_id=video_id,
+                            attempt=attempt, max_attempts=max_attempts, error=last_error)
             else:
-                log.info("notify_backend_ok", video_id=video_id, status=resp.status_code)
-        except Exception as e:
-            log.error("notify_backend_exception", video_id=video_id, error=str(e))
+                if resp.status_code < 400:
+                    log.info("notify_backend_ok", video_id=video_id, status=resp.status_code)
+                    return
+                if resp.status_code in (401, 403):
+                    # 配置问题 —— 重试没有意义，直接永久失败并说清楚原因
+                    raise PermanentWorkerError(
+                        f"后端拒绝了回调（HTTP {resp.status_code}）：worker 的 WORKER_TOKEN "
+                        f"与后端的 edam.worker.token 不一致，或有一边没配。"
+                        f"（后端日志会写明具体是哪种）")
+                if resp.status_code < 500:
+                    # 其它 4xx：请求本身有问题（路径错了 / body 不合法），重试也没用
+                    raise PermanentWorkerError(
+                        f"后端拒绝了回调（HTTP {resp.status_code}）：{resp.text[:200]}")
+                # 5xx：服务端瞬时故障，值得重试
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                log.warning("notify_backend_failed", video_id=video_id,
+                            attempt=attempt, max_attempts=max_attempts,
+                            status=resp.status_code, body=resp.text[:300])
+
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff * (2 ** (attempt - 1)))
+
+        # 瞬时故障重试到头 —— 抛普通异常，交给外层把整个任务重跑一遍
+        # （转码虽然贵，但"后端没收到状态"更贵）
+        raise RuntimeError(f"回调后端失败（已重试 {max_attempts} 次）：{last_error}")
 
     async def _download_from_minio(self, bucket: str, object_name: str, work_dir: str) -> str:
         """从 MinIO 下载到工作目录"""

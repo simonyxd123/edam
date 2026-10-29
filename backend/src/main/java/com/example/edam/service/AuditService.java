@@ -46,6 +46,20 @@ public class AuditService {
     private final OperationLogRepository operationLogRepository;
     private final SysUserRepository sysUserRepository;
 
+    /**
+     * detail 的最大字符数。
+     *
+     * <p>{@code operation_log.detail} 现在是 TEXT（V20261029_1000 之前是 JSON，
+     * 而代码写的是人读字符串 ⇒ 每次写入都被 MySQL 拒绝 ⇒ 审计记录静默全丢）。
+     * 类型对了，但"内容太长被截断"仍会让整条审计记录写不进去 ——
+     * 审计丢失比截断严重得多，所以这里**主动截断**而不是让 DB 报错。
+     *
+     * <p>TEXT 上限 65535 字节，utf8mb4 最坏 4 字节/字符 ⇒ 约 16383 字符。
+     * 取 2000 字符：审计详情本来就只是"补充说明"，2K 足够，
+     * 也远低于上限，不会因为多字节字符踩线。
+     */
+    private static final int MAX_DETAIL_LENGTH = 2000;
+
     // ============== 写入 ==============
 
     @Async
@@ -75,7 +89,7 @@ public class AuditService {
             entry.setResourceType(resourceType != null ? resourceType : "system");
             entry.setResourceId(resourceId);
             entry.setResult(parseResult(result));
-            entry.setDetail(detail);
+            entry.setDetail(truncateDetail(detail));
             entry.setIp(ip);
             entry.setUserAgent(userAgent);
             entry.setTimestamp(java.time.OffsetDateTime.now());
@@ -84,6 +98,17 @@ public class AuditService {
             AUDIT_WRITE_FAILURES.increment();
             log.error("audit_log_write_failed, user_id={}, op={}", userId, operationType, e);
         }
+    }
+
+    /** 截断超长 detail —— 宁可少写几个字，也不能让整条审计记录写不进去。 */
+    private String truncateDetail(String detail) {
+        if (detail == null) {
+            return null;
+        }
+        if (detail.length() <= MAX_DETAIL_LENGTH) {
+            return detail;
+        }
+        return detail.substring(0, MAX_DETAIL_LENGTH) + "…[truncated]";
     }
 
     private Integer parseResult(String result) {

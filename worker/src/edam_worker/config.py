@@ -89,5 +89,14 @@ class Settings:
     WORKER_RETRY_BASE_BACKOFF_SEC: float = field(
         default_factory=lambda: _env("WORKER_RETRY_BASE_BACKOFF_SEC", 1.0))
 
+    # 回调后端的重试（跟任务重试是两回事）：
+    # 任务重试 = 整个流水线重跑（下载 + 转码，很贵）；
+    # 回调重试 = 只重发那个 PATCH（很便宜）。
+    # 瞬时故障（后端重启 / 网络闪断）先用便宜的回调重试顶一下。
+    WORKER_CALLBACK_MAX_ATTEMPTS: int = field(
+        default_factory=lambda: _env("WORKER_CALLBACK_MAX_ATTEMPTS", 3))
+    WORKER_CALLBACK_RETRY_BACKOFF_SEC: float = field(
+        default_factory=lambda: _env("WORKER_CALLBACK_RETRY_BACKOFF_SEC", 2.0))
+
 
 settings = Settings()

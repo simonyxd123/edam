@@ -102,6 +102,17 @@ public class HealthController {
     @Value("${spring.application.version:3.1.0}")
     private String version;
 
+    /**
+     * Worker 回调令牌；为空则 worker 的回调一律被拒（fail-closed）。
+     *
+     * <p>裸机部署时这块最容易漏：K8s 侧两边都从同一个 secret 取
+     * {@code worker-token}，而裸机侧没人管 —— 漏配的表现是
+     * "转码早就完成了，产物也在 MinIO 上，但 hls_status 永远 pending，
+     * 用户点播放还是 404"，而日志里只有一行 unauthorized。
+     */
+    @Value("${edam.worker.token:}")
+    private String workerToken;
+
     private final StringRedisTemplate redisTemplate;
     private final ConnectionFactory rabbitConnectionFactory;
     private final RabbitAdmin rabbitAdmin;
@@ -158,6 +169,26 @@ public class HealthController {
         if (bootstrapError != null) {
             result.put("admin_bootstrap_error", bootstrapError);
         }
+
+        // Worker 回调通道的配置状态。
+        //
+        // 为什么放在 ready 里：运维脚本、巡检和人都已经在看这个端点了，
+        // 而"回调通道没通"这件事**不会**让后端自己变红 —— 它只在
+        // worker 那边表现为"转码完成了但状态没更新"，最后变成用户
+        // 点播放还是 404。把信号放在已经在看的端点上，才有人能提前发现。
+        //
+        // 刻意**不影响** HTTP 状态码：后端本身完全能服务，
+        // 只是 worker 的回调进不来 —— 让整个后端 503 反而是过度反应。
+        Map<String, Object> workerCallback = new LinkedHashMap<>();
+        boolean tokenConfigured = workerToken != null && !workerToken.isBlank();
+        workerCallback.put("token_configured", tokenConfigured);
+        workerCallback.put("status", tokenConfigured ? "ok" : "misconfigured");
+        if (!tokenConfigured) {
+            workerCallback.put("hint",
+                "edam.worker.token 未配置 —— worker 的回调一律被拒（401），"
+                + "转码完成后 hls_status 不会更新，用户点播放仍会 404");
+        }
+        result.put("worker_callback", workerCallback);
 
         return mysqlDown
                 ? ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(result)

@@ -18,6 +18,7 @@ from prometheus_client import start_http_server
 import requests
 
 from .config import settings
+from .errors import PermanentWorkerError
 from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
@@ -118,6 +119,24 @@ class WorkerApp:
                 # 绝不能当成"任务失败"去重试，否则关闭流程被反复拖延，
                 # 且会在 MinIO 上留下半成品目录。直接向上抛。
                 raise
+            except PermanentWorkerError as e:
+                # 重试也不会变好（配置/鉴权问题，最典型的是回调被 401 拒了）。
+                # 不重试整个任务 —— 重转码 3 遍结果完全一样，只是白白烧 CPU。
+                # 但**必须**记成失败：回调失败意味着后端不知道这次转码的结果，
+                # hls_status 会永远停在 pending，用户点播放还是 404。
+                # 记成 success 的话 Prometheus 会显示 100% 成功率，
+                # 而实际上后端什么都没收到 —— 这就是"静默失败"。
+                self._record_task(task_type, success=False, video_id=video_id, error=e)
+                TASKS_PROCESSED.labels(
+                    task_type=task_type, result="failed_permanent"
+                ).inc()
+                log.error(
+                    f"{task_type}_task_failed_permanent",
+                    video_id=video_id,
+                    error_type=type(e).__name__,
+                    error=str(e)[:500],
+                )
+                raise
             except Exception as e:
                 last_error = e
                 TASK_ATTEMPTS.labels(task_type=task_type, attempt_result="failed").inc()
@@ -159,6 +178,17 @@ class WorkerApp:
     async def start(self) -> None:
         """启动 Worker"""
         log.info("worker_starting", rabbitmq_host=settings.RABBITMQ_HOST)
+
+        # 启动就说清楚 token 配没配 —— 不然这个坑要等到"视频播不出来"
+        # 的时候才被发现（2026-10-29 就是这样：回调被 401 拒了 3 次，
+        # 而日志里只有一行 unauthorized，谁也不知道该改哪一边）。
+        if not settings.WORKER_TOKEN:
+            log.warning(
+                "worker_token_not_configured",
+                hint=("后端 PATCH /videos/{id}/status 要求 X-Worker-Token（fail-closed）。"
+                      "不配的话回调一律 401 —— 转码完成了 hls_status 也不会变，"
+                      "用户点播放还是 404。必须与后端的 edam.worker.token 完全一致"),
+            )
 
         # 启动 Prometheus metrics server
         if settings.ENABLE_METRICS:

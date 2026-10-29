@@ -2114,6 +2114,28 @@ components:
         admin_bootstrap_error:
           type: string
           description: 自举失败的原始原因（仅 admin_bootstrap=failed 时出现）
+        worker_callback:
+          type: object
+          description: |
+            Worker 回调通道的配置状态。
+
+            **刻意不影响 HTTP 状态码**：后端本身完全能服务，只是 worker 的
+            回调进不来 —— 让整个后端 503 反而是过度反应。
+
+            没有它的话，"回调通道没通"这件事**不会**让后端变红，只在 worker
+            那边表现为"转码完成了但状态没更新"，最后变成用户点播放还是 404。
+            裸机部署最容易漏配这个（K8s 侧两边都从同一个 secret 取
+            worker-token，裸机侧没人管）。
+          properties:
+            token_configured:
+              type: boolean
+              description: 后端是否配了 edam.worker.token（空 = 一律拒绝回调）
+            status:
+              type: string
+              enum: [ok, misconfigured]
+            hint:
+              type: string
+              description: 仅 status=misconfigured 时出现，说明该怎么改
 
     ComponentsHealth:
       type: object

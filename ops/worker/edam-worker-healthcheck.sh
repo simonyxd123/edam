@@ -67,6 +67,35 @@ if [ -z "$depth_json" ]; then
     exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# 2.5 后端的 worker 回调通道通不通？
+#
+#     后端没配 edam.worker.token（空 = fail-closed = 回调一律 401）时，
+#     表现极其迷惑：转码早就完成了、产物也在 MinIO 上，但 hls_status 永远
+#     停在 pending ⇒ 用户点播放还是 404，而后端自己完全健康。
+#
+#     **只告警，不重启 worker** —— 重启解决不了配置问题，
+#     而且按本脚本的原则（不把依赖/配置故障算到 worker 头上），
+#     不该用重启来"处理"它。
+# ---------------------------------------------------------------------------
+token_state="$(printf '%s' "$depth_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    cb = data.get("worker_callback") or {}
+    print("%s|%s" % (cb.get("status", "unknown"), cb.get("token_configured", "unknown")))
+except Exception:
+    print("unknown|unknown")
+' 2>/dev/null || echo 'unknown|unknown')"
+
+case "$token_state" in
+    misconfigured*)
+        log "⚠️ 后端没配 edam.worker.token —— worker 的回调会被拒（401），"
+        log "   转码完成后 hls_status 也不会更新（用户点播放仍会 404）。"
+        log "   修法：后端进程加 WORKER_TOKEN=<值>，worker 的 WORKER_TOKEN 与之完全一致。"
+        ;;
+esac
+
 depth="$(printf '%s' "$depth_json" | python3 -c '
 import json, sys
 try:

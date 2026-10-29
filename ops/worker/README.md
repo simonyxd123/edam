@@ -82,6 +82,8 @@ sudo systemctl restart edam-worker
 | `ENABLE_METRICS` | true | 关掉就没有指标，告警随之失效 |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `/usr/bin/ffmpeg` | 装到别处必须改 |
 | `OPS_ENABLED` | false | 运维接口（按 video_id 重触发 HLS），默认关 |
+| `WORKER_MAX_ATTEMPTS` | 3 | 整个流水线重试次数（下载+转码+回调，很贵） |
+| `WORKER_CALLBACK_MAX_ATTEMPTS` | 3 | 回调后端失败时的重试次数（只重发 PATCH，很便宜）；401/403 不重试 |
 
 ---
 
@@ -148,7 +150,11 @@ journalctl -u edam-worker -n 200 --no-pager | grep -i "callback\|status\|token"
 | worker 活着，`queue_depth > 0` 不降 | 不消费 / 回调失败 | `journalctl` 里有无 task 报错；`WORKER_TOKEN` 是否与后端一致 |
 | `queue_depth > 0`，日志里全是连接错误 | RabbitMQ/MinIO 不可达 | 修依赖；**不要**怪 worker |
 | `hls_status` 一直 pending，但队列已空 | 回调被后端拒了 | `WORKER_TOKEN` 与后端 `edam.worker.token` 不一致 |
+| 后端日志 `video_status_update_unauthorized ... reason=token_mismatch` | 两边 token 值不同 | 两边改成同一个值 |
+| 后端日志 `... reason=backend_token_not_configured` | 后端没配 | 给后端进程加 `WORKER_TOKEN=<值>` 并重启后端 |
+| 后端日志 `... reason=worker_token_header_missing` | worker 没配 | 给 worker 配 `WORKER_TOKEN` 并重启 worker |
 | MinIO 有对象但播放仍 404 | 产物不在 `videos/{id}/hls/playlist.m3u8` | 核对对象路径；见 `modify/2026-10-28-...md` |
+| 审计页面查不到登录/预览记录 | `operation_log.detail` 列类型不对，写入全被 MySQL 拒 | 见 `modify/2026-10-29-fix-audit-log-json-and-worker-callback.md` |
 
 ---
 

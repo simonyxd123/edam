@@ -132,6 +132,46 @@ class HealthControllerTest {
         assertEquals("degraded", resp.getBody().get("status"));
     }
 
+    /**
+     * Worker 回调通道的配置状态必须出现在 /health/ready 里。
+     *
+     * <p>裸机部署最容易漏的就是这块：K8s 侧两边都从同一个 secret 取
+     * {@code worker-token}，裸机侧没人管。漏配的表现极具迷惑性 ——
+     * "转码早就完成了，产物也在 MinIO 上"，但 {@code hls_status} 永远 pending，
+     * 用户点播放还是 404，而后端自己完全健康（不会变红）。
+     *
+     * <p>把信号放在运维本来就在看的端点上，才有人能提前发现。
+     */
+    @Test
+    @DisplayName("/health/ready 报告 worker 回调通道未配置（token 缺失）")
+    void readyReportsMissingWorkerToken() {
+        setField(controller, "workerToken", "");
+
+        ResponseEntity<Map<String, Object>> resp = controller.readiness();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> workerCallback = (Map<String, Object>) resp.getBody().get("worker_callback");
+        assertNotNull(workerCallback, "ready 必须带上 worker_callback 段");
+        assertEquals(Boolean.FALSE, workerCallback.get("token_configured"));
+        assertEquals("misconfigured", workerCallback.get("status"));
+        // 没配 token 时不应影响后端整体状态 —— 后端本身完全能服务
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+    }
+
+    @Test
+    @DisplayName("/health/ready 报告 worker 回调通道正常（token 已配）")
+    void readyReportsWorkerTokenConfigured() {
+        setField(controller, "workerToken", "s3cr3t");
+
+        ResponseEntity<Map<String, Object>> resp = controller.readiness();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> workerCallback = (Map<String, Object>) resp.getBody().get("worker_callback");
+        assertNotNull(workerCallback);
+        assertEquals(Boolean.TRUE, workerCallback.get("token_configured"));
+        assertEquals("ok", workerCallback.get("status"));
+    }
+
     @Test
     @DisplayName("/health/live 不碰任何外部依赖 —— 数据库抖一下不能导致全量重启")
     void liveNeverTouchesDependencies() {

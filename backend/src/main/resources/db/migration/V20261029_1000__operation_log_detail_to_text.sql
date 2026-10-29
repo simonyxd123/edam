@@ -1,0 +1,35 @@
+-- ===================================================================
+-- V20261029_1000：operation_log.detail 从 JSON 改成 TEXT
+-- ===================================================================
+-- 背景：**审计日志几乎全部写不进去**。服务器日志里一片
+--   ERROR c.example.edam.service.AuditService - audit_log_write_failed
+--   Caused by: MysqlDataTruncation: Data truncation: Invalid JSON text:
+--              "Invalid value." at position 0 in value for column
+--              'operation_log.detail'
+--
+-- 根因：建表时 detail 定义成了 JSON，但代码写进去的是**人读字符串**：
+--   "employee_no=E000101"
+--   "employee_no=E000101, reason=密码错误"
+--   "ip=127.0.0.1, mime=application/pdf, watermark=on"
+--   "refresh_token cleared"
+-- 这些都不是合法 JSON ⇒ MySQL 直接拒绝 ⇒ 凡是带 detail 的审计记录
+-- 全部丢失（登录、预览、下载……）。而合规系统里"审计记录静默丢失"
+-- 比"写入报错"严重得多 —— 报错只在服务端日志里，没人会去看。
+--
+-- 佐证：AuditHelper 的 javadoc 写的就是「detail 详细信息（**人读字符串**）」，
+-- 前端 Audit.vue 也是按纯文本展示的（detail?: string，直接塞进表格列）。
+-- 也就是说 **JSON 这个类型从一开始就跟实际用法对不上**。
+--
+-- 为什么改成 TEXT，而不是"把代码改成写 JSON"：
+--   1. 调用点遍布各 Controller，写进去的都是自由文本。强行 JSON 化要么
+--      逐个改成结构体（改动面巨大且会改变调用方语义），要么统一包一层
+--      {"raw": "..."}（存进去的东西不再是人读的，前端还得跟着改）
+--   2. 审计日志的价值恰恰在于"人能看懂当时发生了什么"，JSON 化只增噪音
+--   3. 方案书对 operation_log 只列了表名与 ER 关系，没有规定 detail 类型
+--
+-- 兼容性：已有行存的是合法 JSON 文本，改类型后原样保留（仍是那串 JSON），
+-- 不需要回填 —— 历史行本来也只是人读的补充信息。
+-- ===================================================================
+
+ALTER TABLE operation_log
+    MODIFY COLUMN detail TEXT NULL COMMENT '操作详情（人读字符串，非 JSON）';

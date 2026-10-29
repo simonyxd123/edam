@@ -108,7 +108,8 @@ public class VideoController {
             @RequestHeader(value = "X-Worker-Token", required = false) String providedWorkerToken
     ) {
         if (!isValidWorkerToken(providedWorkerToken)) {
-            log.warn("video_status_update_unauthorized, video_id={}", videoId);
+            log.warn("video_status_update_unauthorized, video_id={}, reason={}",
+                videoId, tokenRejectReason(providedWorkerToken));
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         log.info("video_status_update_callback, video_id={}, body={}", videoId, request);
@@ -197,6 +198,38 @@ public class VideoController {
         return java.security.MessageDigest.isEqual(
             expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
             provided.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 说清楚"为什么拒"，而不是只丢一句 unauthorized。
+     *
+     * <p>2026-10-29 这次就是被这一行坑的：worker 回调被拒 3 次，
+     * 日志里只有 {@code video_status_update_unauthorized, video_id=2}，
+     * 看起来像"回调参数不对"，实际是**两边的 WORKER_TOKEN 不一致**
+     * （后端 {@code edam.worker.token} 默认空 ⇒ fail-closed ⇒ 一律拒绝）。
+     * 转码其实早就完成了，产物也在 MinIO 上，只是后端不知道，
+     * 于是 {@code hls_status} 永远停在 pending ⇒ 用户点播放还是 404。
+     *
+     * <p>三种拒绝原因分开报，运维一眼能看出该改哪一边：
+     * <ul>
+     *   <li>{@code backend_token_not_configured} —— 后端没配
+     *       {@code edam.worker.token}（或 WORKER_TOKEN 环境变量为空）</li>
+     *   <li>{@code worker_token_header_missing} —— worker 侧没发
+     *       {@code X-Worker-Token} 头（多半是 worker 的 WORKER_TOKEN 没配）</li>
+     *   <li>{@code token_mismatch} —— 两边都配了但值不一样</li>
+     * </ul>
+     *
+     * <p>不打印 token 本身（哪怕是哈希）—— 只报"哪一种不匹配"。
+     */
+    private String tokenRejectReason(String provided) {
+        String expected = workerToken;
+        if (expected == null || expected.isBlank()) {
+            return "backend_token_not_configured";
+        }
+        if (provided == null || provided.isBlank()) {
+            return "worker_token_header_missing";
+        }
+        return "token_mismatch";
     }
 
     private Map<String, Object> toPaginationResponse(Page<VideoResource> page) {

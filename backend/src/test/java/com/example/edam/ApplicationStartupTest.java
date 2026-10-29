@@ -4,6 +4,8 @@ import com.example.edam.model.SysUser;
 import com.example.edam.model.SysRolePermission;
 import com.example.edam.model.SysUserRole;
 import com.example.edam.model.WebhookDelivery;
+import com.example.edam.model.OperationLog;
+import com.example.edam.repository.OperationLogRepository;
 import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.SysUserRoleRepository;
@@ -17,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,6 +64,9 @@ class ApplicationStartupTest {
 
     @Autowired
     private WebhookDeliveryRepository deliveryRepository;
+
+    @Autowired
+    private OperationLogRepository operationLogRepository;
 
     @Autowired
     private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
@@ -208,5 +214,48 @@ class ApplicationStartupTest {
             "webhook_delivery.created_at 必须被自动填充 —— 填不上则记录投递时必炸");
         assertNotNull(deliveryRepository.selectById(delivery.getId()).getCreatedAt(),
             "落库的 webhook_delivery.created_at 不能是 NULL");
+    }
+
+    /**
+     * 审计日志的 {@code detail} 必须能存**人读字符串**。
+     *
+     * <p>这条直接复现过一次静默故障（2026-10-29）：服务器日志里一片
+     * {@code audit_log_write_failed … Data truncation: Invalid JSON text
+     * "Invalid value." at position 0 in value for column 'operation_log.detail'}。
+     *
+     * <p>根因：建表时 {@code detail} 定义成了 {@code JSON} 列，但代码写进去的
+     * 是自由文本 —— {@code "employee_no=E000101"}、
+     * {@code "ip=127.0.0.1, mime=application/pdf, watermark=on"}、
+     * {@code "refresh_token cleared"}，没有一个是合法 JSON ⇒ MySQL 直接拒绝
+     * ⇒ <b>凡是带 detail 的审计记录全部丢失</b>（登录、预览、下载……）。
+     *
+     * <p>为什么这在合规系统里格外严重：写入失败只体现在服务端日志的一行
+     * ERROR 里，没人看；而审计表看起来"正常"（有零星几行没带 detail 的），
+     * 更容易被当成"没发生什么"。
+     *
+     * <p>修复见 {@code V20261029_1000__operation_log_detail_to_text.sql}
+     * （detail 改成 TEXT）。本用例在<b>真 MySQL</b> 上验证 ——
+     * 类型对不对，只有真库能说了算。
+     */
+    @Test
+    @Transactional
+    @DisplayName("审计日志能写入人读字符串 detail（detail 不是 JSON 列）")
+    void auditLogAcceptsHumanReadableDetail() {
+        OperationLog entry = new OperationLog();
+        entry.setUserId(999010L);
+        entry.setOperationType("login");
+        entry.setResourceType("auth");
+        entry.setResult(1);
+        // 故意写**不是合法 JSON** 的字符串 —— 调用点就是这么写的。
+        // 如果 detail 还是 JSON 列，这行插入会被 MySQL 拒掉，
+        // 审计记录静默丢失（用户永远看不到自己在系统里干了什么）。
+        entry.setDetail("employee_no=E000101, reason=密码错误");
+
+        operationLogRepository.insert(entry);
+
+        OperationLog saved = operationLogRepository.selectById(entry.getId());
+        assertNotNull(saved, "审计记录插入后应能查回");
+        assertEquals("employee_no=E000101, reason=密码错误", saved.getDetail(),
+            "detail 必须原样落库 —— 审计详情是人读文本，不是 JSON");
     }
 }
