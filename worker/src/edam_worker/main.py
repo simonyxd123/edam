@@ -19,6 +19,8 @@ import requests
 
 from .config import settings
 from .errors import PermanentWorkerError
+from .ffmpeg_probe import probe_ffmpeg, remediation
+from .fonts import find_font
 from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
@@ -188,6 +190,38 @@ class WorkerApp:
                 hint=("后端 PATCH /videos/{id}/status 要求 X-Worker-Token（fail-closed）。"
                       "不配的话回调一律 401 —— 转码完成了 hls_status 也不会变，"
                       "用户点播放还是 404。必须与后端的 edam.worker.token 完全一致"),
+            )
+
+        # FFmpeg 能力自检 —— 把"第一个视频转码失败"提前到启动时暴露。
+        # 不做这个自检的话，环境缺东西只会在第一个视频到来时才炸，
+        # 而且抛出的异常只有一句"转码失败"，看不出缺的是编码器还是滤镜。
+        await self._probe_ffmpeg()
+
+    async def _probe_ffmpeg(self) -> None:
+        """检查 FFmpeg 是否具备转码所需的能力（编码器 / 滤镜 / 字体）。"""
+        try:
+            probe = await asyncio.to_thread(
+                probe_ffmpeg, settings.FFMPEG_PATH, find_font()
+            )
+        except Exception as e:
+            log.error("ffmpeg_capabilities_check_failed",
+                      error_type=type(e).__name__, error=str(e)[:300])
+            return
+
+        if probe.get("ok"):
+            log.info("ffmpeg_capabilities_ok",
+                     version=probe.get("version"),
+                     font_path=probe.get("font_path"))
+        else:
+            # 缺能力 ≠ worker 该死 —— 文档/水印链路照样能干活，
+            # 只是视频转不了。所以只报警告，不退出。
+            log.warning(
+                "ffmpeg_capabilities_missing",
+                version=probe.get("version"),
+                missing_encoders=probe.get("missing_encoders"),
+                missing_filters=probe.get("missing_filters"),
+                font_path=probe.get("font_path"),
+                remediation=remediation(probe),
             )
 
         # 启动 Prometheus metrics server

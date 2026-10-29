@@ -19,6 +19,7 @@ from PIL import Image
 
 from ..config import settings
 from ..errors import PermanentWorkerError
+from ..fonts import FONT_CANDIDATES, find_font
 
 import requests
 
@@ -301,22 +302,14 @@ class VideoProcessor:
         font_size = 20  # 720p 高度 720 → 字号 20 ≈ 2.8%
 
         # 显式指定 fontfile（容器没装字体时 drawtext 会静默失败）
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-        ]
-        font_path = None
-        for p in font_candidates:
-            if os.path.exists(p):
-                font_path = p
-                break
+        # 候选列表来自 edam_worker.fonts —— 与启动时的字体自检用同一份，
+        # 免得"自检说有字体、转码时却找不到"。
+        font_path = find_font()
         if font_path:
             font_part = f"fontfile='{font_path}':"
         else:
             font_part = "font='DejaVu Sans':"
-            log.warning("drawtext_font_not_found", candidates=font_candidates)
+            log.warning("drawtext_font_not_found", candidates=FONT_CANDIDATES)
 
         # 右下角（不挡字幕）+ 白字 + 半透明黑底保证可读 + 低调不抢眼
         drawtext_filter = (
@@ -350,11 +343,35 @@ class VideoProcessor:
         stdout, stderr = await proc.communicate()
 
         if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace")
+            # 输入文件大小 —— 一眼分辨"文件坏了/是空的"还是"环境缺能力"。
+            # 0 字节或明显偏小 ⇒ 上传/下载有问题；
+            # 大小正常 ⇒ 基本就是 FFmpeg 环境（编码器/滤镜/字体）的问题。
+            try:
+                input_size = os.path.getsize(input_path)
+            except OSError:
+                input_size = -1
             log.error("ffmpeg_failed",
                        returncode=proc.returncode,
+                       video_id=video_id,
+                       input_path=input_path,
+                       input_size=input_size,
                        cmd=" ".join(cmd),
-                       stderr=stderr.decode("utf-8", errors="replace"))
-            raise RuntimeError(f"FFmpeg HLS 转码失败: {video_id}")
+                       stderr=err)
+            # **把 FFmpeg 自己的报错带进异常里**。
+            # 原来这里只抛"FFmpeg HLS 转码失败: 3"，零诊断信息 ——
+            # 真正的原因（缺编码器 / 缺滤镜 / 输入文件坏了）只在上面那行
+            # 日志里，而日志会被轮转、也会被 grep 漏掉。
+            # 异常是要进队列重试、要进告警的，诊断信息必须跟着它走。
+            #
+            # 刻意**不再重复贴一遍命令行**：完整命令行（含 drawtext 里的
+            # 员工号水印文本）已经在上面的日志里，FFmpeg 自己的 stderr
+            # 开头也会回显它 —— 异常里只留"结论 + 证据"，不重复搬运。
+            raise RuntimeError(
+                f"FFmpeg HLS 转码失败: {video_id}（exit={proc.returncode}，"
+                f"输入 {input_size} 字节）\n"
+                f"FFmpeg 输出:\n{err[-2000:]}"
+            )
 
         # 校验：加密确实生效了（m3u8 必须有 EXT-X-KEY 行）
         await self._assert_encrypted(m3u8_path)
