@@ -20,6 +20,12 @@
 #   ./scripts/dev-reset.sh --no-db      # 只 clean + 启动（保留现有数据）
 #   ./scripts/dev-reset.sh --no-start   # 只重置，不启动
 # ===================================================================
+# ⚠️ 被 `sh` 调用时自动切回 bash（dash 不支持 `set -o pipefail`，
+#    会报 "set: Illegal option -o pipefail"，看起来像脚本坏了）
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

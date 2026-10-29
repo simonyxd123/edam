@@ -20,6 +20,17 @@
 #   - **路径**：仓库不一定在 /var/data/project/edam。
 #   - **解释器**：不一定就是 /usr/bin/python3。
 # ============================================================================
+# ⚠️ 被 `sh install.sh` 调用时自动切回 bash。
+#
+#    Debian/Ubuntu 的 /bin/sh 是 dash，**不支持 `set -o pipefail`**，
+#    直接跑会死在下面那行，报：
+#        set: Illegal option -o pipefail
+#    看起来像"脚本坏了"，其实只是用错了 shell。
+#    （正常用法是 `./install.sh`，靠 shebang 走 bash。）
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

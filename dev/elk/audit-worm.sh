@@ -10,6 +10,12 @@
 # - 不一致时触发 P0 告警
 # ============================================================================
 
+# ⚠️ 被 `sh` 调用时自动切回 bash（dash 不支持 `set -o pipefail`，
+#    会报 "set: Illegal option -o pipefail"，看起来像脚本坏了）
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # 配置

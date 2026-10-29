@@ -21,6 +21,11 @@
 #   STUCK_THRESHOLD        连续几次"有积压"才重启，默认 3（约 3 分钟）
 #   STATE_FILE             默认 /var/lib/edam/worker-healthcheck.state
 # ============================================================================
+# ⚠️ 被 `sh` 调用时自动切回 bash（dash 不支持 `set -o pipefail`）
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -uo pipefail
 
 WORKER_HEALTH_URL="${WORKER_HEALTH_URL:-http://127.0.0.1:8001/health/live}"

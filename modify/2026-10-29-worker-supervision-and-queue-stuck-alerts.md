@@ -195,8 +195,50 @@ Python 在 stdout 不是终端时是**块缓冲**的。systemd 启动的进程 s
 | 文件 | 改动 |
 |---|---|
 | `ops/worker/edam-worker.service` → `.service.template` | 改成模板；加 `PYTHONUNBUFFERED`；User/Group/路径/解释器改成占位符 |
-| `ops/worker/install.sh` | 渲染 unit；解释器可导入性检查；端口占用检查（`--stop-existing`）；运行用户自适应；`WORKER_TOKEN` 占位符检查 |
+| `ops/worker/install.sh` | 渲染 unit；解释器可导入性检查；端口占用检查（`--stop-existing`）；运行用户自适应；`WORKER_TOKEN` 占位符检查；**bash 兜底** |
 | `ops/worker/README.md` | 安装步骤更新（端口冲突、运行用户、两边都要配 token） |
+
+### 6.5' 又踩了两次（安装时的最后一道坎）
+
+服务器上实际执行时又报了两个错，都很典型：
+
+```
+root@pve:/var/data/project/edam# sudo ./ops/worker/install.sh --stop-existing
+sudo: ./ops/worker/install.sh: command not found        ← ①
+
+root@pve:/var/data/project/edam# sudo sh ./ops/worker/install.sh --stop-existing
+./ops/worker/install.sh: 23: set: Illegal option -o pipefail   ← ②
+```
+
+**① "command not found" 其实不是"文件不存在"** ——
+`ls -la` 明明白白显示文件在。它真正的意思是"**没有执行权限**"，
+而 bash 把这个错误报成了 `command not found`，极具误导性
+（`command not found` 通常被理解成"PATH 里没这个命令"）。
+
+根因：**git 里这些脚本的 mode 是 100644，不是 100755** ——
+可执行位从来没进过版本库。`git clone` 出来的自然就不可执行。
+
+⇒ 全仓库 13 个 `.sh` 统一 `git update-index --chmod=+x`
+（`ops/worker/install.sh`、`edam-worker-healthcheck.sh`，以及
+`scripts/`、`dev/`、`perf/` 下的 11 个）。
+
+**② 用 `sh` 跑 bash 脚本** ——
+Debian/Ubuntu 的 `/bin/sh` 是 dash，**不支持 `set -o pipefail`**，
+于是死在第 23 行。这个错误同样极具误导性：看起来像"脚本自己坏了"。
+
+⇒ 在所有用 pipefail 的脚本开头加兜底：
+
+```bash
+# 被 `sh` 调用时自动切回 bash
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+```
+
+（`install.sh` / `edam-worker-healthcheck.sh` + 5 个 dev 脚本）
+
+**教训**：这两个都是"部署脚本自己"的坑，而部署脚本恰恰是**平时不跑、
+出问题才跑**的那类代码 —— 不上真服务器就永远发现不了。
 
 ### 6.6 验证
 

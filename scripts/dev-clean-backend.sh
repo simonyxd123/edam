@@ -16,6 +16,12 @@
 #   ./scripts/dev-clean-backend.sh          # 只删 target
 #   ./scripts/dev-clean-backend.sh --run    # 清理后直接启动后端
 # ===================================================================
+# ⚠️ 被 `sh` 调用时自动切回 bash（dash 不支持 `set -o pipefail`，
+#    会报 "set: Illegal option -o pipefail"，看起来像脚本坏了）
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
