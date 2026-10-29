@@ -32,7 +32,7 @@ K8s 侧其实有 `worker-deployment.yaml`（Deployment + liveness/readiness 探�
 
 | 文件 | 作用 |
 |---|---|
-| `edam-worker.service` | systemd unit：`Restart=always` + `RestartSec=5`，进程挂了 5 秒后自动拉起；`TimeoutStopSec=30` 优雅停机；10 分钟内重启 >5 次就停下等人处理 |
+| `edam-worker.service.template` | systemd unit **模板**（由 `install.sh` 渲染成 `/etc/systemd/system/edam-worker.service`）：`Restart=always` + `RestartSec=5`，进程挂了 5 秒后自动拉起；`TimeoutStopSec=30` 优雅停机；10 分钟内重启 >5 次就停下等人处理 |
 | `edam-worker.env.example` | 环境变量模板（含 `WORKER_TOKEN` 等关键项的说明），真实文件放 `/etc/edam/worker.env`（600 权限，**不入库**） |
 | `edam-worker-healthcheck.sh` | 每分钟巡检 + 自愈（见下） |
 | `edam-worker-healthcheck.service` / `.timer` | 巡检的 systemd 定时器（`OnUnitActiveSec=1min`） |
@@ -140,3 +140,71 @@ K8s 侧其实有 `worker-deployment.yaml`（Deployment + liveness/readiness 探�
 3. **Prometheus Operator 未确认装了 rabbitmq_exporter** —— 若没装，
    `rabbitmq_up` / `RabbitMQDown` / `RabbitMQQueueDepth` 这几条规则同样不会触发；
    新的队列深度规则不依赖它，所以不受影响。
+
+---
+
+## 六、补充（2026-10-29 晚）：安装脚本在真服务器上会踩的坑
+
+实际到服务器上执行 `sudo ./ops/worker/install.sh` 时（报
+`Unit edam-worker.service not found` —— 说明这套守护**根本没装过**），
+发现第一版安装脚本/unit 有三个会直接失败或误导排查的问题。
+全部修掉：
+
+### 6.1 `User=edam` —— 服务器上没有这个用户
+
+服务器上整套服务是 **root** 跑的（`mvn spring-boot:run` 也是 root 起的），
+系统里**没有 `edam` 用户**。写死 `User=edam` ⇒ systemd 直接起不来：
+
+```
+Failed to determine user credentials
+```
+
+⇒ 改成**模板 + 渲染**：`install.sh` 检测 `edam` 用户是否存在，
+有就用（更干净），没有就跑 root（与现状一致）并打印提示。
+
+### 6.2 路径写死
+
+`WorkingDirectory=/var/data/project/edam/worker/src`、
+`Documentation=file:///opt/edam/...`、`ExecStart=/usr/bin/python3`
+全是写死的 —— 仓库换位置、python3 不在 `/usr/bin` 就全废。
+⇒ 三个都改成占位符，由 `install.sh` 按实际情况渲染；
+渲染完还有占位符残留就**直接失败**，不装坏 unit。
+
+### 6.3 没有 `PYTHONUNBUFFERED=1` ⇒ journalctl 里什么都看不到
+
+Python 在 stdout 不是终端时是**块缓冲**的。systemd 启动的进程 stdout 不是终端
+⇒ 不关缓冲的话日志要攒够 4KB 才吐一批 ⇒ `journalctl -u edam-worker -f`
+看着像"worker 根本没打日志"，排查会被彻底带偏。
+
+⇒ unit 里加 `Environment=PYTHONUNBUFFERED=1`。
+
+### 6.4 端口占用没检查 ⇒ 装完是个"反复重启"的僵尸
+
+手工 `nohup` 起的 worker 还占着 8001 的话，systemd 那个抢不到端口 ⇒
+`address already in use` ⇒ `Restart=always` 反复重启 ⇒
+`StartLimitBurst=5` 用完 ⇒ unit 停摆。日志里全是端口错误，
+看不出"你得先把旧的停掉"。
+
+⇒ `install.sh` 加端口检查（bind + connect 双重判断，跨平台语义都准），
+被占时**拒绝安装**并打印占用进程的 PID 和完整命令行；
+需要它代劳的话显式加 `--stop-existing`（SIGTERM 优雅停，
+避免 MinIO 留半成品）。
+
+### 6.5 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `ops/worker/edam-worker.service` → `.service.template` | 改成模板；加 `PYTHONUNBUFFERED`；User/Group/路径/解释器改成占位符 |
+| `ops/worker/install.sh` | 渲染 unit；解释器可导入性检查；端口占用检查（`--stop-existing`）；运行用户自适应；`WORKER_TOKEN` 占位符检查 |
+| `ops/worker/README.md` | 安装步骤更新（端口冲突、运行用户、两边都要配 token） |
+
+### 6.6 验证
+
+- 模板渲染：两条路径（有 `edam` 用户 / 无）都渲染正确，
+  `configparser` 解析出正确的 `[Unit]/[Service]/[Install]` 段与 `ExecStart`
+- 渲染结果无占位符残留
+- 端口检测：空闲端口判"空闲"、被监听端口判"占用"（两种情况都实测过）
+- `bash -n` 语法检查通过
+- 修掉一个 `set -e` 地雷：`PIDS="$(find_port_pids ...)"` 在找不到 PID 时
+  会因命令替换返回非零而让整个脚本退出 —— 那恰恰是"端口被占但查不到进程"的情况
+

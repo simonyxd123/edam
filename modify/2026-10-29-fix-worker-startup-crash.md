@@ -93,8 +93,8 @@ python -m edam_worker.main
 而指标是在**模块导入期**注册的（`prometheus_client` 的全局
 `CollectorRegistry`），同名注册两次直接抛异常。
 
-⚠️ 这条路径正是 **`ops/worker/edam-worker.service` 用的**
-（`ExecStart=/usr/bin/python3 -m edam_worker.main`）——
+⚠️ 这条路径正是 **`ops/worker/edam-worker.service.template` 渲染出来的 unit 用的**
+（`ExecStart=<python3> -m edam_worker.main`）——
 上一轮刚提交的 systemd 守护，装上去也是起不来。
 
 ---

@@ -46,23 +46,53 @@ cd /var/data/project/edam
 sudo ./ops/worker/install.sh
 ```
 
-脚本做四件事（幂等，可重复跑）：
+脚本做六件事（幂等，可重复跑）：
 
-1. 安装 unit 到 `/etc/systemd/system/`
-2. 装健康巡检脚本到 `/usr/local/bin/`
-3. 生成 `/etc/edam/worker.env`（**已存在则不覆盖**）
-4. `enable --now` worker + 巡检定时器
+1. 检查依赖 + **验证解释器能 import 到 `edam_worker`**
+   （装不到依赖、解释器选错，在这里就拦下来，而不是等 systemd 报一堆错）
+2. **渲染** `edam-worker.service.template` → `/etc/systemd/system/edam-worker.service`
+   （渲染不出来的占位符会直接失败，不会装一个坏 unit）
+3. 装健康巡检脚本到 `/usr/local/bin/`
+4. 生成 `/etc/edam/worker.env`（**已存在则不覆盖**）
+5. **检查端口占用** —— 手工 `nohup` 起的 worker 还在跑的话，
+   systemd 这个会抢不到端口 ⇒ 反复重启 ⇒ `StartLimitBurst` 用完 ⇒ unit 停摆
+6. `enable --now` worker + 巡检定时器，并验证
 
-装完**必须**改配置并重启：
+### 端口被占用怎么办
+
+```bash
+# 先停掉手工起的那一个，再装（SIGTERM 优雅停，避免 MinIO 留半成品）
+sudo ./ops/worker/install.sh --stop-existing
+```
+
+不加这个参数时，脚本会**拒绝安装**并告诉你占用进程的 PID 和完整命令行 ——
+它不会替你 kill，因为你可能正在转码。
+
+### 关于运行用户
+
+服务器上多半**没有 `edam` 用户**（整套服务是 root 跑的），
+脚本会检测：有就用 `edam`，没有就跑 root 并给出提示。
+想用专用用户：
+
+```bash
+useradd -r -s /usr/sbin/nologin edam
+sudo ./ops/worker/install.sh
+```
+
+### 装完**必须**改配置并重启
 
 ```bash
 sudo vi /etc/edam/worker.env          # WORKER_TOKEN / 密码 / 地址
 sudo systemctl restart edam-worker
 ```
 
-> ⚠️ `WORKER_TOKEN` 必须与后端的 `edam.worker.token` **完全一致**。
+> ⚠️ `WORKER_TOKEN` 必须与后端的 `edam.worker.token` **完全一致**，
+> 而且**两边都要配**（后端进程的环境变量 + worker 的 env 文件）。
 > 不一致/为空的表现是：转码做完了，但后端的 `hls_status` 一直不变 →
 > 用户点播放还是 404，而且日志里看不出任何异常。
+>
+> 查后端配没配：
+> `curl -s http://127.0.0.1:8092/api/v1/health/ready | grep -A4 worker_callback`
 
 ---
 
