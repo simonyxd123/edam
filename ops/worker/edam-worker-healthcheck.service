@@ -1,0 +1,16 @@
+[Unit]
+Description=EDAM Worker 健康巡检（进程存活 + 队列积压自愈）
+Documentation=file:///opt/edam/ops/worker/README.md
+After=network-online.target edam-worker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# 可选的覆盖配置（不放 worker.env —— 那个文件里有共享密钥，
+# 巡检脚本不需要知道它们）。不建这个文件也能跑，脚本有默认值。
+EnvironmentFile=-/etc/edam/worker-healthcheck.env
+ExecStart=/usr/local/bin/edam-worker-healthcheck.sh
+
+# 巡检本身失败（脚本异常）不该拖垮系统
+SuccessExitStatus=0 1

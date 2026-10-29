@@ -1,0 +1,17 @@
+{{- if and .Values.worker.enabled .Values.worker.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "edam.fullname" . }}-worker
+  labels:
+    {{- include "edam.labels" . | nindent 4 }}
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      {{- include "edam.worker.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.worker.serviceMonitor.path }}
+      interval: {{ .Values.worker.serviceMonitor.interval }}
+{{- end }}

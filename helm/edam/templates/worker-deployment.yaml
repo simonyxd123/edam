@@ -28,6 +28,10 @@ spec:
             - name: http
               containerPort: {{ .Values.worker.service.port }}
               protocol: TCP
+            # Prometheus 指标端口（worker 内部 start_http_server）
+            - name: metrics
+              containerPort: {{ .Values.worker.metricsPort }}
+              protocol: TCP
           env:
             {{- range $key, $value := .Values.worker.env }}
             - name: {{ $key }}

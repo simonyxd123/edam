@@ -130,6 +130,7 @@ helm uninstall edam --namespace edam
 ## 监控
 
 Chart 包含 ServiceMonitor 资源（前提：集群已安装 Prometheus Operator）。
+共两个：`<release>-backend`（actuator）和 `<release>-worker`（Prometheus 指标端口 9100）。
 
 ```bash
 # 查看 ServiceMonitor
@@ -138,6 +139,12 @@ kubectl get servicemonitor -n edam
 # 访问 Grafana
 # 通过 Prometheus 数据源查看 edam 命名空间下的指标
 ```
+
+> ⚠️ Worker 的 ServiceMonitor 依赖 `worker.metricsPort`（默认 9100）与
+> `worker.env.METRICS_PORT` **两者一致**。不一致时 `/metrics` 抓不到，
+> `worker_tasks_processed_total` 会消失，
+> `monitoring/grafana/alerts/edam-rules.yaml` 里的 `VideoTranscodeFailure`
+> 就变成永远不触发的死规则。
 
 ## 安全特性
 

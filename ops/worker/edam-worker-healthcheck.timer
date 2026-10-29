@@ -1,0 +1,12 @@
+[Unit]
+Description=每分钟巡检 EDAM Worker
+Documentation=file:///opt/edam/ops/worker/README.md
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+# 机器重启后立刻巡检一次，不要等满一分钟
+Persistent=true
+
+[Install]
+WantedBy=timers.target

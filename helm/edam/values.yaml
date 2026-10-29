@@ -100,6 +100,15 @@ worker:
   replicaCount: 2
   service:
     port: 8001
+  # Worker 的 Prometheus 指标端口（worker 内部 start_http_server 起的那个）。
+  # 必须和 worker.env.METRICS_PORT 一致 —— 两边不一致会导致
+  # ServiceMonitor 抓不到 /metrics，worker_tasks_processed_total 直接消失，
+  # 于是 edam-rules.yaml 里的转码失败率告警变成永远不触发的死规则。
+  metricsPort: 9100
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
   resources:
     requests:
       cpu: 500m
@@ -125,6 +134,8 @@ worker:
     MINIO_BUCKET_VIDEOS: edam-videos
     MINIO_BUCKET_DOCS: edam-documents
     HTTP_PORT: "8001"
+    # Prometheus 指标端口：与 worker.metricsPort 保持一致
+    METRICS_PORT: "9100"
     # 运维接口（按 video_id 重触发 HLS）：默认关闭，
     # 需要时在 overlays 里设 OPS_ENABLED=true
     OPS_ENABLED: "false"

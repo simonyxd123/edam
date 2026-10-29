@@ -1,0 +1,55 @@
+# ============================================================================
+# EDAM Worker —— 视频转码流水线（裸机 / 非 K8s 部署）
+#
+# 为什么需要这个 unit：
+#   2026-10-28 出过一次用户可见故障 —— 视频点播放报
+#   "网络异常，正在重试（1/3）… (HTTP 404)"。根因是 **Worker 进程没起来**
+#   （手工 nohup 起的，没有进程守护），转码任务卡在 RabbitMQ 队列里没人消费。
+#   K8s 侧有 Deployment + livenessProbe 自动重启，裸机侧什么都没有 ——
+#   机器重启或进程被 OOM kill，队列就永远卡住，而用户看到的只是 404。
+#
+# 安装：见 ops/worker/README.md（或直接跑 ops/worker/install.sh）
+# ============================================================================
+[Unit]
+Description=EDAM Worker (video transcode pipeline)
+Documentation=file:///opt/edam/ops/worker/README.md
+After=network-online.target
+Wants=network-online.target
+
+# 崩溃保护：10 分钟内重启超过 5 次就停下来等人处理，
+# 免得配置写错时无限重启刷爆日志、把真正的错误淹掉。
+# （systemd >= 230 要求 StartLimit* 放在 [Unit] 段）
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=edam
+Group=edam
+WorkingDirectory=/var/data/project/edam/worker/src
+
+# 全部配置走环境变量文件（不入库、不进版本控制）
+EnvironmentFile=/etc/edam/worker.env
+
+# 用 worker 自己的入口（它会按 HTTP_PORT 起 uvicorn + 注册信号处理器）
+ExecStart=/usr/bin/python3 -m edam_worker.main
+
+# 进程挂了/被 OOM kill ⇒ 自动拉起。这是本次故障最关键的一条。
+Restart=always
+RestartSec=5
+
+# 优雅停机：worker 收到 SIGTERM 会 stop() 掉 RabbitMQ 消费，
+# 给 30s 让它处理完手上的任务
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# 日志进 journald：journalctl -u edam-worker -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edam-worker
+
+# 资源限制（防止单个转码任务把机器吃干）
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
