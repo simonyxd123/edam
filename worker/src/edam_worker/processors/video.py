@@ -30,6 +30,8 @@ class VideoProcessor:
     """视频异步处理"""
 
     def __init__(self) -> None:
+        # 记住本机 FFmpeg 认哪种 key.info 行序（试出来的，见 _key_info_layouts）
+        self._key_info_layout: Optional[str] = None
         self.minio = Minio(
             settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
             access_key=settings.MINIO_ACCESS_KEY,
@@ -345,47 +347,78 @@ class VideoProcessor:
         #
         # m3u8 里因此写的是 URI="key.bin"（相对路径）——
         # 后端 PlaybackController 靠这个相对路径改写成带 token 的绝对地址。
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=output_dir,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace")
-            # 输入文件大小 —— 一眼分辨"文件坏了/是空的"还是"环境缺能力"。
-            # 0 字节或明显偏小 ⇒ 上传/下载有问题；
-            # 大小正常 ⇒ 基本就是 FFmpeg 环境（编码器/滤镜/字体）的问题。
-            try:
-                input_size = os.path.getsize(input_path)
-            except OSError:
-                input_size = -1
-            log.error("ffmpeg_failed",
-                       returncode=proc.returncode,
-                       video_id=video_id,
-                       input_path=input_path,
-                       input_size=input_size,
-                       cmd=" ".join(cmd),
-                       stderr=err)
-            # **把 FFmpeg 自己的报错带进异常里**。
-            # 原来这里只抛"FFmpeg HLS 转码失败: 3"，零诊断信息 ——
-            # 真正的原因（缺编码器 / 缺滤镜 / 输入文件坏了）只在上面那行
-            # 日志里，而日志会被轮转、也会被 grep 漏掉。
-            # 异常是要进队列重试、要进告警的，诊断信息必须跟着它走。
-            #
-            # 刻意**不再重复贴一遍命令行**：完整命令行（含 drawtext 里的
-            # 员工号水印文本）已经在上面的日志里，FFmpeg 自己的 stderr
-            # 开头也会回显它 —— 异常里只留"结论 + 证据"，不重复搬运。
-            raise RuntimeError(
-                f"FFmpeg HLS 转码失败: {video_id}（exit={proc.returncode}，"
-                f"输入 {input_size} 字节）\n"
-                f"FFmpeg 输出:\n{err[-2000:]}"
+        #
+        # **两种 key.info 布局都试**（见 _write_key_info 的说明）：
+        # 文档说"第一行 URI、第二行 key"，但服务器上的 FFmpeg 4.3.9 实测
+        # 是把**第二行**当成文件名去打开（"error opening key file <hex>"），
+        # 也就是它认的其实是"第一行 key、第二行 URI"。
+        # 各版本行为不一致 ⇒ 不赌哪一种，两种都试，并且**校验产物**：
+        # 只有 m3u8 里的 EXT-X-KEY URI 确实是 "key.bin" 才算成功
+        # （否则后端改写正则 URI="key\.bin" 匹配不上，播放器拿不到密钥）。
+        # 试出来的那一种会被记住，后续视频直接用，不再白跑一次。
+        for layout in self._key_info_layouts():
+            await asyncio.to_thread(self._write_key_info, output_dir, key, layout)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=output_dir,
             )
+            stdout, stderr = await proc.communicate()
+            err = stderr.decode("utf-8", errors="replace")
 
-        # 校验：加密确实生效了（m3u8 必须有 EXT-X-KEY 行）
-        await self._assert_encrypted(m3u8_path)
+            if proc.returncode == 0:
+                # 转码成功 —— 还要确认 key URI 写对了（布局猜错时
+                # FFmpeg 可能"成功"但把 key 的十六进制写进了 m3u8）
+                if await self._playlist_key_uri_is_correct(m3u8_path):
+                    self._key_info_layout = layout
+                    log.info("hls_transcode_complete",
+                             video_id=video_id, output_dir=output_dir,
+                             key_info_layout=layout)
+                    return output_dir, key
+                # "假成功"：加密生效了，但 URI 不对 ⇒ 同样是布局问题，换一种重试
+                err = err or "m3u8 里的 EXT-X-KEY URI 不是 key.bin"
+                log.warning("hls_key_uri_unexpected",
+                            video_id=video_id, layout=layout,
+                            expected="key.bin")
+                continue
+
+            # 布局不对 ⇒ 换一种再试；别的错误（输入坏了、编码器缺失）直接失败
+            if not self._looks_like_key_info_layout_error(err):
+                break
+            log.warning("hls_key_info_layout_rejected",
+                        video_id=video_id, layout=layout,
+                        hint="key.info 的行序与本机 FFmpeg 不符，换一种重试")
+
+        # 输入文件大小 —— 一眼分辨"文件坏了/是空的"还是"环境缺能力"。
+        # 0 字节或明显偏小 ⇒ 上传/下载有问题；
+        # 大小正常 ⇒ 基本就是 FFmpeg 环境（编码器/滤镜/字体）的问题。
+        try:
+            input_size = os.path.getsize(input_path)
+        except OSError:
+            input_size = -1
+
+        log.error("ffmpeg_failed",
+                   returncode=proc.returncode,
+                   video_id=video_id,
+                   input_path=input_path,
+                   input_size=input_size,
+                   cmd=" ".join(cmd),
+                   stderr=err)
+        # **把 FFmpeg 自己的报错带进异常里**。
+        # 原来这里只抛"FFmpeg HLS 转码失败: 3"，零诊断信息 ——
+        # 真正的原因（缺编码器 / 缺滤镜 / 输入文件坏了）只在上面那行
+        # 日志里，而日志会被轮转、也会被 grep 漏掉。
+        # 异常是要进队列重试、要进告警的，诊断信息必须跟着它走。
+        #
+        # 刻意**不再重复贴一遍命令行**：完整命令行（含 drawtext 里的
+        # 员工号水印文本）已经在上面的日志里，FFmpeg 自己的 stderr
+        # 开头也会回显它 —— 异常里只留"结论 + 证据"，不重复搬运。
+        raise RuntimeError(
+            f"FFmpeg HLS 转码失败: {video_id}（exit={proc.returncode}，"
+            f"输入 {input_size} 字节）\n"
+            f"FFmpeg 输出:\n{err[-2000:]}"
+        )
 
         # key.bin 已经在转码**之前**写好（_write_key_files），留在 output_dir 里
         # 随 _upload_hls 一起上传到 videos/{id}/hls/key.bin；
@@ -396,42 +429,104 @@ class VideoProcessor:
         return output_dir, key
 
     def _write_key_files(self, output_dir: str, key: bytes) -> None:
-        """写 key.bin 与 key.info —— **必须在 FFmpeg 启动之前**写好。
+        """写 key.bin —— **必须在 FFmpeg 启动之前**写好。
 
-        **key.info 的格式是 FFmpeg 规定的**（见 ffmpeg-formats 的
-        ``hls_key_info_file``）：
+        FFmpeg 会真的去打开 key.info 里指的那个"key 文件"（实测：
+        ``[hls] Opening '<key 文件>' for reading``），
+        而原实现是转码**成功之后**才写 key.bin ⇒ 那个时刻文件压根不存在。
 
-            第一行：key 文件的 URI（**就是 URI 本身**）
-            第二行：key 本身（32 位十六进制）
-            可选第三行：IV（本项目不写，让 FFmpeg 为每个分片生成独立 IV）
-
-        ⚠️ **这里曾经写错成 ``"URI key.bin\\n"``** —— 那是把文档里的
-        "first line is a URI to the key file" 这句**说明文字**当成了
-        文件内容的一部分。FFmpeg 于是没把第一行当成 URI，
-        转而拿**第二行（key 的十六进制）当文件名**去打开：
-
-            [hls] Opening '.../key.info' for reading
-            [hls] Opening '42ccf808b90e06e674095a71f25f1106' for reading
-            [hls muxer] error opening key file 42ccf808b90e06e674095a71f25f1106
-            Could not write header for output file #0 ... No such file or directory
-
-        ⇒ **每一行视频都转码失败**（2026-10-29 线上发现，
-        错误信息被吞在日志里，只剩一句"FFmpeg HLS 转码失败: 3"）。
-
-        另外，**key.bin 也要提前写**：文档说第一行是"URI to the **key file**"，
-        FFmpeg 可能真的去打开它 —— 而原实现是转码**成功之后**才写 key.bin，
-        FFmpeg 运行时那个文件压根不存在。
+        内容是 **16 字节原始 key** —— 后端下发给播放器的是同一份字节
+        （``videos/{id}/key.bin``），两边必须完全一致，否则播放器解不开。
         """
-        # key.bin（原始 16 字节）—— 提前写，FFmpeg 要用的时候它就在
         key_path = os.path.join(output_dir, "key.bin")
         with open(key_path, "wb") as f:
             f.write(key)
 
-        # key.info —— 第一行只放 URI 本身，**不要**加 "URI " 前缀
+    def _write_key_info(self, output_dir: str, key: bytes, layout: str) -> None:
+        """按指定布局写 key.info。
+
+        **两种布局都要支持，因为 FFmpeg 各版本的行为不一致**：
+
+        - ``uri_first``（文档规定的）：第一行 URI，第二行 key
+        - ``key_first``（4.3.9 实测的行为）：第一行 key，第二行 URI
+
+        见 ``_hls_transcode`` 里的说明 —— 布局猜错的后果是
+        FFmpeg 拿 key 的十六进制当文件名去打开，转码必然失败。
+        """
         key_info_path = os.path.join(output_dir, "key.info")
+        uri_line = "key.bin"
+        key_line = key.hex()
+        lines = ([uri_line, key_line] if layout == "uri_first"
+                 else [key_line, uri_line])
         with open(key_info_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("key.bin\n")
-            f.write(key.hex() + "\n")
+            f.write("".join(line + "\n" for line in lines))
+
+    # ----------------------------------------------------------------
+    # key.info 行序的自适应
+    #
+    # **为什么需要自适应**：FFmpeg 各版本对 key.info 里"哪一行是 URI、
+    # 哪一行是 key"的处理并不一致。
+    #
+    #   文档（ffmpeg-formats → hls_key_info_file）说：
+    #       first line is a URI to the key file
+    #       second line is the key
+    #
+    #   而服务器上的 FFmpeg 4.3.9 实测（2026-10-29）：它把**第二行**
+    #   当成文件名去打开 ——
+    #       [hls] Opening '<key 的十六进制>' for reading
+    #       [hls muxer] error opening key file <key 的十六进制>
+    #   也就是它实际认的是"第一行 key、第二行 URI"。
+    #
+    # 与其赌哪一种（赌错 = 每一条视频都转码失败，而且错误信息极具误导性），
+    # 不如**两种都试，并且校验产物**：只有 m3u8 里的 EXT-X-KEY URI
+    # 确实是 "key.bin" 才算成功。试出来的那一种会被记住。
+    # ----------------------------------------------------------------
+
+    KEY_INFO_LAYOUTS = ("uri_first", "key_first")
+
+    def _key_info_layouts(self) -> List[str]:
+        """要试的布局顺序：上次试出来的排第一（省掉一次白跑）。"""
+        if self._key_info_layout and self._key_info_layout in self.KEY_INFO_LAYOUTS:
+            return [self._key_info_layout] + [
+                layout for layout in self.KEY_INFO_LAYOUTS
+                if layout != self._key_info_layout
+            ]
+        return list(self.KEY_INFO_LAYOUTS)
+
+    @staticmethod
+    def _looks_like_key_info_layout_error(stderr_text: str) -> bool:
+        """这段报错是不是"key.info 行序不对"引起的。
+
+        只认 FFmpeg 明确说"打不开 key 文件"的两种说法；
+        其它报错（输入文件坏了、编码器缺失……）必须原样抛出去，
+        不能被"换个布局再试"掩盖。
+        """
+        return ("error opening key file" in stderr_text
+                or "Unable to open key file" in stderr_text
+                or "Could not write header for output file" in stderr_text
+                and "key file" in stderr_text)
+
+    async def _playlist_key_uri_is_correct(self, m3u8_path: str) -> bool:
+        """m3u8 里的 EXT-X-KEY URI 必须是 "key.bin"。
+
+        **这不只是"有没有加密"的问题** —— 后端
+        ``PlaybackController.rewriteM3u8`` 用正则 ``URI="key\\.bin"``
+        把它改写成带 token 的绝对地址。URI 写错了（哪怕加密生效了），
+        后端改写不了 ⇒ 播放器拿不到密钥 ⇒ 视频解不开。
+
+        所以布局猜错时必须能**发现**，而不是"转码成功"就当成功。
+        """
+        def _check() -> bool:
+            try:
+                with open(m3u8_path, "r", encoding="utf-8", newline="") as f:
+                    for line in f:
+                        if line.startswith("#EXT-X-KEY"):
+                            return 'URI="key.bin"' in line
+            except OSError:
+                return False
+            return False
+
+        return await asyncio.to_thread(_check)
 
     async def _assert_encrypted(self, m3u8_path: str) -> None:
         """确认 m3u8 里有 EXT-X-KEY —— 没有就说明加密没生效，必须报错。
