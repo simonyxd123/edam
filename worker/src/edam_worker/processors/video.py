@@ -269,8 +269,12 @@ class VideoProcessor:
         参考方案书 4.2 节
 
         加密（关键）：
-        - 生成 16 字节随机 key，写入 key.bin（原始字节）与 key.info
-          （**第一行是 URI 本身 "key.bin"，第二行是 key 的 hex**）
+        - 生成 16 字节随机 key，写入 key.bin（**原始字节**，与后端下发给
+          播放器的是同一份）
+        - key.info 的**行序各版本不一致**（文档说「第一行 URI、第二行 key」，
+          而 FFmpeg 4.3.9 实测是把第二行当文件名去打开）⇒ 两种布局都试，
+          并校验 m3u8 里的 EXT-X-KEY URI 确实是 "key.bin"。
+          详见 _write_key_info 与 _key_info_layouts
         - FFmpeg 用 ``-hls_key_info_file`` 做 AES-128-CBC 加密，
           每个分片用独立 IV（key.info 不写 IV 时 FFmpeg 自动生成）
         - m3u8 里的 ``URI="key.bin"`` 保持相对路径，
@@ -527,26 +531,6 @@ class VideoProcessor:
             return False
 
         return await asyncio.to_thread(_check)
-
-    async def _assert_encrypted(self, m3u8_path: str) -> None:
-        """确认 m3u8 里有 EXT-X-KEY —— 没有就说明加密没生效，必须报错。
-
-        以前这里是"改写 key URL"，但 m3u8 里根本没有 EXT-X-KEY，
-        正则是纯 no-op 却照样打"改写成功"日志 —— 排查时极具误导性。
-        """
-        def _check() -> bool:
-            with open(m3u8_path, "r", encoding="utf-8", newline="") as f:
-                for line in f:
-                    if line.startswith("#EXT-X-KEY"):
-                        return True
-            return False
-
-        has_key = await asyncio.to_thread(_check)
-        if not has_key:
-            raise RuntimeError(
-                "HLS 加密未生效：m3u8 中缺少 #EXT-X-KEY，拒绝上传明文分片"
-            )
-        log.info("hls_encryption_verified", path=m3u8_path)
 
     async def _extract_fingerprints(self, input_path: str, video_id: int, work_dir: Optional[str] = None) -> str:
         """
