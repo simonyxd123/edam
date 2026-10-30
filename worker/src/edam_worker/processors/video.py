@@ -20,6 +20,13 @@ from PIL import Image
 from ..config import settings
 from ..errors import PermanentWorkerError
 from ..fonts import FONT_CANDIDATES, find_font
+from ..hls_keyinfo import (
+    looks_like_key_info_layout_error,
+    layout_order,
+    playlist_key_uri_is_correct,
+    write_key_bin,
+    write_key_info,
+)
 
 import requests
 
@@ -30,7 +37,7 @@ class VideoProcessor:
     """视频异步处理"""
 
     def __init__(self) -> None:
-        # 记住本机 FFmpeg 认哪种 key.info 行序（试出来的，见 _key_info_layouts）
+        # 记住本机 FFmpeg 认哪种 key.info 写法（探测/试出来的，见 _key_info_layouts）
         self._key_info_layout: Optional[str] = None
         self.minio = Minio(
             settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
@@ -271,10 +278,9 @@ class VideoProcessor:
         加密（关键）：
         - 生成 16 字节随机 key，写入 key.bin（**原始字节**，与后端下发给
           播放器的是同一份）
-        - key.info 的**行序各版本不一致**（文档说「第一行 URI、第二行 key」，
-          而 FFmpeg 4.3.9 实测是把第二行当文件名去打开）⇒ 两种布局都试，
-          并校验 m3u8 里的 EXT-X-KEY URI 确实是 "key.bin"。
-          详见 _write_key_info 与 _key_info_layouts
+        - key.info 的**第二行各版本写法不一致**（是"key 文件路径"还是
+          "key 的十六进制"）⇒ 两种都试，并校验 m3u8 里的 EXT-X-KEY URI
+          确实是 "key.bin"。详见 _write_key_info 与 _key_info_layouts
         - FFmpeg 用 ``-hls_key_info_file`` 做 AES-128-CBC 加密，
           每个分片用独立 IV（key.info 不写 IV 时 FFmpeg 自动生成）
         - m3u8 里的 ``URI="key.bin"`` 保持相对路径，
@@ -353,13 +359,12 @@ class VideoProcessor:
         # 后端 PlaybackController 靠这个相对路径改写成带 token 的绝对地址。
         #
         # **两种 key.info 布局都试**（见 _write_key_info 的说明）：
-        # 文档说"第一行 URI、第二行 key"，但服务器上的 FFmpeg 4.3.9 实测
-        # 是把**第二行**当成文件名去打开（"error opening key file <hex>"），
-        # 也就是它认的其实是"第一行 key、第二行 URI"。
-        # 各版本行为不一致 ⇒ 不赌哪一种，两种都试，并且**校验产物**：
-        # 只有 m3u8 里的 EXT-X-KEY URI 确实是 "key.bin" 才算成功
-        # （否则后端改写正则 URI="key\.bin" 匹配不上，播放器拿不到密钥）。
-        # 试出来的那一种会被记住，后续视频直接用，不再白跑一次。
+        # 第二行写"key 文件路径"还是写"key 的十六进制"，各版本不一致。
+        # 服务器上的 FFmpeg 4.3.9 实测是前者 —— 把十六进制写在第二行时，
+        # FFmpeg 拿它当**文件名**去打开（"error opening key file <hex>"）。
+        # 不赌哪一种，两种都试，并且**校验产物**：只有 m3u8 里的 EXT-X-KEY
+        # URI 确实是 "key.bin" 才算成功（否则后端改写正则 URI="key\.bin"
+        # 匹配不上，播放器拿不到密钥）。试出来的那一种会被记住。
         for layout in self._key_info_layouts():
             await asyncio.to_thread(self._write_key_info, output_dir, key, layout)
             proc = await asyncio.create_subprocess_exec(
@@ -388,7 +393,7 @@ class VideoProcessor:
                 continue
 
             # 布局不对 ⇒ 换一种再试；别的错误（输入坏了、编码器缺失）直接失败
-            if not self._looks_like_key_info_layout_error(err):
+            if not looks_like_key_info_layout_error(err):
                 break
             log.warning("hls_key_info_layout_rejected",
                         video_id=video_id, layout=layout,
@@ -442,95 +447,27 @@ class VideoProcessor:
         内容是 **16 字节原始 key** —— 后端下发给播放器的是同一份字节
         （``videos/{id}/key.bin``），两边必须完全一致，否则播放器解不开。
         """
-        key_path = os.path.join(output_dir, "key.bin")
-        with open(key_path, "wb") as f:
-            f.write(key)
+        write_key_bin(output_dir, key)
 
     def _write_key_info(self, output_dir: str, key: bytes, layout: str) -> None:
         """按指定布局写 key.info。
 
-        **两种布局都要支持，因为 FFmpeg 各版本的行为不一致**：
-
-        - ``uri_first``（文档规定的）：第一行 URI，第二行 key
-        - ``key_first``（4.3.9 实测的行为）：第一行 key，第二行 URI
-
-        见 ``_hls_transcode`` 里的说明 —— 布局猜错的后果是
-        FFmpeg 拿 key 的十六进制当文件名去打开，转码必然失败。
+        格式的完整说明见 ``edam_worker.hls_keyinfo`` —— **第二行是
+        key 文件的路径，不是 key 本身**（这一点我错过两次）。
         """
-        key_info_path = os.path.join(output_dir, "key.info")
-        uri_line = "key.bin"
-        key_line = key.hex()
-        lines = ([uri_line, key_line] if layout == "uri_first"
-                 else [key_line, uri_line])
-        with open(key_info_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("".join(line + "\n" for line in lines))
+        write_key_info(output_dir, key, layout)
 
-    # ----------------------------------------------------------------
-    # key.info 行序的自适应
-    #
-    # **为什么需要自适应**：FFmpeg 各版本对 key.info 里"哪一行是 URI、
-    # 哪一行是 key"的处理并不一致。
-    #
-    #   文档（ffmpeg-formats → hls_key_info_file）说：
-    #       first line is a URI to the key file
-    #       second line is the key
-    #
-    #   而服务器上的 FFmpeg 4.3.9 实测（2026-10-29）：它把**第二行**
-    #   当成文件名去打开 ——
-    #       [hls] Opening '<key 的十六进制>' for reading
-    #       [hls muxer] error opening key file <key 的十六进制>
-    #   也就是它实际认的是"第一行 key、第二行 URI"。
-    #
-    # 与其赌哪一种（赌错 = 每一条视频都转码失败，而且错误信息极具误导性），
-    # 不如**两种都试，并且校验产物**：只有 m3u8 里的 EXT-X-KEY URI
-    # 确实是 "key.bin" 才算成功。试出来的那一种会被记住。
-    # ----------------------------------------------------------------
-
-    KEY_INFO_LAYOUTS = ("uri_first", "key_first")
+    def set_key_info_layout(self, layout: Optional[str]) -> None:
+        """设定本机 FFmpeg 认哪种 key.info 写法（启动探测的结果）。"""
+        self._key_info_layout = layout
 
     def _key_info_layouts(self) -> List[str]:
-        """要试的布局顺序：上次试出来的排第一（省掉一次白跑）。"""
-        if self._key_info_layout and self._key_info_layout in self.KEY_INFO_LAYOUTS:
-            return [self._key_info_layout] + [
-                layout for layout in self.KEY_INFO_LAYOUTS
-                if layout != self._key_info_layout
-            ]
-        return list(self.KEY_INFO_LAYOUTS)
-
-    @staticmethod
-    def _looks_like_key_info_layout_error(stderr_text: str) -> bool:
-        """这段报错是不是"key.info 行序不对"引起的。
-
-        只认 FFmpeg 明确说"打不开 key 文件"的两种说法；
-        其它报错（输入文件坏了、编码器缺失……）必须原样抛出去，
-        不能被"换个布局再试"掩盖。
-        """
-        return ("error opening key file" in stderr_text
-                or "Unable to open key file" in stderr_text
-                or "Could not write header for output file" in stderr_text
-                and "key file" in stderr_text)
+        """要试的写法顺序：探测/上次试出来的排第一（省掉一次白跑）。"""
+        return layout_order(self._key_info_layout)
 
     async def _playlist_key_uri_is_correct(self, m3u8_path: str) -> bool:
-        """m3u8 里的 EXT-X-KEY URI 必须是 "key.bin"。
-
-        **这不只是"有没有加密"的问题** —— 后端
-        ``PlaybackController.rewriteM3u8`` 用正则 ``URI="key\\.bin"``
-        把它改写成带 token 的绝对地址。URI 写错了（哪怕加密生效了），
-        后端改写不了 ⇒ 播放器拿不到密钥 ⇒ 视频解不开。
-
-        所以布局猜错时必须能**发现**，而不是"转码成功"就当成功。
-        """
-        def _check() -> bool:
-            try:
-                with open(m3u8_path, "r", encoding="utf-8", newline="") as f:
-                    for line in f:
-                        if line.startswith("#EXT-X-KEY"):
-                            return 'URI="key.bin"' in line
-            except OSError:
-                return False
-            return False
-
-        return await asyncio.to_thread(_check)
+        """m3u8 里的 EXT-X-KEY URI 必须是 "key.bin"（详见 hls_keyinfo 模块）。"""
+        return await asyncio.to_thread(playlist_key_uri_is_correct, m3u8_path)
 
     async def _extract_fingerprints(self, input_path: str, video_id: int, work_dir: Optional[str] = None) -> str:
         """

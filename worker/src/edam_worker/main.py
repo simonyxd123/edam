@@ -20,6 +20,7 @@ import requests
 from .config import settings
 from .errors import PermanentWorkerError
 from .ffmpeg_probe import probe_ffmpeg, remediation
+from .hls_keyinfo import probe_key_info_layout
 from .fonts import find_font
 from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
@@ -196,6 +197,41 @@ class WorkerApp:
         # 不做这个自检的话，环境缺东西只会在第一个视频到来时才炸，
         # 而且抛出的异常只有一句"转码失败"，看不出缺的是编码器还是滤镜。
         await self._probe_ffmpeg()
+
+        # key.info 格式探测 —— 各版本 FFmpeg 对第二行的处理不一致
+        # （是"key 文件路径"还是"key 的十六进制"）。
+        # 2026-10-29 线上每条视频都转码失败，正是这个格式搞错了。
+        # 探测一次（~1 秒合成视频），后续每条视频都直接用对的写法，
+        # 不用再"先失败一次再换一种"。
+        await self._probe_key_info_layout()
+
+    async def _probe_key_info_layout(self) -> None:
+        """探测本机 FFmpeg 认哪种 key.info 写法，结果记进日志。"""
+        try:
+            probe = await asyncio.to_thread(
+                probe_key_info_layout, settings.FFMPEG_PATH
+            )
+        except Exception as e:
+            log.error("hls_key_info_probe_failed",
+                      error_type=type(e).__name__, error=str(e)[:300])
+            return
+
+        layout = probe.get("layout")
+        if layout:
+            # 记住它 —— 转码时直接用，不用再逐个试
+            self.video_processor.set_key_info_layout(layout)
+            log.info("hls_key_info_layout_detected",
+                     layout=layout,
+                     hint=("key.info 第一行=key 的 URI，第二行=key 文件的路径"
+                           "（不是 key 本身）"))
+        else:
+            # 探测不出来 ≠ worker 该死 —— 转码时仍会逐个试两种写法。
+            # 但必须喊出来，否则又是一条"转码失败但没人知道为什么"。
+            log.warning("hls_key_info_layout_unknown",
+                        tried=probe.get("tried"),
+                        error=probe.get("error"),
+                        hint=("两种 key.info 写法都没成功 —— 转码会逐个试。"
+                              "看 tried 里的 output_tail 定位原因"))
 
     async def _probe_ffmpeg(self) -> None:
         """检查 FFmpeg 是否具备转码所需的能力（编码器 / 滤镜 / 字体）。"""
