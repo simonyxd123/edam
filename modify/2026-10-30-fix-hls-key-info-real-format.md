@@ -130,6 +130,7 @@ key.bin
 | `worker/src/edam_worker/main.py` | 启动时调 `probe_key_info_layout()`，结果写进日志并记住 |
 | `worker/tests/test_hls_keyinfo.py`（重写） | 9 个用例：格式内容、key.bin 时机、假成功、错误分类不误判 |
 | `worker/tests/test_hls_keyinfo_module.py`（新） | 17 个用例：模块契约、探测的留痕与短路 |
+| `ops/worker/reprocess-pending.sh`（新） | 批量补跑脚本：从库里捞 pending 的视频，逐条重新入队 |
 
 ---
 
@@ -184,6 +185,37 @@ journalctl -u edam-worker -f -o cat | grep -E "hls_transcode_complete|notify_bac
 
 期望 `hls_transcode_complete` 且带 `key_info_layout=uri_keyfile`。
 
+### 6.1 批量补跑（历史视频全是 pending）
+
+2026-10-28 起上传的视频**一条都没转成过**（worker 一直没起来，
+重试用尽后消息被 ACK 丢弃 ⇒ 队列里不会再有它们 ⇒ 必须主动重触发）。
+
+逐条手工 curl 十几条太累，也容易漏 ⇒ 加了个脚本：
+
+```bash
+# 先干跑，看清楚要处理哪些
+sudo ./ops/worker/reprocess-pending.sh
+
+# 确认无误后真的入队
+sudo ./ops/worker/reprocess-pending.sh --execute
+```
+
+脚本做的事：
+1. 从 `/etc/edam/worker.env` 读 `OPS_TOKEN`（不走命令行 —— 免得进 shell history）
+2. 检查 worker 的 ops 端点活着、`OPS_ENABLED=true`
+3. 从 MySQL 捞 `hls_status <> 2`（非 ready）且 `minio_path` 非空的视频
+4. 逐条 POST 到 worker 的 `/ops/videos/{id}/reprocess-hls`
+   （走原 RabbitMQ 队列 ⇒ 水印/加密/上传/回调都和首次 upload 完全一致）
+
+**已用假的 mysql/curl 测过四条路径**：干跑、入队成功、入队失败、
+ops 未开启。测试中发现并修掉一个真 bug ——
+`grep -o '"ops_enabled":[^,]*'` 在 `ops_enabled` 是 JSON 最后一个字段时
+会切出 `true}`，导致**明明开着却被判成关闭**。
+
+⚠️ **`OPS_ENABLED` 默认是 `false`** —— 要用这个脚本，得先在
+`/etc/edam/worker.env` 里设 `OPS_ENABLED=true` + `OPS_TOKEN=...`
+再重启 worker。
+
 ⚠️ **`WORKER_TOKEN` 两边一致这个坎还没过** —— 转码成功了状态也更新不了，
 视频照样播不了。验证：
 
@@ -195,10 +227,27 @@ curl -s http://127.0.0.1:8092/api/v1/health/ready | python3 -m json.tool | grep 
 
 ## 七、遗留
 
-1. **历史视频全是 pending** —— 2026-10-28 至今上传的都没转成过，
-   需要逐个重新触发（十几条的话可以写个补跑脚本）。
-2. **K8s 侧要重建镜像**（改了 worker 代码）。
-3. **本地验证的缺口**：本机没装 FFmpeg，探测逻辑是用假的 subprocess 测的
+1. **K8s 侧要重建镜像**（改了 worker 代码）。
+2. **本地验证的缺口**：本机没装 FFmpeg，探测逻辑是用假的 subprocess 测的
    （只验证了"探测函数怎么用"，没验证"真 FFmpeg 的产物对不对"）。
    真正的验证在服务器上 —— 启动探测会跑真的 FFmpeg，
    结果直接写进 `hls_key_info_layout_detected` 日志。
+
+---
+
+## 八、服务器实测结果（2026-10-30）
+
+```
+{"event": "ffmpeg_capabilities_ok",
+ "version": "ffmpeg version 4.3.9-0+deb11u2", ...}
+
+{"event": "hls_key_info_layout_detected", "layout": "uri_keyfile",
+ "hint": "key.info 第一行=key 的 URI，第二行=key 文件的路径（不是 key 本身）"}
+```
+
+⇒ **探测确认了诊断**：这台机器的 FFmpeg 4.3.9 认的正是
+"第二行 = key 文件的路径"。探测耗时 200ms。
+
+⇒ 前两版（`uri_first` / `key_first`）都必然失败 —— 现在可以确定地说，
+不是"文档和实现不一致"，而是**文档本身写错了**：
+`second line is the key` 实际是 `second line is the path to the key file`。
