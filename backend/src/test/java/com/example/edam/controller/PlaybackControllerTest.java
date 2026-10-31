@@ -19,6 +19,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -104,9 +106,108 @@ class PlaybackControllerTest {
         return req;
     }
 
+    /**
+     * 造一个 MinIO 返回的流。
+     *
+     * <p>{@code GetObjectResponse extends FilterInputStream}，
+     * 所以直接用内存流构造，模拟 MinIO 返回 m3u8 内容。
+     */
+    private io.minio.GetObjectResponse minioStream(String content) throws Exception {
+        return new io.minio.GetObjectResponse(
+            new okhttp3.Headers.Builder().build(),
+            "edam-videos", "us-east-1", "videos/1/hls/playlist.m3u8",
+            new java.io.ByteArrayInputStream(content.getBytes("UTF-8")));
+    }
+
     private ErrorResponse errorResponse(String code) {
         // 构造签名：(code, message, bucketName, objectName, resource, requestId, hostId)
         return new ErrorResponse(code, "not found", "edam-videos",
             "videos/1/hls/playlist.m3u8", "videos/1/hls/playlist.m3u8", "req-1", "host-1");
+    }
+
+    // ==================================================================
+    // m3u8 改写：分片/密钥地址必须是**根相对**路径
+    // ==================================================================
+
+    /**
+     * m3u8 里的分片与密钥地址必须改写成**根相对**路径。
+     *
+     * <p>为什么不能用绝对路径：绝对路径要后端先猜出浏览器侧的 origin，
+     * 而 nginx 的 {@code X-Forwarded-Host: $host} **不含端口**
+     * （含端口的是 {@code $http_host}），
+     * 于是 {@code https://host:65173} 被猜成 {@code https://host} ⇒ 端口丢了。
+     *
+     * <p>后果很隐蔽：manifest 本身是同源相对路径，能正常下载；
+     * 但 m3u8 里的分片/密钥指向了另一个 origin ⇒ 浏览器连不上 ⇒
+     * hls.js **收不到任何 HTTP 响应**（只能等超时）⇒ 前端只报 "HTTP ??"。
+     *
+     * <p>根相对路径由 hls.js 用 manifest 自身的 URL 解析 ——
+     * manifest 是浏览器按同源拉下来的，origin/端口必然正确。
+     */
+    @Test
+    @DisplayName("m3u8 改写：分片/密钥用根相对路径，不含猜出来的 origin")
+    void rewriteUsesRootRelativeUrls() throws Exception {
+        String m3u8 = String.join("\n",
+            "#EXTM3U",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+            "#EXTINF:10.0,",
+            "segment_000.ts",
+            "#EXTINF:10.0,",
+            "segment_001.ts",
+            "") ;
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        ResponseEntity<byte[]> resp = controller.getPlaylist(1L, "tok", request());
+        String body = new String(resp.getBody(), "UTF-8");
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertTrue(body.contains("/api/v1/playback/1/segment/segment_000.ts?token=tok"),
+            "分片地址必须是根相对路径，实际输出：\n" + body);
+        assertTrue(body.contains("/api/v1/playback/1/segment/segment_001.ts?token=tok"),
+            "分片地址必须是根相对路径，实际输出：\n" + body);
+        assertTrue(body.contains("URI=\"/api/v1/playback/1/key?token=tok\""),
+            "密钥地址必须是根相对路径，实际输出：\n" + body);
+        assertFalse(body.contains("http://localhost:8092"),
+            "改写后的 m3u8 不应包含后端自己的 origin（那是内网地址），实际输出：\n" + body);
+    }
+
+    @Test
+    @DisplayName("m3u8 改写：不受 X-Forwarded-Host 丢端口的影响")
+    void rewriteIgnoresForwardedHostPortLoss() throws Exception {
+        // nginx 的 $host 不含端口 ⇒ 后端拿到的 X-Forwarded-Host 没有 :65173
+        String m3u8 = "#EXTM3U\n#EXTINF:10.0,\nsegment_000.ts\n";
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        HttpServletRequest req = request();
+        when(req.getHeader("X-Forwarded-Host")).thenReturn("218.4.173.194");
+        when(req.getHeader("X-Forwarded-Proto")).thenReturn("https");
+
+        String body = new String(controller.getPlaylist(1L, "tok", req).getBody(), "UTF-8");
+
+        assertTrue(body.contains("/api/v1/playback/1/segment/segment_000.ts"),
+            "必须是根相对路径（不依赖代理头），实际输出：\n" + body);
+        assertFalse(body.contains("218.4.173.194"),
+            "不应把代理头里的 host 写进 m3u8，实际输出：\n" + body);
+    }
+
+    @Test
+    @DisplayName("m3u8 改写：保留 #EXTINF 等非分片行不动")
+    void rewriteKeepsOtherLines() throws Exception {
+        String m3u8 = String.join("\n",
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-TARGETDURATION:10",
+            "#EXTINF:10.0,",
+            "segment_000.ts",
+            "#EXT-X-ENDLIST",
+            "");
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        String body = new String(controller.getPlaylist(1L, "tok", request()).getBody(), "UTF-8");
+
+        assertTrue(body.contains("#EXT-X-VERSION:3"));
+        assertTrue(body.contains("#EXTINF:10.0,"));
+        assertTrue(body.contains("#EXT-X-ENDLIST"));
+        assertTrue(body.contains("/api/v1/playback/1/segment/segment_000.ts?token=tok"));
     }
 }

@@ -1,6 +1,7 @@
 package com.example.edam.controller;
 
 import com.example.edam.model.VideoResource;
+import io.jsonwebtoken.Claims;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.VideoService;
@@ -97,15 +98,20 @@ public class PlaybackController {
             @PathVariable("video_id") Long videoId,
             @RequestParam("token") String token,
             jakarta.servlet.http.HttpServletRequest request) {
-        log.info("m3u8_endpoint_hit, video_id={}, token_len={}, remote_addr={}, x-forwarded-host={}",
-            videoId, token.length(), request.getRemoteAddr(), request.getHeader("X-Forwarded-Host"));
         // 1. 验证 token（不依赖 Spring Security context，query string 取）
+        //
+        // 先验 token 再打日志：验不过的请求也要留下痕迹，但**不能记 token 本身**
+        // （连哈希都不打 —— 见项目安全约定），只记 video_id。
+        io.jsonwebtoken.Claims claims;
         try {
-            jwtTokenProvider.parseAndValidate(token);
+            claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("m3u8_token_invalid, video_id={}, error={}", videoId, e.getMessage());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+        String requesterId = subjectOf(claims);
+        log.info("m3u8_endpoint_hit, video_id={}, requester_id={}, token_len={}, remote_addr={}, x_forwarded_host={}",
+            videoId, requesterId, token.length(), request.getRemoteAddr(), request.getHeader("X-Forwarded-Host"));
 
         String objectName = String.format("videos/%d/hls/playlist.m3u8", videoId);
         try {
@@ -117,23 +123,26 @@ public class PlaybackController {
                 content = stream.readAllBytes();
             }
 
-            // 推断 segment URL 的 base（从 request URL 拿 scheme + host + port）
-            // 反向代理 / 内网穿透场景下，request.getRequestURL() 是后端实际接收的
-            // (比如 http://localhost:8092/api/v1/.../playlist.m3u8)
-            // 但浏览器实际访问的是 https://218.4.173.194:65173/...
-            // 所以用 X-Forwarded-* 或 Origin / Referer 来推断浏览器侧 base
-            String browserBase = inferBrowserBase(request);
-            log.info("m3u8_rewrite_origin, video_id={}, browser_base={}, request_url={}",
-                videoId, browserBase, request.getRequestURL());
-
-            // 把 segment_001.ts 等相对路径改写为**绝对路径**（含浏览器侧 origin + token）
+            // 把 segment_001.ts 等相对路径改写为**根相对路径**（/api/v1/...）
             // 同时把 EXT-X-KEY 的 URI="key.bin" 改写为后端 key 端点（带 token）
-            // 这样 Hls.js 解析时不会因为 base URL 拼接错位而失败
+            //
+            // 为什么是"根相对"而不是"绝对路径"：
+            // 绝对路径需要先猜出浏览器侧的 origin（scheme + host + port），
+            // 而这个猜测**不可靠** —— nginx 的 `proxy_set_header X-Forwarded-Host $host`
+            // 里 `$host` **不含端口**（含端口的是 `$http_host`），
+            // 于是 `https://host:65173` 会被猜成 `https://host`（丢了 65173）。
+            // 猜错的后果：m3u8 本身能下（它是同源相对路径），
+            // 但 m3u8 里的分片/密钥地址指向了另一个 origin/端口 ⇒ 拉不到 ⇒
+            // hls.js 拿不到任何 HTTP 响应（超时）⇒ 前端只能报 "HTTP ??"。
+            //
+            // 根相对路径由 **hls.js 用 manifest 自身的 URL** 解析：
+            // manifest 是浏览器自己按同源拉下来的，它的 origin/端口**一定是对的**，
+            // 所以分片/密钥地址也就一定对 —— 不依赖后端猜端口。
             String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
-            String rewritten = rewriteM3u8(text, videoId, token, browserBase);
+            String rewritten = rewriteM3u8(text, videoId, token);
 
-            log.info("m3u8_served, video_id={}, segments_count={}, has_ext_x_key={}, in_size={}, out_size={}",
-                videoId, countLines(text, ".ts"), text.contains("#EXT-X-KEY"), content.length,
+            log.info("m3u8_served, video_id={}, requester_id={}, segments_count={}, has_ext_x_key={}, in_size={}, out_size={}",
+                videoId, requesterId, countLines(text, ".ts"), text.contains("#EXT-X-KEY"), content.length,
                 rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
 
             return ResponseEntity.ok()
@@ -175,43 +184,6 @@ public class PlaybackController {
     }
 
     /**
-     * 推断浏览器侧的 base URL（scheme + host + port）
-     * 优先级：
-     *   1. X-Forwarded-Proto + X-Forwarded-Host（反向代理标准头）
-     *   2. Origin（浏览器跨域时带）
-     *   3. Referer（去掉 path）
-     *   4. request.getRequestURL()（最后兜底）
-     */
-    private String inferBrowserBase(jakarta.servlet.http.HttpServletRequest request) {
-        String proto = request.getHeader("X-Forwarded-Proto");
-        String host = request.getHeader("X-Forwarded-Host");
-        if (proto == null) proto = request.getHeader("X-Forwarded-Scheme");
-        if (host == null) host = request.getHeader("X-Forwarded-Server");
-
-        if (proto == null || host == null) {
-            // 退化用 Origin / Referer
-            String origin = request.getHeader("Origin");
-            if (origin != null && !origin.isBlank()) {
-                return origin;  // Origin 形如 https://host:port
-            }
-            String referer = request.getHeader("Referer");
-            if (referer != null && !referer.isBlank()) {
-                int pathStart = referer.indexOf("/", referer.indexOf("//") + 2);
-                if (pathStart > 0) return referer.substring(0, pathStart);
-                return referer;
-            }
-        } else {
-            return proto + "://" + host;
-        }
-
-        // 最后兜底：用 request URL
-        String url = request.getRequestURL().toString();
-        int pathStart = url.indexOf("/", url.indexOf("//") + 2);
-        if (pathStart > 0) return url.substring(0, pathStart);
-        return url;
-    }
-
-    /**
      * HLS segment（.ts）代理
      */
     @GetMapping(value = "/{video_id}/segment/{filename:.+}", produces = "video/mp2t")
@@ -220,13 +192,15 @@ public class PlaybackController {
             @PathVariable("filename") String filename,
             @RequestParam("token") String token) {
         // 1. 验证 token
+        Claims claims;
         try {
-            jwtTokenProvider.parseAndValidate(token);
+            claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("segment_token_invalid, video_id={}, file={}, error={}",
                 videoId, filename, e.getMessage());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+        String requesterId = subjectOf(claims);
 
         // 安全检查：filename 只能包含 segment_*.ts 这种
         if (!filename.matches("segment_\\d+\\.ts")) {
@@ -246,33 +220,43 @@ public class PlaybackController {
                 .header("Cache-Control", "public, max-age=300")
                 .body(content);
         } catch (Exception e) {
-            log.error("segment_serve_failed, video_id={}, file={}", videoId, filename, e);
+            // 带上请求者：同一个视频被不同账号播放时，出问题时能区分是谁的请求
+            log.error("segment_serve_failed, video_id={}, file={}, requester_id={}",
+                videoId, filename, requesterId, e);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
     }
 
     /**
      * 把 m3u8 改写成 Hls.js 可直接消费的形态：
-     * 1. segment_001.ts 等相对路径 → **绝对路径**（含浏览器侧 origin + token）
-     * 2. EXT-X-KEY 的 URI="key.bin" → 后端 key 端点绝对地址（带 token）
+     * 1. segment_001.ts 等相对路径 → **根相对路径** {@code /api/v1/playback/{id}/segment/...}（带 token）
+     * 2. EXT-X-KEY 的 URI="key.bin" → 后端 key 端点根相对地址（带 token）
      *
-     * 关键修复：之前用 `/api/v1/playback/{id}/segment/...` 相对路径，
-     * Hls.js 用 m3u8 的 base URL 拼接，相对路径解析容易出错（特别是反向代理场景下
-     * m3u8 URL 端口和实际访问端口不一致）。
+     * <p><b>为什么用根相对路径</b>（而不是早期版本用的绝对路径）：
+     * 绝对路径要后端先猜出浏览器侧的 origin（scheme + host + **port**），
+     * 而这个猜测在反向代理下**不可靠**：
+     * nginx 的 {@code proxy_set_header X-Forwarded-Host $host} 里，
+     * {@code $host} **不含端口**（含端口的是 {@code $http_host}），
+     * 于是 {@code https://host:65173} 被猜成 {@code https://host} —— 端口丢了。
      *
-     * 改用绝对路径后，Hls.js 直接拉完整 URL，不会做 base URL 拼接。
+     * <p>丢端口的后果很隐蔽：manifest 本身是同源相对路径，能正常下载；
+     * 但 m3u8 里的分片/密钥地址指向了另一个 origin ⇒ 浏览器连不上 ⇒
+     * hls.js **收不到任何 HTTP 响应**（只能等超时）⇒ 前端只能报 {@code HTTP ??}。
+     *
+     * <p>根相对路径由 hls.js 用 **manifest 自身的 URL** 解析 ——
+     * manifest 是浏览器按同源拉下来的，它的 origin 和端口**必然正确**，
+     * 所以分片/密钥地址也必然正确。后端不再需要猜端口。
      */
-    private String rewriteM3u8(String m3u8, long videoId, String token, String browserBase) {
-        String base = browserBase.endsWith("/") ? browserBase.substring(0, browserBase.length() - 1) : browserBase;
+    private String rewriteM3u8(String m3u8, long videoId, String token) {
         // 匹配 segment_xxx.ts 整行（不含 #EXTINF / #EXT-X-*）
         String rewritten = m3u8.replaceAll(
             "(?m)^(segment_\\d+\\.ts)$",
-            String.format("%s/api/v1/playback/%d/segment/$1?token=%s", base, videoId, token));
+            String.format("/api/v1/playback/%d/segment/$1?token=%s", videoId, token));
         // EXT-X-KEY 的 URI 指向 key.bin（worker 写的是相对路径），
         // 改成后端 key 端点 —— Hls.js 不能带自定义头，所以走 query token
         rewritten = rewritten.replaceAll(
             "URI=\"key\\.bin\"",
-            String.format("URI=\"%s/api/v1/playback/%d/key?token=%s\"", base, videoId, token));
+            String.format("URI=\"/api/v1/playback/%d/key?token=%s\"", videoId, token));
         return rewritten;
     }
 
@@ -298,12 +282,14 @@ public class PlaybackController {
         @PathVariable("video_id") Long videoId,
         @RequestParam("token") String token
     ) {
+        Claims claims;
         try {
-            jwtTokenProvider.parseAndValidate(token);
+            claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("key_token_invalid, video_id={}, error={}", videoId, e.getMessage());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+        String requesterId = subjectOf(claims);
 
         String objectName = String.format("videos/%d/key.bin", videoId);
         try (InputStream stream = minioClient.getObject(
@@ -313,15 +299,26 @@ public class PlaybackController {
                 log.error("hls_key_invalid_length, video_id={}, len={}", videoId, key.length);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
-            log.info("hls_key_served, video_id={}", videoId);
+            log.info("hls_key_served, video_id={}, requester_id={}", videoId, requesterId);
             return ResponseEntity.status(HttpStatus.OK)
                 .header("Cache-Control", "no-store")
                 .header("Content-Type", "application/octet-stream")
                 .body(key);
         } catch (Exception e) {
-            log.error("hls_key_serve_failed, video_id={}, object={}", videoId, objectName, e);
+            log.error("hls_key_serve_failed, video_id={}, object={}, requester_id={}",
+                videoId, objectName, requesterId, e);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
+    }
+
+    /**
+     * 从已解析的 claims 里取请求者 id（= JWT 的 subject），取不到就返回 null。
+     *
+     * <p>用于日志：同一个视频可能被多个账号播放，出问题时得能区分是谁的请求。
+     * **只取 subject，不打 token 本身**（项目安全约定：日志里不得出现 token）。
+     */
+    private String subjectOf(Claims claims) {
+        return claims == null ? null : claims.getSubject();
     }
 
     /**

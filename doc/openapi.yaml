@@ -1833,6 +1833,14 @@ paths:
       description: |
         Hls.js 不能带 Authorization 头，所以 token 走 query string，
         服务端校验后改写分片与 AES 密钥的 URL。
+
+        改写后的地址是**根相对路径**（/api/v1/playback/{id}/segment/...），
+        由 Hls.js 用 manifest 自身的 URL 解析 —— manifest 是浏览器按同源
+        拉下来的，其 origin/端口必然正确。
+        （早期版本改写成绝对路径，需要后端猜浏览器侧 origin；
+        nginx 的 X-Forwarded-Host 用 $host 不含端口，猜错会让分片指向
+        另一个 origin，浏览器连不上 ⇒ Hls.js 收不到任何 HTTP 响应，
+        前端只能报 "HTTP ???"。）
       parameters:
         - name: video_id
           in: path

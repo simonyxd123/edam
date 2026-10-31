@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
+import { describePlaybackError, formatPlaybackError } from '@/utils/hlsError';
 import Hls from 'hls.js';
 
 const route = useRoute();
@@ -123,10 +124,16 @@ async function loadVideo() {
       let recoveryAttempted = false;
 
       hls.value.on(Hls.Events.ERROR, (_e, data) => {
+        // hls.js 的 details 精确到阶段（manifest / frag / key），
+        // 而 data.response 只在**真的收到 HTTP 响应**时才存在 ——
+        // 超时路径上它是 undefined。原来只读 response.code，
+        // 于是所有超时都退化成 "HTTP ??"，对排查零信息量。
+        const errInfo = describePlaybackError(data);
         console.error('[VideoDetail] HLS error details:', JSON.stringify({
           type: data.type, details: data.details,
           fatal: data.fatal, error: data.error?.message,
-          response: data.response, networkDetails: data.networkDetails,
+          status: errInfo.status, stage: errInfo.stage,
+          url: errInfo.url,
         }));
         if (!data.fatal) {
           // 非致命：hls.js 内部已自动重试，仅日志；不刷 errorMsg 防止覆盖真实致命错误
@@ -136,26 +143,18 @@ async function loadVideo() {
         // 致命：先按类型尝试内置恢复，恢复失败 / 重试用尽再切原生 <video>
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           // 网络类（manifest/segment 404/5xx、secure_link 拒签、AES key 拉取失败、MinIO 文件丢失等）
-          const status = data.response?.code;
-          const body = (data.response?.text || '').slice(0, 80);
           if (networkRetries < NETWORK_MAX_RETRIES) {
             networkRetries++;
             errorMsg.value = `网络异常，正在重试（${networkRetries}/${NETWORK_MAX_RETRIES}）…` +
-              (status ? ` (HTTP ${status})` : '');
+              `（${errInfo.stage} ${errInfo.statusText}）`;
             console.warn(
               `[VideoDetail] fatal NETWORK_ERROR, startLoad retry ${networkRetries}/${NETWORK_MAX_RETRIES}, ` +
-              `status=${status ?? '??'}, body=${JSON.stringify(body)}`,
+              `stage=${errInfo.stage}, status=${errInfo.status ?? 'no-response'}, url=${errInfo.url}`,
             );
             try { hls.value?.startLoad(); return; } catch { /* fall through */ }
           }
           // 重试耗尽 → 落 fallback 前给出真正的可操作错误
-          errorMsg.value =
-            `视频源不可达 (HTTP ${status ?? '??'})：` +
-            (status === 404
-              ? '视频尚未转码完成，或播放产物在对象存储中不存在。请稍后重试或联系管理员处理'
-              : status === 503
-                ? '对象存储暂时不可用，请稍后重试或联系管理员'
-                : '请检查网络或稍后重试');
+          errorMsg.value = formatPlaybackError(data);
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           if (!recoveryAttempted) {
             recoveryAttempted = true;
