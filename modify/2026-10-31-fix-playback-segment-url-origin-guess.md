@@ -150,7 +150,7 @@ base = https://218.4.173.194:65173/api/v1/playback/7/playlist.m3u8?token=JWT1
   `Communications link failure`，本机没有 MySQL。
   **改动前（485875d）同样报这 6 个错**，与本次改动无关
   （CI 里这两个用例是配了 MySQL/RabbitMQ 服务跑的，见 d3f0330）
-- web：**31 passed**（含新增 11 个）
+- web：**34 passed**（含新增 14 个）
 - web `vue-tsc --noEmit`：无报错
 
 ---
