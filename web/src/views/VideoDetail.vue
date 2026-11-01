@@ -196,7 +196,17 @@ async function loadVideo() {
     loading.value = false;
   } catch (e: any) {
     console.error('[VideoDetail] load error:', e);
-    errorMsg.value = e?.message || '加载失败';
+    // 403 = 没有该视频的查看权限（密级 L3/L4 且未被授权）。
+    // axios 的通用提示是"没有权限执行该操作"，看不出是哪个视频、什么原因，
+    // 这里换成能直接指导下一步的说法。
+    if (e?.response?.status === 403) {
+      const detail = e?.response?.data?.detail;
+      errorMsg.value = detail
+        ? String(detail)
+        : '没有该视频的查看权限，请联系上传者或管理员授权';
+    } else {
+      errorMsg.value = e?.message || '加载失败';
+    }
     loading.value = false;
   }
 }

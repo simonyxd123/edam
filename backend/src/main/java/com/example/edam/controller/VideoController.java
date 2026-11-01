@@ -5,7 +5,9 @@ import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.VideoResponse;
 import com.example.edam.dto.VideoStatusUpdateRequest;
+import com.example.edam.model.VideoPermission;
 import com.example.edam.model.VideoResource;
+import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import com.example.edam.security.CurrentUserId;
 import lombok.Data;
@@ -16,6 +18,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +37,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class VideoController {
 
     private final VideoService videoService;
+    private final VideoPermissionService videoPermissionService;
 
     /** Worker 回调令牌；为空则该回调端点一律拒绝（fail-closed） */
     @org.springframework.beans.factory.annotation.Value("${edam.worker.token:}")
@@ -80,9 +85,22 @@ public class VideoController {
     }
 
     @GetMapping("/{video_id}")
-    public VideoResponse getById(@PathVariable("video_id") Long videoId) {
+    public ResponseEntity<?> getById(@PathVariable("video_id") Long videoId,
+                                    @CurrentUserId Long currentUserId) {
         // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
-        return VideoResponse.from(videoService.getById(videoId));
+        VideoResource video = videoService.getById(videoId);
+
+        // 可见性校验：列表已按可见性过滤，直接用 URL 访问也必须同样拦住，
+        // 否则"列表里看不到、但知道 id 就能拿到详情"等于没做鉴权。
+        if (!videoPermissionService.canView(video, currentUserId)) {
+            log.warn("video_detail_denied, video_id={}, user_id={}, classification_lv={}",
+                videoId, currentUserId, video.getClassificationLv());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(error("没有该视频的查看权限（密级 " + video.getClassificationLv()
+                    + "，需由上传者授权）"));
+        }
+
+        return ResponseEntity.ok(VideoResponse.from(video));
     }
 
     /**
@@ -161,26 +179,128 @@ public class VideoController {
     /**
      * 批量授权（分享给多个用户）。
      *
-     * <p><b>状态：未实现</b>。原实现直接返回
-     * {@code granted_count = userIds.size()} —— 看起来全部授权成功，
-     * 实际一条权限都没写。前端会提示"已授权 N 个用户"，而权限表纹丝不动。
+     * <p><b>授权模型</b>（依据 {@code doc/database_schema.md} §3.1 与
+     * {@code doc/openapi.yaml} 的本端点契约）：
+     * <ul>
+     *   <li>{@code actions} 位掩码：{@code 1=view 2=download 4=edit 8=delete 16=distribute}。</li>
+     *   <li>{@code expire_at} 为空 = 永不过期；非空则到期自动失效。</li>
+     *   <li>再次授权同一用户是<b>覆盖</b>（唯一键 {@code uk_video_user}）。</li>
+     * </ul>
      *
-     * <p>需要先明确授权模型（是否带有效期 / 是否可撤销 / 是否受密级约束 /
-     * 被授权者能否再分享），才能落库到 {@code video_permission}。
-     * 在那之前明确返回 501，不给前端假成功。
+     * <p><b>再分享的约束</b>（方案书 5.4「越权分享自动阻断」）：
+     * 只有视频上传者、管理员、或持有 {@code distribute} 位的人才能把授权转授出去；
+     * 否则 403 —— 不能拿着别人的授权去扩大授权范围。
      */
     @PostMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
     public ResponseEntity<Map<String, Object>> batchPermission(
-        @RequestBody BatchPermissionRequest request
+        @RequestBody BatchPermissionRequest request,
+        @CurrentUserId Long currentUserId
     ) {
-        log.warn("batch_permission_not_implemented, user_ids={}", request.getUserIds().size());
+        List<Long> userIds = request.getUserIds();
+        if (userIds == null || userIds.isEmpty()) {
+            return ResponseEntity.badRequest().body(badRequest("user_ids 不能为空"));
+        }
+        if (userIds.size() > 200) {
+            return ResponseEntity.badRequest().body(badRequest("一次最多授权 200 个用户"));
+        }
+        Integer actions = request.getActions();
+        if (actions == null) {
+            return ResponseEntity.badRequest().body(badRequest("actions 不能为空"));
+        }
+        VideoResource video = videoService.getById(request.getVideoId());
+
+        // 只有能再分享的人才能授权（方案书 5.4）
+        if (!videoPermissionService.canDistribute(video, currentUserId)) {
+            log.warn("video_permission_distribute_denied, video_id={}, user_id={}",
+                request.getVideoId(), currentUserId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(error("无权分享该视频（需要是上传者、管理员，或持有 distribute 授权）"));
+        }
+
+        int granted = videoPermissionService.grant(
+            request.getVideoId(), userIds, actions,
+            request.expireAtOrNull(), currentUserId);
+
         Map<String, Object> body = new HashMap<>();
-        body.put("error", "not_implemented");
-        body.put("detail", "批量授权尚未实现：需要先确定授权模型（有效期 / 可撤销性 / "
-            + "密级约束 / 是否可再分享），再落库到 video_permission。"
-            + "为避免前端误以为授权成功，此处明确返回 501。");
-        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(body);
+        body.put("granted_count", granted);
+        body.put("video_id", request.getVideoId());
+        body.put("actions", actions);
+        body.put("expire_at", request.getExpireAt());
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 撤销授权（把授权行删掉 ⇒ 对方回到"没有授权"）。
+     *
+     * <p>与 {@link #batchPermission} 同一套权限要求：能再分享才能撤销。
+     */
+    @DeleteMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
+    public ResponseEntity<Map<String, Object>> revokePermission(
+        @RequestBody BatchPermissionRequest request,
+        @CurrentUserId Long currentUserId
+    ) {
+        List<Long> userIds = request.getUserIds();
+        if (userIds == null || userIds.isEmpty()) {
+            return ResponseEntity.badRequest().body(badRequest("user_ids 不能为空"));
+        }
+        VideoResource video = videoService.getById(request.getVideoId());
+        if (!videoPermissionService.canDistribute(video, currentUserId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(error("无权撤销该视频的授权"));
+        }
+        int revoked = videoPermissionService.revoke(request.getVideoId(), userIds);
+        Map<String, Object> body = new HashMap<>();
+        body.put("revoked_count", revoked);
+        body.put("video_id", request.getVideoId());
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 查某视频当前有哪些授权（管理端展示"谁被授权了"）。
+     */
+    @GetMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
+    public ResponseEntity<Map<String, Object>> listPermission(
+        @RequestParam("video_id") Long videoId,
+        @CurrentUserId Long currentUserId
+    ) {
+        VideoResource video = videoService.getById(videoId);
+        if (!videoPermissionService.canDistribute(video, currentUserId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(error("无权查看该视频的授权列表"));
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (VideoPermission p : videoPermissionService.listByVideo(videoId)) {
+            Map<String, Object> item = new HashMap<>();
+            item.put("user_id", p.getUserId());
+            item.put("actions", p.getActions());
+            item.put("granted_by", p.getGrantedBy());
+            item.put("granted_at", p.getGrantedAt());
+            item.put("expire_at", p.getExpireAt());
+            items.add(item);
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("video_id", videoId);
+        body.put("items", items);
+        return ResponseEntity.ok(body);
+    }
+
+    /** 统一的错误响应体（与 openapi 的 Problem Details 风格保持简单一致） */
+    private Map<String, Object> error(String detail) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "forbidden");
+        body.put("detail", detail);
+        return body;
+    }
+
+    /** 参数错误（400）的响应体 */
+    private Map<String, Object> badRequest(String detail) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "bad_request");
+        body.put("detail", detail);
+        return body;
     }
 
 
@@ -247,7 +367,26 @@ public class VideoController {
     public static class BatchPermissionRequest {
         private Long videoId;
         private List<Long> userIds;
+        /** 位掩码：1=view 2=download 4=edit 8=delete 16=distribute */
         private Integer actions;
+        /**
+         * 过期时间（ISO-8601 date-time，与 openapi 契约一致）。
+         *
+         * <p>为空 = 永不过期。解析用 {@link OffsetDateTime#parse} ——
+         * 契约写的是 {@code format: date-time}，带不帶偏移量都该能收。
+         */
         private String expireAt;
+
+        /** 解析后的过期时间；没给或解析不了就是 null（永不过期） */
+        OffsetDateTime expireAtOrNull() {
+            if (expireAt == null || expireAt.isBlank()) {
+                return null;
+            }
+            try {
+                return OffsetDateTime.parse(expireAt);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("expire_at 必须是 ISO-8601 时间: " + expireAt, e);
+            }
+        }
     }
 }

@@ -288,6 +288,10 @@ paths:
     get:
       tags: [videos]
       summary: 视频资源列表
+      description: |
+        按**可见性**过滤（密级 + 显式授权，见 /videos/batch-permission 的授权模型）：
+        L1/L2 对所有登录用户可见；L3 仅上传者、同部门、被显式授权者可见；
+        L4 仅上传者与被显式授权者可见。管理员可见全部。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
@@ -349,6 +353,10 @@ paths:
     get:
       tags: [videos]
       summary: 视频详情
+      description: |
+        同样按**可见性**校验（见 /videos/batch-permission 的授权模型）：
+        没有查看权限时返回 403，而不是 404 —— 403 才能让用户知道
+        "需要授权"而不是"视频不存在"。
       responses:
         '200':
           description: 成功
@@ -356,6 +364,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Video'
+        '403':
+          description: 没有该视频的查看权限
         '404':
           $ref: '#/components/responses/NotFound'
     delete:
@@ -372,7 +382,14 @@ paths:
       summary: 获取播放 Token
       description: |
         用户鉴权后请求播放视频，业务后端校验权限并签发 JWT。
-        实际播放 token 由 Nginx secure_link 二次校验。
+
+        签发前会校验**可见性**（密级 + 显式授权，见 /videos/batch-permission）：
+        没权限 ⇒ 403。
+
+        签发的 token **绑定到这个视频**（claim: scope=playback + video_id）。
+        m3u8 / segment / key 三个端点是 permitAll（播放器带不了自定义头，
+        token 只能放 query string），所以端点侧会校验 token 必须是
+        "绑定到该视频的播放 token" —— 否则普通登录 token 也能拉任意视频。
       parameters:
         - in: path
           name: video_id
@@ -1027,7 +1044,20 @@ paths:
     post:
       tags: [videos]
       summary: 批量授权
-      description: 给多个用户批量授权视频访问权限
+      description: |
+        给多个用户批量授权视频访问权限（落库到 video_permission）。
+
+        **授权模型**：
+        - `actions` 是位掩码：1=view 2=download 4=edit 8=delete 16=distribute（再分享）。
+        - 同一 (video_id, user_id) 唯一 ⇒ 再次授权是**覆盖**而不是叠加。
+        - `expire_at` 为空 = 永不过期；非空则到期后该条授权自动失效。
+        - 只有**上传者本人、管理员、或持有 distribute 位**的人才能调用本接口
+          （方案书 5.4「越权分享自动阻断」）。
+
+        **可见性 = 密级 + 显式授权**（方案书 6.3.1）：
+        L1 公开 / L2 内部 = 任何登录用户可见；
+        L3 机密 = 上传者、同部门、或被显式授权；
+        L4 绝密 = 上传者或被显式授权（"少数核心人员"）。
       requestBody:
         required: true
         content:
@@ -1043,10 +1073,11 @@ paths:
                   maxItems: 200
                 actions:
                   type: integer
-                  description: 位掩码：1=view 2=download 4=edit 8=delete
+                  description: 位掩码：1=view 2=download 4=edit 8=delete 16=distribute
                 expire_at:
                   type: string
                   format: date-time
+                  description: 授权过期时间；省略 = 永不过期
       responses:
         '200':
           description: 授权成功
@@ -1056,6 +1087,74 @@ paths:
                 type: object
                 properties:
                   granted_count: { type: integer }
+                  video_id: { type: integer }
+                  actions: { type: integer }
+                  expire_at: { type: string, format: date-time }
+        '400':
+          description: 参数不合法（user_ids 为空、actions 为 0 或含未知位）
+        '403':
+          description: 无权分享该视频（需要是上传者、管理员，或持有 distribute 授权）
+    delete:
+      tags: [videos]
+      summary: 批量撤销授权
+      description: |
+        撤销（删除 video_permission 里对应的行）⇒ 对方回到"没有显式授权"。
+        权限要求与授权相同：能再分享才能撤销。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [video_id, user_ids]
+              properties:
+                video_id: { type: integer }
+                user_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 200
+      responses:
+        '200':
+          description: 撤销成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked_count: { type: integer }
+                  video_id: { type: integer }
+        '403':
+          description: 无权撤销该视频的授权
+    get:
+      tags: [videos]
+      summary: 查询视频的授权列表
+      description: 列出该视频当前所有授权（含过期未清理的，expire_at 为空表示永不过期）
+      parameters:
+        - name: video_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 授权列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  video_id: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        user_id: { type: integer }
+                        actions: { type: integer }
+                        granted_by: { type: integer }
+                        granted_at: { type: string, format: date-time }
+                        expire_at: { type: string, format: date-time }
+        '403':
+          description: 无权查看该视频的授权列表
 
   /documents/batch-delete:
     post:

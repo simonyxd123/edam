@@ -4,6 +4,7 @@ import com.example.edam.model.VideoResource;
 import io.jsonwebtoken.Claims;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
+import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import com.example.edam.security.CurrentUserId;
 import io.minio.GetObjectArgs;
@@ -36,6 +37,7 @@ import java.util.UUID;
 public class PlaybackController {
 
     private final VideoService videoService;
+    private final VideoPermissionService videoPermissionService;
     private final JwtTokenProvider jwtTokenProvider;
     private final MinioClient minioClient;
     private final AuditService auditService;
@@ -57,15 +59,27 @@ public class PlaybackController {
     ) {
         VideoResource video = videoService.getById(videoId);
 
+        // 可见性校验（密级 + 显式授权，见 VideoPermissionService）
+        if (!videoPermissionService.canView(video, userId)) {
+            log.warn("playback_token_denied, video_id={}, user_id={}, classification_lv={}",
+                videoId, userId, video.getClassificationLv());
+            Map<String, Object> body = new HashMap<>();
+            body.put("error", "forbidden");
+            body.put("detail", "没有该视频的查看权限（密级 " + video.getClassificationLv()
+                + "，需由上传者授权）");
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+        }
+
         // 写审计日志：视频预览
         auditService.log(userId, "preview", "video", videoId, "success",
             "ip=" + request.getRemoteAddr() + ", title=" + video.getTitle(),
             request.getRemoteAddr(), request.getHeader("User-Agent"));
 
-        // 1. 签发短时 JWT
+        // 1. 签发短时 JWT（**绑定到这个视频** —— 见 createPlaybackToken 的说明：
+        //    m3u8/segment/key 是 permitAll，只靠 query token 鉴权，
+        //    普通登录 token 能被拿来拉任意视频 ⇒ 播放 token 必须带 scope + video_id）
         String sessionId = UUID.randomUUID().toString();
-        String token = jwtTokenProvider.createAccessToken(userId, sessionId,
-                List.of("ROLE_VIEWER"), List.of("video:read", "playback:read"));
+        String token = jwtTokenProvider.createPlaybackToken(userId, videoId, sessionId);
 
         // 2. 生成签名 URL
         long expires = Instant.now().getEpochSecond() + 600;  // 10 分钟
@@ -100,6 +114,9 @@ public class PlaybackController {
             jakarta.servlet.http.HttpServletRequest request) {
         // 1. 验证 token（不依赖 Spring Security context，query string 取）
         //
+        // 必须校验 token 是**绑定到本视频的播放 token**：这三个端点是 permitAll，
+        // 只靠 query token 鉴权 —— 只验签的话，普通登录 token 也能拉任意视频。
+        //
         // 先验 token 再打日志：验不过的请求也要留下痕迹，但**不能记 token 本身**
         // （连哈希都不打 —— 见项目安全约定），只记 video_id。
         io.jsonwebtoken.Claims claims;
@@ -107,6 +124,10 @@ public class PlaybackController {
             claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("m3u8_token_invalid, video_id={}, error={}", videoId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (!jwtTokenProvider.isPlaybackTokenFor(claims, videoId)) {
+            log.warn("m3u8_token_not_for_this_video, video_id={}", videoId);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         String requesterId = subjectOf(claims);
@@ -191,13 +212,17 @@ public class PlaybackController {
             @PathVariable("video_id") Long videoId,
             @PathVariable("filename") String filename,
             @RequestParam("token") String token) {
-        // 1. 验证 token
+        // 1. 验证 token（必须是绑定到本视频的播放 token —— 见 getPlaylist 的说明）
         Claims claims;
         try {
             claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("segment_token_invalid, video_id={}, file={}, error={}",
                 videoId, filename, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (!jwtTokenProvider.isPlaybackTokenFor(claims, videoId)) {
+            log.warn("segment_token_not_for_this_video, video_id={}, file={}", videoId, filename);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         String requesterId = subjectOf(claims);
@@ -287,6 +312,10 @@ public class PlaybackController {
             claims = jwtTokenProvider.parseAndValidate(token);
         } catch (Exception e) {
             log.warn("key_token_invalid, video_id={}, error={}", videoId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (!jwtTokenProvider.isPlaybackTokenFor(claims, videoId)) {
+            log.warn("key_token_not_for_this_video, video_id={}", videoId);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         String requesterId = subjectOf(claims);

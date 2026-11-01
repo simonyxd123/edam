@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
+import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
@@ -23,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -57,12 +60,17 @@ class PlaybackControllerTest {
     @BeforeEach
     void setUp() {
         VideoService videoService = mock(VideoService.class);
+        VideoPermissionService videoPermissionService = mock(VideoPermissionService.class);
         jwtTokenProvider = mock(JwtTokenProvider.class);
         minioClient = mock(MinioClient.class);
         AuditService auditService = mock(AuditService.class);
-        controller = new PlaybackController(videoService, jwtTokenProvider, minioClient, auditService);
+        controller = new PlaybackController(videoService, videoPermissionService,
+            jwtTokenProvider, minioClient, auditService);
         ReflectionTestUtils.setField(controller, "videosBucket", "edam-videos");
         ReflectionTestUtils.setField(controller, "keyUrlTemplate", "/api/v1/playback/%d/key");
+        // 默认：token 验签通过、且是绑定到该视频的播放 token
+        when(jwtTokenProvider.parseAndValidate(any())).thenReturn(mock(io.jsonwebtoken.Claims.class));
+        when(jwtTokenProvider.isPlaybackTokenFor(any(), any())).thenReturn(true);
     }
 
     @Test
@@ -97,6 +105,20 @@ class PlaybackControllerTest {
         ResponseEntity<byte[]> resp = controller.getPlaylist(1L, "bad", request());
 
         assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+    }
+
+    @Test
+    @DisplayName("token 不是本视频的播放 token ⇒ 401（普通登录 token 不能拉播放流）")
+    void tokenNotBoundToThisVideoReturns401() throws Exception {
+        // 验签通过，但 scope 不是 playback / video_id 不匹配 ⇒ 拒绝
+        when(jwtTokenProvider.parseAndValidate(any())).thenReturn(mock(io.jsonwebtoken.Claims.class));
+        when(jwtTokenProvider.isPlaybackTokenFor(any(), any())).thenReturn(false);
+
+        ResponseEntity<byte[]> resp = controller.getPlaylist(1L, "tok", request());
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+        verify(minioClient, never()).getObject(any(GetObjectArgs.class));
+
     }
 
     private HttpServletRequest request() {

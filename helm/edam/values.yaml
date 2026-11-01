@@ -177,7 +177,12 @@ nginx:
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
+        # 用 $http_host 而不是 $host：$host 是**去掉端口**的主机名，
+        # $http_host 才是浏览器 Host 头原样（带端口）。
+        # 服务跑在非标准端口（如 https://host:65173）时，$host 会让后端
+        # 拿到不带端口的 origin ⇒ 日志里的真实 URL 少端口，
+        # 任何依赖它拼地址的地方都会指向另一个 origin。
+        proxy_set_header X-Forwarded-Host $http_host;
         proxy_http_version 1.1;
 
         upstream edam_backend {

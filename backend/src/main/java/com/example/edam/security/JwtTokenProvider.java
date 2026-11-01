@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +66,65 @@ public class JwtTokenProvider {
                 .expiration(expiry)
                 .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
+    }
+
+    /**
+     * 签发**播放专用** token（绑定到某一个视频）。
+     *
+     * <p>为什么不能直接复用 {@link #createAccessToken}：
+     * m3u8 / segment / key 三个端点在 Spring Security 层是 {@code permitAll}
+     * （Hls.js 拉不了自定义头，只能把 token 放 query string），
+     * 而端点内部只验签 —— 于是**任何**合法 JWT（包括普通登录 token）
+     * 都能拿来拉任意视频的播放流，鉴权形同虚设。
+     *
+     * <p>所以播放 token 额外带两个 claim：
+     * <ul>
+     *   <li>{@code scope=playback} —— 标记"这是播放 token"，普通登录 token 没有</li>
+     *   <li>{@code video_id} —— 绑定到具体视频，拿 A 的 token 拉不了 B</li>
+     * </ul>
+     * 端点侧据此校验：token 必须是播放 token、且绑定到请求的那个视频。
+     *
+     * @param userId  看视频的人
+     * @param videoId 这个 token 只对这一个视频有效
+     */
+    public String createPlaybackToken(Long userId, Long videoId, String sessionId) {
+        Date now = new Date();
+        Date expiry = new Date(now.getTime() + accessTokenTtlSeconds * 1000);
+
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("user_id_hash", hashUserId(userId));
+        claims.put("session_id", sessionId);
+        claims.put("scope", SCOPE_PLAYBACK);
+        claims.put("video_id", videoId);
+
+        return Jwts.builder()
+                .subject(String.valueOf(userId))
+                .claims(claims)
+                .issuedAt(now)
+                .expiration(expiry)
+                .signWith(signingKey, Jwts.SIG.HS256)
+                .compact();
+    }
+
+    /** 播放 token 的 scope claim 值 */
+    public static final String SCOPE_PLAYBACK = "playback";
+
+    /**
+     * 校验一个 token 是不是"某个指定视频的播放 token"。
+     *
+     * @param claims  已验签的 claims
+     * @param videoId 请求的视频
+     * @return 校验通过返回 true
+     */
+    public boolean isPlaybackTokenFor(Claims claims, Long videoId) {
+        if (claims == null) {
+            return false;
+        }
+        if (!SCOPE_PLAYBACK.equals(claims.get("scope", String.class))) {
+            return false;
+        }
+        Object vid = claims.get("video_id");
+        return vid != null && String.valueOf(vid).equals(String.valueOf(videoId));
     }
 
     /**

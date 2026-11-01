@@ -38,6 +38,7 @@ public class VideoService {
 
     private final VideoResourceRepository videoRepository;
     private final SysUserRepository sysUserRepository;
+    private final VideoPermissionService videoPermissionService;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
     /** 用于在方法内部精确划定事务边界（见 upload 的三段式说明） */
@@ -80,6 +81,10 @@ public class VideoService {
                               .or().like(VideoResource::getMinioPath, keyword.trim()));
         }
         wrapper.orderByDesc(VideoResource::getUploadTime);
+        // 可见性过滤（密级 + 显式授权）—— 与 VideoPermissionService.canView 同源。
+        // 不加这个的话，列表里会出现根本点不开的视频（L3/L4 未授权时播放会 403），
+        // 用户只能看到"列表里有、点进去报没权限"，体验上等于没做鉴权。
+        videoPermissionService.applyVisibility(wrapper, CurrentUser.optionalUserId());
         return videoRepository.selectPage(new Page<>(page, pageSize), wrapper);
     }
 
@@ -108,6 +113,8 @@ public class VideoService {
             wrapper.eq(VideoResource::getUploaderId, uploaderId);
         }
         wrapper.orderByDesc(VideoResource::getId);
+        // 可见性过滤（与 list 保持一致）
+        videoPermissionService.applyVisibility(wrapper, CurrentUser.optionalUserId());
         // 多取 1 个用于判断 has_more。
         //
         // 原来写成 wrapper.last("LIMIT " + (limit + 1)) —— 把 int 拼进原生 SQL。
