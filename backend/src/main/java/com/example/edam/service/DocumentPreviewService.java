@@ -35,6 +35,7 @@ public class DocumentPreviewService {
     private final WatermarkService watermarkService;
     private final SysUserRepository sysUserRepository;
     private final DocumentService documentService;
+    private final DocPermissionService docPermissionService;
 
     @Value("${minio.bucket.documents}")
     private String documentsBucket;
@@ -46,14 +47,46 @@ public class DocumentPreviewService {
     }
 
     /**
-     * 读取文档原文（可选加水印）。
+     * 访问方式 —— 决定**要哪一位授权**。
      *
-     * @param docId        文档 ID
-     * @param userId       当前用户（用于水印文本；null = 不加水印）
-     * @param withWatermark 是否叠加动态水印
+     * <p>刻意不用 {@code withWatermark} 这个布尔来表达："要不要水印"和
+     * "要不要 download 位"是两件事。方案书 5.6.1【例外】
+     * "L1 公开资源允许下载；L2-L4 默认禁止" —— 也就是
+     * <b>L2 文档能预览但不能下载</b>。用布尔表达就分不清"预览"和"下载"了。
      */
-    public PreviewContent load(Long docId, Long userId, boolean withWatermark) {
+    public enum Access {
+        /** 预览（要 view 位） */
+        VIEW,
+        /** 下载原文（要 download 位） */
+        DOWNLOAD
+    }
+
+    /**
+     * 读取文档原文（按访问方式鉴权，视图叠加动态水印）。
+     *
+     * @param docId  文档 ID
+     * @param userId 当前用户（用于水印文本；null = 不加水印）
+     * @param access 访问方式：VIEW 要 view 位，DOWNLOAD 要 download 位
+     */
+    public PreviewContent load(Long docId, Long userId, Access access) {
         DocResource doc = documentService.getById(docId);
+
+        // 可见性 / 下载权校验（密级 + 显式授权，见 DocPermissionService）
+        if (access == Access.DOWNLOAD) {
+            if (!docPermissionService.canDownload(doc, userId)) {
+                log.warn("doc_download_denied, doc_id={}, user_id={}, classification_lv={}",
+                    docId, userId, doc.getClassificationLv());
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "没有该文档的下载权限（密级 " + doc.getClassificationLv() + "，需由上传者授权）");
+            }
+        } else if (!docPermissionService.canView(doc, userId)) {
+            log.warn("doc_preview_denied, doc_id={}, user_id={}, classification_lv={}",
+                docId, userId, doc.getClassificationLv());
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "没有该文档的查看权限（密级 " + doc.getClassificationLv() + "，需由上传者授权）");
+        }
+
+        boolean withWatermark = access == Access.VIEW;
         if (doc.getMinioPath() == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档原文不存在");
         }

@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, apiBase } from '@/api/client';
 import { documentApi, type Document } from '@/api/document';
+import ShareDialog from '@/components/ShareDialog.vue';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
 import { isDialogDismissed } from '@/utils/dialog';
 
@@ -260,6 +261,15 @@ function handleDistribute(doc: Document) {
   ElMessage.info(`外发文档：${doc.title}（TODO: 接外发审批流程）`);
 }
 
+/** 分享授权对话框的状态 */
+const shareDialogVisible = ref(false);
+const shareTarget = ref<Document | null>(null);
+
+function handleShare(doc: Document) {
+  shareTarget.value = doc;
+  shareDialogVisible.value = true;
+}
+
 function getFileTypeLabel(type: string) {
   const map: Record<string, { label: string; type: string }> = {
     docx: { label: 'Word', type: 'primary' },
@@ -370,10 +380,16 @@ onBeforeUnmount(() => {
             {{ $fmt(row.upload_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handlePreview(row as Document)">预览</el-button>
             <el-button link type="primary" @click="handleDistribute(row as Document)">外发</el-button>
+            <el-button
+              v-permission="'document:share'"
+              link
+              type="warning"
+              @click="handleShare(row as Document)"
+            >分享</el-button>
             <el-button link type="danger" @click="handleDelete(row as Document)">删除</el-button>
           </template>
         </el-table-column>
@@ -506,6 +522,16 @@ onBeforeUnmount(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 分享授权对话框（文档比视频多一个「打印」位） -->
+    <ShareDialog
+      v-model="shareDialogVisible"
+      kind="doc"
+      :resource-id="shareTarget?.id ?? 0"
+      :resource-title="shareTarget?.title"
+      allow-print
+      @saved="loadData()"
+    />
   </div>
 </template>
 

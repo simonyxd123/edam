@@ -490,6 +490,10 @@ paths:
     get:
       tags: [documents]
       summary: 文档资源列表
+      description: |
+        按**可见性**过滤（密级 + 显式授权，见 /documents/batch-permission 的授权模型）：
+        L1/L2 对所有登录用户可见；L3 仅上传者、同部门、被显式授权者可见；
+        L4 仅上传者与被显式授权者可见。管理员可见全部。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
@@ -606,6 +610,11 @@ paths:
               schema:
                 type: string
                 format: binary
+        '403':
+          description: |
+            没有该文档的下载权限。
+            下载权与可见性**分开**（方案书 5.6.1【例外】"L1 公开资源允许下载；
+            L2-L4 默认禁止"）—— L2 文档是"能预览但不能下载"。
 
   # ===== 权限管理 =====
   /rbac/permissions:
@@ -1177,6 +1186,119 @@ paths:
       responses:
         '202':
           description: 任务已接受
+
+  /documents/batch-permission:
+    post:
+      tags: [documents]
+      summary: 批量授权
+      description: |
+        给多个用户批量授权文档访问权限（落库到 doc_permission）。
+
+        **授权模型**（依据 doc/database_schema.md §3.2）：
+        - `actions` 位掩码：1=view 2=download 4=edit 8=delete 16=distribute **32=print**。
+        - 同一 (doc_id, user_id) 唯一 ⇒ 再次授权是**覆盖**而不是叠加。
+        - `expire_at` 为空 = 永不过期；非空则到期后该条授权自动失效。
+        - 只有**上传者本人、管理员、或持有 distribute 位**的人才能调用本接口。
+
+        **可见性 = 密级 + 显式授权**（方案书 6.3.1）：
+        L1/L2 对所有登录用户可见；L3 上传者+同部门+被授权；L4 上传者+被授权。
+
+        **下载权与可见性分开**（方案书 5.6.1【例外】"L1 公开资源允许下载；L2-L4 默认禁止"）：
+        L2 文档是"能看但不能下"；下载要么是 L1，要么显式授予 download 位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_id, user_ids, actions]
+              properties:
+                doc_id: { type: integer }
+                user_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 200
+                actions:
+                  type: integer
+                  description: 位掩码：1=view 2=download 4=edit 8=delete 16=distribute 32=print
+                expire_at:
+                  type: string
+                  format: date-time
+                  description: 授权过期时间；省略 = 永不过期
+      responses:
+        '200':
+          description: 授权成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  granted_count: { type: integer }
+                  doc_id: { type: integer }
+                  actions: { type: integer }
+                  expire_at: { type: string, format: date-time }
+        '400':
+          description: 参数不合法（user_ids 为空、actions 为 0 或含未知位）
+        '403':
+          description: 无权分享该文档（需要是上传者、管理员，或持有 distribute 授权）
+    delete:
+      tags: [documents]
+      summary: 批量撤销授权
+      description: 撤销（删除 doc_permission 里对应的行）⇒ 对方回到"没有显式授权"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_id, user_ids]
+              properties:
+                doc_id: { type: integer }
+                user_ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 200
+      responses:
+        '200':
+          description: 撤销成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked_count: { type: integer }
+                  doc_id: { type: integer }
+        '403':
+          description: 无权撤销该文档的授权
+    get:
+      tags: [documents]
+      summary: 查询文档的授权列表
+      parameters:
+        - name: doc_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 授权列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doc_id: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        user_id: { type: integer }
+                        actions: { type: integer }
+                        granted_by: { type: integer }
+                        granted_at: { type: string, format: date-time }
+                        expire_at: { type: string, format: date-time }
+        '403':
+          description: 无权查看该文档的授权列表
 
   # ===== 全文搜索（v3.1 新增）=====
   /search/videos:
@@ -2023,6 +2145,9 @@ paths:
     get:
       tags: [documents]
       summary: 文档预览（带动态明水印）
+      description: |
+        按**可见性**校验（见 /documents/batch-permission 的授权模型）：
+        需要 view 位或该密级的默认可见范围，否则 403。
       security:
         - bearerAuth: []
       parameters:

@@ -34,6 +34,7 @@ import org.springframework.security.access.AccessDeniedException;
 public class DocumentService {
 
     private final DocResourceRepository docRepository;
+    private final DocPermissionService docPermissionService;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
     /** 用于在方法内部精确划定事务边界（见 upload 的说明） */
@@ -75,6 +76,9 @@ public class DocumentService {
             wrapper.eq(DocResource::getClassificationLv, parseClassification(classificationLv));
         }
         wrapper.orderByDesc(DocResource::getUploadTime);
+        // 可见性过滤（密级 + 显式授权）—— 与 DocPermissionService.canView 同源，
+        // 与视频侧（VideoService.list）保持一致的做法。
+        docPermissionService.applyVisibility(wrapper, CurrentUser.optionalUserId());
         return docRepository.selectPage(new Page<>(page, pageSize), wrapper);
     }
 

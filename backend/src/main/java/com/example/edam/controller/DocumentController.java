@@ -6,6 +6,7 @@ import com.example.edam.dto.DocResponse;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DocResource;
 import com.example.edam.model.SysUser;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.service.AuditService;
@@ -33,6 +34,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +57,7 @@ public class DocumentController {
     private final AuditService auditService;
     private final WatermarkService watermarkService;
     private final com.example.edam.service.DocumentPreviewService previewService;
+    private final com.example.edam.service.DocPermissionService docPermissionService;
     private final SysUserRepository sysUserRepository;
 
     @Value("${minio.bucket.documents}")
@@ -142,9 +147,22 @@ public class DocumentController {
     }
 
     @GetMapping("/{doc_id}")
-    public DocResponse getById(@PathVariable("doc_id") Long docId) {
+    public ResponseEntity<?> getById(@PathVariable("doc_id") Long docId,
+                                     @CurrentUserId Long currentUserId) {
         // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
-        return DocResponse.from(documentService.getById(docId));
+        DocResource doc = documentService.getById(docId);
+
+        // 可见性校验：列表已按可见性过滤，直接用 URL 访问也必须同样拦住
+        if (!docPermissionService.canView(doc, currentUserId)) {
+            log.warn("doc_detail_denied, doc_id={}, user_id={}, classification_lv={}",
+                docId, currentUserId, doc.getClassificationLv());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "forbidden",
+                    "detail", "没有该文档的查看权限（密级 " + doc.getClassificationLv()
+                        + "，需由上传者授权）"));
+        }
+
+        return ResponseEntity.ok(DocResponse.from(doc));
     }
 
     /**
@@ -170,7 +188,7 @@ public class DocumentController {
         // 走共用的 DocumentPreviewService（与 /preview/{id} 端点同一份实现），
         // 避免两处各写一遍水印 + 流式输出的逻辑而行为漂移
         DocumentPreviewService.PreviewContent content =
-            previewService.load(docId, userId, true);
+            previewService.load(docId, userId, DocumentPreviewService.Access.VIEW);
 
         response.setContentType(content.mime());
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
@@ -265,9 +283,147 @@ public class DocumentController {
         return PaginationResponses.of(page, DocResponse::from);
     }
 
+    /**
+     * 批量授权（把文档分享给多个用户）。
+     *
+     * <p><b>授权模型</b>（依据 {@code doc/database_schema.md} §3.2 与
+     * {@code doc/openapi.yaml} 的本端点契约）：
+     * <ul>
+     *   <li>{@code actions} 位掩码：
+     *       {@code 1=view 2=download 4=edit 8=delete 16=distribute 32=print}。</li>
+     *   <li>{@code expire_at} 为空 = 永不过期；非空则到期后该条授权自动失效。</li>
+     *   <li>再次授权同一用户是<b>覆盖</b>（唯一键 {@code uk_doc_user}）。</li>
+     * </ul>
+     *
+     * <p><b>再分享的约束</b>（方案书 5.4「越权分享自动阻断」）：
+     * 只有上传者本人、管理员、或持有 {@code distribute} 位的人才能转授。
+     */
+    @PostMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    public ResponseEntity<Map<String, Object>> batchPermission(
+        @RequestBody BatchPermissionRequest request,
+        @CurrentUserId Long currentUserId
+    ) {
+        List<Long> userIds = request.getUserIds();
+        if (userIds == null || userIds.isEmpty()) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "detail", "user_ids 不能为空"));
+        }
+        if (userIds.size() > 200) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "detail", "一次最多授权 200 个用户"));
+        }
+        Integer actions = request.getActions();
+        if (actions == null) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "detail", "actions 不能为空"));
+        }
+        DocResource doc = documentService.getById(request.getDocId());
+
+        if (!docPermissionService.canDistribute(doc, currentUserId)) {
+            log.warn("doc_permission_distribute_denied, doc_id={}, user_id={}",
+                request.getDocId(), currentUserId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "forbidden",
+                    "detail", "无权分享该文档（需要是上传者、管理员，或持有 distribute 授权）"));
+        }
+
+        int granted = docPermissionService.grant(
+            request.getDocId(), userIds, actions, request.expireAtOrNull(), currentUserId);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("granted_count", granted);
+        body.put("doc_id", request.getDocId());
+        body.put("actions", actions);
+        body.put("expire_at", request.getExpireAt());
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 撤销授权。
+     */
+    @DeleteMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    public ResponseEntity<Map<String, Object>> revokePermission(
+        @RequestBody BatchPermissionRequest request,
+        @CurrentUserId Long currentUserId
+    ) {
+        List<Long> userIds = request.getUserIds();
+        if (userIds == null || userIds.isEmpty()) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "detail", "user_ids 不能为空"));
+        }
+        DocResource doc = documentService.getById(request.getDocId());
+        if (!docPermissionService.canDistribute(doc, currentUserId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "forbidden", "detail", "无权撤销该文档的授权"));
+        }
+        int revoked = docPermissionService.revoke(request.getDocId(), userIds);
+        Map<String, Object> body = new HashMap<>();
+        body.put("revoked_count", revoked);
+        body.put("doc_id", request.getDocId());
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 查询文档当前的授权列表。
+     */
+    @GetMapping("/batch-permission")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    public ResponseEntity<Map<String, Object>> listPermission(
+        @RequestParam("doc_id") Long docId,
+        @CurrentUserId Long currentUserId
+    ) {
+        DocResource doc = documentService.getById(docId);
+        if (!docPermissionService.canDistribute(doc, currentUserId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "forbidden", "detail", "无权查看该文档的授权列表"));
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (com.example.edam.model.DocPermission p : docPermissionService.listByDoc(docId)) {
+            Map<String, Object> item = new HashMap<>();
+            item.put("user_id", p.getUserId());
+            item.put("actions", p.getActions());
+            item.put("granted_by", p.getGrantedBy());
+            item.put("granted_at", p.getGrantedAt());
+            item.put("expire_at", p.getExpireAt());
+            items.add(item);
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("doc_id", docId);
+        body.put("items", items);
+        return ResponseEntity.ok(body);
+    }
+
     @Data
     public static class BatchDeleteRequest {
         private List<Long> docIds;
         private String reason;
+    }
+
+    @Data
+    public static class BatchPermissionRequest {
+        @JsonProperty("doc_id")
+        private Long docId;
+        @JsonProperty("user_ids")
+        private List<Long> userIds;
+        /** 位掩码：1=view 2=download 4=edit 8=delete 16=distribute 32=print */
+        @JsonProperty("actions")
+        private Integer actions;
+        /** 过期时间（ISO-8601 date-time）；为空 = 永不过期 */
+        @JsonProperty("expire_at")
+        private String expireAt;
+
+        /** 解析后的过期时间；没给或解析不了就是 null（永不过期） */
+        OffsetDateTime expireAtOrNull() {
+            if (expireAt == null || expireAt.isBlank()) {
+                return null;
+            }
+            try {
+                return OffsetDateTime.parse(expireAt);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("expire_at 必须是 ISO-8601 时间: " + expireAt, e);
+            }
+        }
     }
 }

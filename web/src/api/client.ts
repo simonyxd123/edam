@@ -295,6 +295,17 @@ class ApiClient {
   async delete<T = any>(url: string): Promise<T> {
     return (await this.instance.delete(url)).data;
   }
+
+  /**
+   * 带请求体的 DELETE。
+   *
+   * <p>撤销授权要用：DELETE /videos/batch-permission 的 body 里带
+   * {@code video_id + user_ids}，没法放 query string
+   * （user_ids 是数组）。axios 的 delete 支持第二个参数当 config。
+   */
+  async deleteWithBody<T = any>(url: string, data?: any): Promise<T> {
+    return (await this.instance.delete(url, { data })).data;
+  }
 }
 
 export const api = new ApiClient();

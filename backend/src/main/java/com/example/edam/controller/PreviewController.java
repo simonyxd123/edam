@@ -44,7 +44,8 @@ public class PreviewController {
             @CurrentUserId(required = false) Long userId) {
 
         log.info("doc_preview doc_id={} format={} user_id={}", docId, format, userId);
-        DocumentPreviewService.PreviewContent content = previewService.load(docId, userId, true);
+        DocumentPreviewService.PreviewContent content =
+            previewService.load(docId, userId, DocumentPreviewService.Access.VIEW);
 
         if ("json".equalsIgnoreCase(format)) {
             return ResponseEntity.ok()
@@ -82,7 +83,8 @@ public class PreviewController {
             @CurrentUserId Long userId) {
 
         log.info("doc_download doc_id={} user_id={}", docId, userId);
-        DocumentPreviewService.PreviewContent content = previewService.load(docId, userId, false);
+        DocumentPreviewService.PreviewContent content =
+            previewService.load(docId, userId, DocumentPreviewService.Access.DOWNLOAD);
         ByteArrayResource resource = new ByteArrayResource(content.bytes());
 
         return ResponseEntity.ok()

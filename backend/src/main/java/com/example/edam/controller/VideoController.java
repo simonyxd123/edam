@@ -10,6 +10,7 @@ import com.example.edam.model.VideoResource;
 import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import com.example.edam.security.CurrentUserId;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -365,9 +366,12 @@ public class VideoController {
 
     @Data
     public static class BatchPermissionRequest {
+        @JsonProperty("video_id")
         private Long videoId;
+        @JsonProperty("user_ids")
         private List<Long> userIds;
         /** 位掩码：1=view 2=download 4=edit 8=delete 16=distribute */
+        @JsonProperty("actions")
         private Integer actions;
         /**
          * 过期时间（ISO-8601 date-time，与 openapi 契约一致）。
@@ -375,6 +379,7 @@ public class VideoController {
          * <p>为空 = 永不过期。解析用 {@link OffsetDateTime#parse} ——
          * 契约写的是 {@code format: date-time}，带不帶偏移量都该能收。
          */
+        @JsonProperty("expire_at")
         private String expireAt;
 
         /** 解析后的过期时间；没给或解析不了就是 null（永不过期） */

@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { videoApi, type Video } from '@/api/video';
 import { api } from '@/api/client';
+import ShareDialog from '@/components/ShareDialog.vue';
 import { UploadFilled, VideoCamera } from '@element-plus/icons-vue';
 import { isDialogDismissed } from '@/utils/dialog';
 
@@ -193,6 +194,15 @@ function handleView(video: Video) {
   router.push(`/videos/${video.id}`);
 }
 
+/** 分享授权对话框的状态 */
+const shareDialogVisible = ref(false);
+const shareTarget = ref<Video | null>(null);
+
+function handleShare(video: Video) {
+  shareTarget.value = video;
+  shareDialogVisible.value = true;
+}
+
 async function handleDelete(video: Video) {
   try {
     await ElMessageBox.confirm(`确认删除视频「${video.title}」？`, '提示', { type: 'warning' });
@@ -284,9 +294,15 @@ onBeforeUnmount(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handleView(row as Video)">播放</el-button>
+            <el-button
+              v-permission="'video:share'"
+              link
+              type="warning"
+              @click="handleShare(row as Video)"
+            >分享</el-button>
             <el-button link type="danger" @click="handleDelete(row as Video)">删除</el-button>
           </template>
         </el-table-column>
@@ -375,6 +391,15 @@ onBeforeUnmount(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 分享授权对话框 -->
+    <ShareDialog
+      v-model="shareDialogVisible"
+      kind="video"
+      :resource-id="shareTarget?.id ?? 0"
+      :resource-title="shareTarget?.title"
+      @saved="loadData()"
+    />
   </div>
 </template>
 
