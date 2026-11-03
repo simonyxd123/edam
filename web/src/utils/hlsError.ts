@@ -72,7 +72,7 @@ const HINT_BY_DETAILS: Record<string, string> = {
   fragLoadError: '分片拉取失败，请查分片地址的 origin/端口是否与播放列表一致',
   fragLoadTimeOut: '分片拉取超时，请查分片地址的 origin/端口是否与播放列表一致',
   fragDecryptError: '分片解密失败，密钥与分片不匹配（转码后密钥换过？）',
-  keyLoadError: '密钥拉取失败，请查后端 key 端点与 MinIO 里的 key.bin',
+  keyLoadError: '密钥拉取失败，请查后端 key 端点、MinIO 里的 key.bin，以及播放列表里 EXT-X-KEY 的地址是否为空',
   keyLoadTimeOut: '密钥拉取超时，请查密钥地址的 origin/端口',
   bufferAppendError: '分片写入播放缓冲失败',
 };
@@ -96,6 +96,17 @@ export interface PlaybackErrorInfo {
   hint: string;
   /** 出错资源的 URL（token 已打码） */
   url?: string;
+  /**
+   * hls.js 自己给的失败原因原文，例如
+   * `Invalid key URI: ""`、`HTTP Error 404 loading key `。
+   *
+   * <p>这一条**不能省**：hls.js 有好几条 key 相关的失败路径，
+   * 其中"URI 为空"那条**压根不会发 HTTP 请求**，
+   * 于是 {@code data.response} 是 undefined —— 前端只能显示
+   * "无响应（超时或连接被拒）"，把"地址是空的"说成了"网络不通"。
+   * 带上原文，运维一眼就能看出是地址问题还是网络问题。
+   */
+  reason?: string;
 }
 
 /**
@@ -139,6 +150,7 @@ export function describePlaybackError(data: HlsErrorData): PlaybackErrorInfo {
     stage,
     hint,
     url: redactTokenFromUrl(data.url ?? data.response?.url),
+    reason: data.error?.message,
   };
 }
 
@@ -147,8 +159,12 @@ export function describePlaybackError(data: HlsErrorData): PlaybackErrorInfo {
  *
  * <p>保留原有的"视频源不可达 (HTTP xxx)"骨架（运维/用户已经习惯这个措辞），
  * 但补上**阶段**和**排查方向**，让 "HTTP ??" 这种无信息量的提示不再出现。
+ *
+ * <p>末尾再附上 hls.js 的失败原因原文 —— 没有它，
+ * "没发出去的请求"和"网络不通"会长得一模一样。
  */
 export function formatPlaybackError(data: HlsErrorData): string {
   const info = describePlaybackError(data);
-  return `视频源不可达（${info.stage} ${info.statusText}）：${info.hint}`;
+  const reason = info.reason ? `（hls.js：${info.reason}）` : '';
+  return `视频源不可达（${info.stage} ${info.statusText}）：${info.hint}${reason}`;
 }

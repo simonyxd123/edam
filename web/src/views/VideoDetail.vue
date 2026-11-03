@@ -146,10 +146,14 @@ async function loadVideo() {
           if (networkRetries < NETWORK_MAX_RETRIES) {
             networkRetries++;
             errorMsg.value = `网络异常，正在重试（${networkRetries}/${NETWORK_MAX_RETRIES}）…` +
-              `（${errInfo.stage} ${errInfo.statusText}）`;
+              `（${errInfo.stage} ${errInfo.statusText}）` +
+              // 把 hls.js 的失败原因原文带上：没发出去的请求和真的网络不通
+              // 在状态码上长得一模一样（都是"无响应"），只有原文能区分
+              (errInfo.reason ? `：${errInfo.reason}` : '');
             console.warn(
               `[VideoDetail] fatal NETWORK_ERROR, startLoad retry ${networkRetries}/${NETWORK_MAX_RETRIES}, ` +
-              `stage=${errInfo.stage}, status=${errInfo.status ?? 'no-response'}, url=${errInfo.url}`,
+              `stage=${errInfo.stage}, status=${errInfo.status ?? 'no-response'}, url=${errInfo.url}, ` +
+              `reason=${errInfo.reason ?? ''}`,
             );
             try { hls.value?.startLoad(); return; } catch { /* fall through */ }
           }

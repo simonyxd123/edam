@@ -232,4 +232,114 @@ class PlaybackControllerTest {
         assertTrue(body.contains("#EXT-X-ENDLIST"));
         assertTrue(body.contains("/api/v1/playback/1/segment/segment_000.ts?token=tok"));
     }
+
+    // ==================================================================
+    // m3u8 改写：EXT-X-KEY 的 URI —— **任何形态**都要换成后端 key 端点
+    //
+    // 2026-11-03 线上故障：老实现只改写 URI="key.bin"，
+    // 于是存量播放列表里的其它 URI 形态原样发出去，
+    // hls.js 拿到的 key 地址要么指向错的地方，要么是**空的** ——
+    // 空的那条最隐蔽：hls.js 压根不发请求，只抛 keyLoadError，
+    // 前端显示成"无响应（超时或连接被拒）"，把地址问题说成了网络问题。
+    // ==================================================================
+
+    /**
+     * 各种 EXT-X-KEY 形态都要被换成后端 key 端点。
+     *
+     * <p>覆盖存量 MinIO 里真实出现过的四种形态：
+     * 十六进制 URI（key.info 假成功）、绝对地址、空 URI、缺 URI 属性。
+     */
+    @Test
+    @DisplayName("m3u8 改写：EXT-X-KEY 的 URI 无论原值是什么都换成后端 key 端点")
+    void rewriteKeyUriWhateverItIs() throws Exception {
+        String[] keyLines = {
+            // 正常形态
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+            // 2026-10-29/30 key.info 假成功：FFmpeg 把 key 的十六进制当 URI
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"42ccf808b90e06e674095a71f25f1106\"",
+            // 更早的 Worker 把绝对地址烤进了 m3u8
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"https://api.example.com/api/v1/playback/1/key\"",
+            // URI 为空 —— hls.js 会抛 Invalid key URI，连请求都不发
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"\"",
+            // 压根没有 URI 属性
+            "#EXT-X-KEY:METHOD=AES-128",
+        };
+
+        for (String keyLine : keyLines) {
+            String m3u8 = String.join("\n",
+                "#EXTM3U",
+                keyLine,
+                "#EXTINF:10.0,",
+                "segment_000.ts",
+                "");
+            when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+            String body = new String(controller.getPlaylist(1L, "tok", request()).getBody(), "UTF-8");
+
+            assertTrue(body.contains("URI=\"/api/v1/playback/1/key?token=tok\""),
+                "密钥地址必须换成后端 key 端点（原 EXT-X-KEY 行：" + keyLine + "），实际输出：\n" + body);
+            assertFalse(body.contains("42ccf808b90e06e674095a71f25f1106"),
+                "十六进制 URI 不该残留，实际输出：\n" + body);
+            assertFalse(body.contains("api.example.com"),
+                "绝对地址不该残留，实际输出：\n" + body);
+        }
+    }
+
+    @Test
+    @DisplayName("m3u8 改写：EXT-X-KEY 的其它属性（IV 等）要保留")
+    void rewriteKeyKeepsOtherAttributes() throws Exception {
+        String m3u8 = String.join("\n",
+            "#EXTM3U",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x0123456789abcdef0123456789abcdef",
+            "#EXTINF:10.0,",
+            "segment_000.ts",
+            "");
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        String body = new String(controller.getPlaylist(1L, "tok", request()).getBody(), "UTF-8");
+
+        assertTrue(body.contains("METHOD=AES-128"), "METHOD 必须保留，实际输出：\n" + body);
+        assertTrue(body.contains("IV=0x0123456789abcdef0123456789abcdef"),
+            "IV 必须保留，实际输出：\n" + body);
+        assertTrue(body.contains("URI=\"/api/v1/playback/1/key?token=tok\""),
+            "密钥地址必须换成后端 key 端点，实际输出：\n" + body);
+    }
+
+    @Test
+    @DisplayName("m3u8 改写：METHOD=NONE 的行不许动（那一段本来就不加密）")
+    void rewriteLeavesMethodNoneAlone() throws Exception {
+        String m3u8 = String.join("\n",
+            "#EXTM3U",
+            "#EXT-X-KEY:METHOD=NONE",
+            "#EXTINF:10.0,",
+            "segment_000.ts",
+            "");
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        String body = new String(controller.getPlaylist(1L, "tok", request()).getBody(), "UTF-8");
+
+        assertTrue(body.contains("#EXT-X-KEY:METHOD=NONE"),
+            "METHOD=NONE 不该被改写，实际输出：\n" + body);
+        assertFalse(body.contains("URI="), "METHOD=NONE 不该被塞进 URI，实际输出：\n" + body);
+    }
+
+    @Test
+    @DisplayName("m3u8 改写：多行 EXT-X-KEY 都要改（每行一个 key）")
+    void rewriteAllKeyLines() throws Exception {
+        String m3u8 = String.join("\n",
+            "#EXTM3U",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+            "#EXTINF:10.0,",
+            "segment_000.ts",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+            "#EXTINF:10.0,",
+            "segment_001.ts",
+            "");
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream(m3u8));
+
+        String body = new String(controller.getPlaylist(1L, "tok", request()).getBody(), "UTF-8");
+
+        int occurrences = body.split("URI=\"/api/v1/playback/1/key\\?token=tok\"", -1).length - 1;
+        assertEquals(2, occurrences, "两行 EXT-X-KEY 都要改写，实际输出：\n" + body);
+    }
 }

@@ -48,6 +48,23 @@ public class PlaybackController {
     @Value("${edam.hls.key-url-template}")
     private String keyUrlTemplate;
 
+    /** {@code #EXT-X-KEY} 整行（multiline 模式；不含行尾的 \r\n） */
+    private static final java.util.regex.Pattern EXT_X_KEY_LINE =
+        java.util.regex.Pattern.compile("(?m)^(#EXT-X-KEY:[^\\r\\n]*)$");
+
+    /**
+     * EXT-X-KEY 行里的 URI 属性。
+     *
+     * <p>group(1)=分隔符（行首 / {@code :} / {@code ,}），
+     * group(2)=属性名与等号，group(3)=属性值（带引号或不带）。
+     */
+    private static final java.util.regex.Pattern KEY_URI_ATTR =
+        java.util.regex.Pattern.compile("(?i)(^|[:,])(\\s*URI\\s*=\\s*)(\"[^\"]*\"|[^,]*)");
+
+    /** EXT-X-KEY 行里的 METHOD 属性（用来识别 {@code METHOD=NONE}） */
+    private static final java.util.regex.Pattern KEY_METHOD_ATTR =
+        java.util.regex.Pattern.compile("(?i)(?:^|[:,])\\s*METHOD\\s*=\\s*\"?([^\",]*)");
+
     /**
      * 获取播放 Token
      */
@@ -162,8 +179,9 @@ public class PlaybackController {
             String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
             String rewritten = rewriteM3u8(text, videoId, token);
 
-            log.info("m3u8_served, video_id={}, requester_id={}, segments_count={}, has_ext_x_key={}, in_size={}, out_size={}",
-                videoId, requesterId, countLines(text, ".ts"), text.contains("#EXT-X-KEY"), content.length,
+            log.info("m3u8_served, video_id={}, requester_id={}, segments_count={}, has_ext_x_key={}, ext_x_key_uri={}, in_size={}, out_size={}",
+                videoId, requesterId, countLines(text, ".ts"), text.contains("#EXT-X-KEY"),
+                originalKeyUri(text), content.length,
                 rewritten.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
 
             return ResponseEntity.ok()
@@ -274,15 +292,104 @@ public class PlaybackController {
      */
     private String rewriteM3u8(String m3u8, long videoId, String token) {
         // 匹配 segment_xxx.ts 整行（不含 #EXTINF / #EXT-X-*）
+        // token 用 quoteReplacement 包一下：replaceAll 的替换串里 $ 和 \ 有特殊含义，
+        // JWT 里虽然不会出现这两个字符，但别让"凭据格式变化"变成一次线上事故。
         String rewritten = m3u8.replaceAll(
-            "(?m)^(segment_\\d+\\.ts)$",
-            String.format("/api/v1/playback/%d/segment/$1?token=%s", videoId, token));
-        // EXT-X-KEY 的 URI 指向 key.bin（worker 写的是相对路径），
-        // 改成后端 key 端点 —— Hls.js 不能带自定义头，所以走 query token
-        rewritten = rewritten.replaceAll(
-            "URI=\"key\\.bin\"",
-            String.format("URI=\"/api/v1/playback/%d/key?token=%s\"", videoId, token));
-        return rewritten;
+            "(?m)^(segment_\\d+\\.ts)([ \\t]*\\r?)$",
+            "/api/v1/playback/" + videoId + "/segment/$1$2?token="
+                + java.util.regex.Matcher.quoteReplacement(token));
+        // EXT-X-KEY 的 URI 一律换成后端 key 端点 —— Hls.js 不能带自定义头，所以走 query token
+        return rewriteKeyUris(rewritten,
+            String.format("/api/v1/playback/%d/key?token=%s", videoId, token));
+    }
+
+    /**
+     * 把播放列表里 {@code #EXT-X-KEY} 行的 URI 属性换成后端 key 端点。
+     *
+     * <p><b>为什么不能再只认 {@code URI="key.bin"}</b>（2026-11-03 线上故障的根因）：
+     * 存量播放列表里的 EXT-X-KEY 有好几种形态，而**只有一种**能被老正则改写：
+     *
+     * <table border="1">
+     *   <caption>存量播放列表里出现过的 EXT-X-KEY 形态</caption>
+     *   <tr><th>形态</th><th>来源</th><th>老正则的结果</th></tr>
+     *   <tr><td>{@code URI="key.bin"}</td><td>Worker 正常产物</td><td>改写成功</td></tr>
+     *   <tr><td>{@code URI="42ccf808…"}</td><td>2026-10-29/30 的 key.info
+     *       "假成功"（FFmpeg 成功退出但把 key 的十六进制当 URI 写进 m3u8）</td>
+     *       <td>不改写 ⇒ hls.js 拿这个当相对路径去请求后端 ⇒ 404</td></tr>
+     *   <tr><td>{@code URI="https://api.example.com/…"}</td><td>更早的 Worker
+     *       把绝对地址烤进了 m3u8</td><td>不改写 ⇒ 浏览器去连 example.com ⇒ 连不上</td></tr>
+     *   <tr><td>{@code URI=""} / 根本没有 URI 属性</td><td>手工改过 / 别的工具产物</td>
+     *       <td>不改写 ⇒ hls.js 解析出**空**的 key 地址 ⇒
+     *           {@code Invalid key URI} ⇒ <b>连一次 HTTP 请求都不会发</b></td></tr>
+     * </table>
+     *
+     * <p>最后一行对应用户看到的报错形态：hls.js 抛的是
+     * {@code keyLoadError} 且**不带任何 HTTP 响应**（前端因此显示
+     * "无响应（超时或连接被拒）"）—— 因为它压根没发请求。
+     *
+     * <p>本项目的播放列表**每个视频只有一个密钥**（{@code videos/{id}/key.bin}），
+     * 所以所有 EXT-X-KEY 行都指向同一个后端端点是对的；
+     * {@code METHOD=NONE} 的行表示"这段不加密"，必须原样保留。
+     */
+    private String rewriteKeyUris(String m3u8, String keyUrl) {
+        java.util.regex.Matcher lines = EXT_X_KEY_LINE.matcher(m3u8);
+        StringBuilder out = new StringBuilder();
+        while (lines.find()) {
+            String rewrittenLine = rewriteKeyLine(lines.group(1), keyUrl);
+            lines.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(rewrittenLine));
+        }
+        lines.appendTail(out);
+        return out.toString();
+    }
+
+    /**
+     * 改写单行 EXT-X-KEY：把 URI 属性换成后端 key 端点。
+     *
+     * <p>三种输入都要能处理：URI 已有值（不论是什么值）、URI 为空、根本没有 URI 属性。
+     * 其它属性（{@code IV} / {@code KEYFORMAT} 等）原样保留。
+     */
+    private String rewriteKeyLine(String line, String keyUrl) {
+        // METHOD=NONE ⇒ 这一段不加密，别碰它
+        java.util.regex.Matcher method = KEY_METHOD_ATTR.matcher(line);
+        if (method.find() && "NONE".equalsIgnoreCase(method.group(1).trim())) {
+            return line;
+        }
+        java.util.regex.Matcher uri = KEY_URI_ATTR.matcher(line);
+        if (uri.find()) {
+            // group(1) 是分隔符（行首 / ':' / ','），保留它，避免把两个属性粘在一起
+            return line.substring(0, uri.start())
+                + uri.group(1) + "URI=\"" + keyUrl + "\""
+                + line.substring(uri.end());
+        }
+        // 压根没有 URI 属性 ⇒ 补一个（否则 hls.js 解析出空的 key 地址）
+        return line + ",URI=\"" + keyUrl + "\"";
+    }
+
+    /**
+     * 取播放列表里 EXT-X-KEY 行的**原始** URI 值，只为打日志。
+     *
+     * <p>这个值决定了故障的形态（十六进制 / 绝对地址 / 空），
+     * 但它同时也是"MinIO 里到底存了什么"的唯一证据 ——
+     * 不打出来，运维就只能猜。
+     */
+    private String originalKeyUri(String m3u8) {
+        java.util.regex.Matcher lines = EXT_X_KEY_LINE.matcher(m3u8);
+        if (!lines.find()) {
+            return "(无 EXT-X-KEY 行)";
+        }
+        java.util.regex.Matcher uri = KEY_URI_ATTR.matcher(lines.group(1));
+        if (!uri.find()) {
+            return "(EXT-X-KEY 行里没有 URI 属性)";
+        }
+        String raw = uri.group(3).trim();
+        if (raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"")) {
+            raw = raw.substring(1, raw.length() - 1);
+        }
+        if (raw.isEmpty()) {
+            return "(空)";
+        }
+        // 日志里不得出现 token
+        return raw.replaceAll("([?&]token=)[^&]*", "$1***");
     }
 
     private int countLines(String text, String ext) {

@@ -89,6 +89,18 @@ describe('describePlaybackError', () => {
     expect(info.url).not.toContain('SECRET');
     expect(info.url).toContain('token=***');
   });
+
+  it('带上 hls.js 的失败原因原文（key 地址为空时只有它能说明问题）', () => {
+    // 这就是 2026-11-03 线上那条报错：hls.js 压根没发请求，
+    // data.response 是 undefined ⇒ 前端只能显示"无响应（超时或连接被拒）"，
+    // 把"播放列表里的 key 地址是空的"说成了"网络不通"。
+    const info = describePlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'Invalid key URI: ""' },
+    });
+    expect(info.status).toBeUndefined();
+    expect(info.reason).toBe('Invalid key URI: ""');
+  });
 });
 
 describe('formatPlaybackError', () => {
@@ -103,5 +115,19 @@ describe('formatPlaybackError', () => {
     const msg = formatPlaybackError({ details: 'manifestLoadError', response: { code: 404 } });
     expect(msg).toContain('HTTP 404');
     expect(msg).toContain('播放列表');
+  });
+
+  it('把 hls.js 的原因原文附在末尾（没有原文就没法区分"没发请求"和"网络不通"）', () => {
+    const msg = formatPlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'Invalid key URI: ""' },
+    });
+    expect(msg).toContain('解密密钥');
+    expect(msg).toContain('Invalid key URI');
+  });
+
+  it('没有原文时文案后面不拖尾巴', () => {
+    const msg = formatPlaybackError({ details: 'keyLoadError' });
+    expect(msg).not.toContain('hls.js：');
   });
 });
