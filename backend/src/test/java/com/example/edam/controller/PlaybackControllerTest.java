@@ -19,6 +19,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -341,5 +342,68 @@ class PlaybackControllerTest {
 
         int occurrences = body.split("URI=\"/api/v1/playback/1/key\\?token=tok\"", -1).length - 1;
         assertEquals(2, occurrences, "两行 EXT-X-KEY 都要改写，实际输出：\n" + body);
+    }
+
+    // ==================================================================
+    // key 端点：密钥本身能不能正常下发给播放器
+    //
+    // 2026-11-03：第二次播放时 hls.js 报
+    // "after key load, decryptdata unset or changed" ——
+    // 密钥的 HTTP 请求其实成功了，是它自己的账本对不上。
+    // 那条报错把排查引向"key 端点/对象存储"，所以 key 端点
+    // 本身的失败语义必须准确（404 与 503 不能混），
+    // 否则运维会去查一个根本没坏的东西。
+    // ==================================================================
+
+    @Test
+    @DisplayName("key 端点：MinIO 里取到 16 字节密钥 ⇒ 200 且字节原样下发")
+    void keyServesExactBytes() throws Exception {
+        byte[] key = new byte[16];
+        for (int i = 0; i < key.length; i++) {
+            key[i] = (byte) (i + 1);
+        }
+        when(minioClient.getObject(any(GetObjectArgs.class)))
+            .thenReturn(minioStream(new String(key, java.nio.charset.StandardCharsets.ISO_8859_1)));
+
+        ResponseEntity<byte[]> resp = controller.getKey(1L, "tok");
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertArrayEquals(key, resp.getBody(),
+            "下发的密钥字节必须与对象存储里的一致，否则播放器解不开");
+        assertEquals("no-store", resp.getHeaders().getFirst("Cache-Control"),
+            "密钥不许被缓存 —— 缓存住的是过期凭据");
+    }
+
+    @Test
+    @DisplayName("key 端点：MinIO 连不上 ⇒ 503（不是 404 —— 否则会误判成「密钥文件没了」）")
+    void keyMinioUnreachableReturns503() throws Exception {
+        when(minioClient.getObject(any(GetObjectArgs.class)))
+            .thenThrow(new IOException("Connection refused"));
+
+        ResponseEntity<byte[]> resp = controller.getKey(1L, "tok");
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, resp.getStatusCode(),
+            "MinIO 不可达必须报 503 —— 报 404 会让运维去查「密钥文件是不是被删了」");
+    }
+
+    @Test
+    @DisplayName("key 端点：密钥长度不对 ⇒ 500（不是把坏密钥发给播放器）")
+    void keyWithWrongLengthReturns500() throws Exception {
+        when(minioClient.getObject(any(GetObjectArgs.class))).thenReturn(minioStream("short"));
+
+        ResponseEntity<byte[]> resp = controller.getKey(1L, "tok");
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, resp.getStatusCode());
+    }
+
+    @Test
+    @DisplayName("key 端点：token 无效 ⇒ 401（不碰对象存储）")
+    void keyInvalidTokenReturns401() throws Exception {
+        when(jwtTokenProvider.parseAndValidate(any())).thenThrow(new IllegalArgumentException("bad token"));
+
+        ResponseEntity<byte[]> resp = controller.getKey(1L, "bad");
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+        verify(minioClient, never()).getObject(any(GetObjectArgs.class));
     }
 }

@@ -130,4 +130,23 @@ describe('formatPlaybackError', () => {
     const msg = formatPlaybackError({ details: 'keyLoadError' });
     expect(msg).not.toContain('hls.js：');
   });
+
+  it('密钥状态失步那条要说清"不是后端/网络问题"（否则运维会查错方向）', () => {
+    // 这就是 2026-11-03 第二次播放时看到的那条：
+    // 密钥的 HTTP 请求其实成功了，是 hls.js 自己的 keyLoaderInfo 对不上。
+    // 提示若还写"查后端 key 端点、查 MinIO"，会把人引到完全错误的方向。
+    const info = describePlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'after key load, decryptdata unset or changed' },
+    });
+    expect(info.hint).toContain('密钥状态失步');
+    expect(info.hint).not.toContain('MinIO 里的 key.bin');
+
+    const msg = formatPlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'after key load, decryptdata unset or changed' },
+    });
+    expect(msg).toContain('密钥状态失步');
+    expect(msg).toContain('after key load');
+  });
 });

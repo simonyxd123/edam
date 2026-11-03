@@ -428,6 +428,7 @@ public class PlaybackController {
         String requesterId = subjectOf(claims);
 
         String objectName = String.format("videos/%d/key.bin", videoId);
+        long startedAt = System.nanoTime();
         try (InputStream stream = minioClient.getObject(
                 GetObjectArgs.builder().bucket(videosBucket).object(objectName).build())) {
             byte[] key = stream.readAllBytes();
@@ -435,15 +436,52 @@ public class PlaybackController {
                 log.error("hls_key_invalid_length, video_id={}, len={}", videoId, key.length);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
-            log.info("hls_key_served, video_id={}, requester_id={}", videoId, requesterId);
+            // key_fp = 密钥 SHA-256 的前 8 个十六进制字符。
+            //
+            // 为什么可以打：它是 128 位随机密钥的**单向摘要前缀**，
+            // 不能反推出密钥本身（项目安全约定禁止的是把凭据本身写进日志，
+            // 摘要不是凭据）。打它的用处很实在：
+            //  - 同一视频两次播放拿到的 key 是不是同一份（不一致 ⇒ 转码换过密钥）
+            //  - 播放器报的解密失败，是不是"密钥与分片不匹配"
+            // 没有它，这两件事只能靠猜。
+            log.info("hls_key_served, video_id={}, requester_id={}, key_fp={}, read_ms={}",
+                videoId, requesterId, fingerprint(key), (System.nanoTime() - startedAt) / 1_000_000);
             return ResponseEntity.status(HttpStatus.OK)
                 .header("Cache-Control", "no-store")
                 .header("Content-Type", "application/octet-stream")
                 .body(key);
         } catch (Exception e) {
+            // 区分两种失败（和 getPlaylist 同一个道理）：
+            //   - MinIO 里真的没这个对象（转码没跑 / 产物被删）⇒ 404
+            //   - MinIO 本身连不上（网络/凭据问题）⇒ 503
+            // 一律报 404 会让运维以为"密钥文件被删了"，去查文件，
+            // 而真正该查的是 MinIO 连不连得上。
+            if (isMinioUnreachable(e)) {
+                log.error("hls_key_serve_failed_minio_unreachable, video_id={}, object={}, requester_id={}",
+                    videoId, objectName, requesterId, e);
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+            }
             log.error("hls_key_serve_failed, video_id={}, object={}, requester_id={}",
                 videoId, objectName, requesterId, e);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+    }
+
+    /**
+     * 密钥指纹：SHA-256 的前 8 个十六进制字符。
+     *
+     * <p>只用于日志比对（见 {@link #getKey} 里的说明），不是凭据。
+     */
+    private String fingerprint(byte[] key) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(key);
+            StringBuilder sb = new StringBuilder(8);
+            for (int i = 0; i < 4; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return "(no-sha256)";
         }
     }
 

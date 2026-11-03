@@ -77,6 +77,23 @@ const HINT_BY_DETAILS: Record<string, string> = {
   bufferAppendError: '分片写入播放缓冲失败',
 };
 
+/**
+ * hls.js 内部的"密钥账本对不上"报错。
+ *
+ * <p>原文 {@code after key load, decryptdata unset or changed} 出自
+ * hls.js {@code key-loader.ts} 的 onSuccess：密钥的 HTTP 请求**其实成功了**，
+ * 但它发现自己的 keyLoaderInfo 缓存里那条记录已经不是本次加载的那条
+ * （被中止/重建的旧请求留下的残骸），于是判定"状态变了"并报错。
+ *
+ * <p>所以它**不是**网络问题，也不是密钥地址问题 —— 换一个提示，
+ * 否则运维会去查 key 端点、查 MinIO，方向完全不对。
+ */
+const KEY_STATE_DESYNC = 'after key load, decryptdata unset or changed';
+
+const KEY_STATE_DESYNC_HINT =
+  '播放器的密钥状态失步（密钥请求其实成功了，是 hls.js 内部缓存对不上）。'
+  + '已自动重建播放器重试；若反复出现，请把浏览器控制台的 HLS 日志一并发给运维';
+
 /** 状态码 → 面向用户的处置建议（比"查日志"更直接） */
 const HINT_BY_STATUS: Record<number, string> = {
   404: '视频尚未转码完成，或播放产物在对象存储中不存在。请稍后重试或联系管理员处理',
@@ -134,10 +151,17 @@ export function describePlaybackError(data: HlsErrorData): PlaybackErrorInfo {
 
   // 状态码的处置建议优先（404 = 还没转码完，是最常见的那个）；
   // 没有状态码时退回按阶段的排查方向。
-  const hint =
+  let hint =
     (typeof status === 'number' ? HINT_BY_STATUS[status] : undefined)
     ?? HINT_BY_DETAILS[details]
     ?? '请查看浏览器控制台与后端日志';
+
+  // hls.js 内部状态失步的特例：密钥请求**成功了**，问题不在后端也不在网络。
+  // 这条必须单独说，否则运维会被引去查 key 端点/对象存储（方向全错）。
+  const reason = data.error?.message;
+  if (reason && reason.includes(KEY_STATE_DESYNC)) {
+    hint = KEY_STATE_DESYNC_HINT;
+  }
 
   // 有响应 → 用真实状态码；没有响应 → hls.js 只在超时路径上这样，
   // 必须说清楚是"没等到响应"，而不是显示一个 ?? 让人以为是状态码缺失。
@@ -150,7 +174,7 @@ export function describePlaybackError(data: HlsErrorData): PlaybackErrorInfo {
     stage,
     hint,
     url: redactTokenFromUrl(data.url ?? data.response?.url),
-    reason: data.error?.message,
+    reason,
   };
 }
 
