@@ -45,4 +45,31 @@ public class AsyncExecutorConfig {
         log.info("webhook_executor_initialized, core=4 max=16 queue=500");
         return executor;
     }
+
+    /**
+     * 审计日志写入线程池。
+     *
+     * <p>为什么单独一个池：审计写入是**高频**的（现在每个受控接口都会记一条），
+     * 而 webhook 投递是**低频长耗时**的。两者挤在一个池里，
+     * 一次慢的 webhook 投递就能把审计写入堵住 —— 而审计堵住意味着
+     * 审计记录丢失（合规风险）。
+     *
+     * <p>拒绝策略同样是 {@code CallerRunsPolicy}：队列满时由请求线程自己写，
+     * 宁可这个请求慢一点，也不能丢审计记录。
+     */
+    @Bean("auditExecutor")
+    public Executor auditExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(2000);
+        executor.setKeepAliveSeconds(60);
+        executor.setThreadNamePrefix("audit-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
+        executor.initialize();
+        log.info("audit_executor_initialized, core=2 max=4 queue=2000");
+        return executor;
+    }
 }

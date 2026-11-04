@@ -4,6 +4,8 @@ import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -30,6 +32,7 @@ public class AdminController {
 
     @GetMapping("/backups")
     @Operation(summary = "备份列表")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "backup")
     public List<Map<String, Object>> listBackups() {
         log.info("backup_list");
         return List.of();
@@ -37,10 +40,12 @@ public class AdminController {
 
     @PostMapping("/backups")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('admin:backup')")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "backup",
+        detail = "action=trigger_backup, scope=#request.scope")
     @Operation(summary = "触发备份（高危，需 MFA）")
     public ResponseEntity<Map<String, Object>> triggerBackup(
-            @RequestBody BackupRequest request,
-            @CurrentUserId Long operatorId) {
+        @RequestBody BackupRequest request,
+        @CurrentUserId Long operatorId) {
 
         log.warn("backup_triggered operator_id={} type={} mfa_verified={}",
             operatorId, request.type, request.mfaCode != null && !request.mfaCode.isBlank());
@@ -60,11 +65,13 @@ public class AdminController {
 
     @PostMapping("/backups/{backup_id}/restore")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('admin:restore')")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "backup",
+        resourceId = "#backupId", detail = "action=restore_backup, backup_id=#backupId")
     @Operation(summary = "从备份恢复（高危 + 二级审批）")
     public ResponseEntity<Map<String, Object>> restoreBackup(
-            @PathVariable("backup_id") String backupId,
-            @RequestBody RestoreRequest request,
-            @CurrentUserId Long operatorId) {
+        @PathVariable("backup_id") String backupId,
+        @RequestBody RestoreRequest request,
+        @CurrentUserId Long operatorId) {
 
         log.warn("restore_triggered operator_id={} backup_id={} mfa_present={} approval_token_present={}",
             operatorId, backupId,

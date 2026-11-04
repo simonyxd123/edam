@@ -38,6 +38,26 @@ public class AuditLogDTO {
     @JsonProperty("user_agent")
     private String userAgent;
 
+    /** HTTP 方法（GET/POST/PUT/PATCH/DELETE） */
+    @JsonProperty("http_method")
+    private String httpMethod;
+
+    /** 命中的路由模板，如 {@code /videos/{video_id}} */
+    @JsonProperty("endpoint")
+    private String endpoint;
+
+    /** HTTP 响应状态码 */
+    @JsonProperty("status_code")
+    private Integer statusCode;
+
+    /** 服务端处理耗时（毫秒） */
+    @JsonProperty("duration_ms")
+    private Integer durationMs;
+
+    /** 会话 ID */
+    @JsonProperty("session_id")
+    private String sessionId;
+
     @JsonProperty("detail")
     private String detail;
 

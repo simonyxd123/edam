@@ -2,13 +2,14 @@ package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.SysUserView;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
-import com.example.edam.service.AuditService;
 import com.example.edam.security.CurrentUserId;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
@@ -39,14 +40,14 @@ public class UserController {
     private final PasswordEncoder passwordEncoder;
     private final com.example.edam.service.PasswordService passwordService;
     private final com.example.edam.security.PasswordPolicy passwordPolicy;
-    private final AuditService auditService;
 
     @GetMapping
+    @AuditOp(op = AuditOpType.LIST, resourceType = "user")
     public Map<String, Object> list(
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int page_size,
-            @RequestParam(required = false) Long dept_id,
-            @RequestParam(required = false) String status
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int page_size,
+        @RequestParam(required = false) Long dept_id,
+        @RequestParam(required = false) String status
     ) {
         LambdaQueryWrapper<SysUser> wrapper = new LambdaQueryWrapper<>();
         if (dept_id != null) wrapper.eq(SysUser::getDeptId, dept_id);
@@ -68,9 +69,11 @@ public class UserController {
     @PostMapping
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "user",
+        detail = "username=#request.username, employee_no=#request.employeeNo")
     public ResponseEntity<SysUserView> create(
-            @RequestBody CreateUserRequest request,
-            @CurrentUserId Long operatorId
+        @RequestBody CreateUserRequest request,
+        @CurrentUserId Long operatorId
     ) {
         if (request.getUsername() == null || request.getUsername().isBlank()) {
             throw new IllegalArgumentException("用户名必填");
@@ -108,11 +111,11 @@ public class UserController {
         user.setMustChangePassword(true);  // 强制首次登录改密
         userRepository.insert(user);
 
-        auditService.log(operatorId, "create", "user", user.getId(), "success");
         return ResponseEntity.status(201).body(SysUserView.from(user));
     }
 
     @GetMapping("/{user_id}")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "user", resourceId = "#userId")
     public SysUserView getById(@PathVariable("user_id") Long userId) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -122,10 +125,12 @@ public class UserController {
     @PutMapping("/{user_id}")
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "user", resourceId = "#userId",
+        detail = "real_name=#request.realName, email=#request.email, status=#request.status")
     public SysUserView update(
-            @PathVariable("user_id") Long userId,
-            @RequestBody UpdateUserRequest request,
-            @CurrentUserId Long operatorId
+        @PathVariable("user_id") Long userId,
+        @RequestBody UpdateUserRequest request,
+        @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -136,17 +141,18 @@ public class UserController {
         if (request.getStatus() != null) user.setStatus(parseStatus(request.getStatus()));
         userRepository.updateById(user);
 
-        auditService.log(operatorId, "update", "user", userId, "success");
         return SysUserView.from(user);
     }
 
     @PutMapping("/{user_id}/password")
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "user", resourceId = "#userId",
+        detail = "action=reset_password", hideParams = true)
     public ResponseEntity<Map<String, Object>> resetPassword(
-            @PathVariable("user_id") Long userId,
-            @RequestBody ResetPasswordRequest request,
-            @CurrentUserId Long operatorId
+        @PathVariable("user_id") Long userId,
+        @RequestBody ResetPasswordRequest request,
+        @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -158,7 +164,6 @@ public class UserController {
         String tempPassword = passwordService.resetPassword(userId, operatorId);
         // 注意：临时密码**不写进审计 detail** —— 审计表是可被审计员读到的，
         // 密码落库等于二次泄露。原始密码通过响应体返回给管理员（一次性）。
-        auditService.log(operatorId, "reset_password", "user", userId, "success");
         log.info("user_password_reset, user_id={}, operator_id={}, temp_password_issued=true",
             userId, operatorId);
         // Map.of 的 value 类型要一致（String + Boolean 混用会推断失败）
@@ -170,9 +175,10 @@ public class UserController {
     @DeleteMapping("/{user_id}")
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "user", resourceId = "#userId")
     public ResponseEntity<Void> delete(
-            @PathVariable("user_id") Long userId,
-            @CurrentUserId Long operatorId
+        @PathVariable("user_id") Long userId,
+        @CurrentUserId Long operatorId
     ) {
         SysUser user = userRepository.findById(userId);
         if (user == null) throw new ResourceNotFoundException("用户不存在: " + userId);
@@ -184,18 +190,18 @@ public class UserController {
         user.setStatus(2);
         userRepository.updateById(user);
 
-        auditService.log(operatorId, "delete", "user", userId, "success");
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{user_id}/revoke-keys")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "user", resourceId = "#userId",
+        detail = "action=revoke_keys")
     public ResponseEntity<Void> revokeKeys(
-            @PathVariable("user_id") Long userId,
-            @CurrentUserId Long operatorId
+        @PathVariable("user_id") Long userId,
+        @CurrentUserId Long operatorId
     ) {
         log.warn("user_keys_revoked, user_id={}, operator_id={}", userId, operatorId);
-        auditService.log(operatorId, "revoke_keys", "user", userId, "success");
         return ResponseEntity.noContent().build();
     }
 

@@ -1,5 +1,7 @@
 package com.example.edam.controller;
 
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
@@ -38,10 +40,12 @@ public class PreviewController {
      */
     @GetMapping("/{doc_id}")
     @Operation(summary = "文档预览（含 Canvas 动态明水印）")
+    @AuditOp(op = AuditOpType.PREVIEW, resourceType = "document", resourceId = "#docId",
+        detail = "format=#format, watermark=on")
     public ResponseEntity<?> preview(
-            @PathVariable("doc_id") Long docId,
-            @RequestParam(required = false, defaultValue = "html") String format,
-            @CurrentUserId(required = false) Long userId) {
+        @PathVariable("doc_id") Long docId,
+        @RequestParam(required = false, defaultValue = "html") String format,
+        @CurrentUserId(required = false) Long userId) {
 
         log.info("doc_preview doc_id={} format={} user_id={}", docId, format, userId);
         DocumentPreviewService.PreviewContent content =
@@ -78,9 +82,10 @@ public class PreviewController {
      */
     @GetMapping("/{doc_id}/download")
     @Operation(summary = "下载文档原文")
+    @AuditOp(op = AuditOpType.DOWNLOAD, resourceType = "document", resourceId = "#docId")
     public ResponseEntity<ByteArrayResource> download(
-            @PathVariable("doc_id") Long docId,
-            @CurrentUserId Long userId) {
+        @PathVariable("doc_id") Long docId,
+        @CurrentUserId Long userId) {
 
         log.info("doc_download doc_id={} user_id={}", docId, userId);
         DocumentPreviewService.PreviewContent content =

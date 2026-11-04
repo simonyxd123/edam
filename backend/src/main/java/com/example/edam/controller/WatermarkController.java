@@ -2,6 +2,8 @@ package com.example.edam.controller;
 
 import com.example.edam.security.CurrentUserId;
 import lombok.Data;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -28,6 +30,8 @@ public class WatermarkController {
      * 提取水印/指纹
      */
     @PostMapping("/extract")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "watermark",
+        detail = "action=extract, type=#type")
     public ResponseEntity<Map<String, Object>> extract(
         @RequestParam("file") MultipartFile file,
         @RequestParam("type") String type,
@@ -59,6 +63,7 @@ public class WatermarkController {
      * 水印缓存查询
      */
     @GetMapping("/cache")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "watermark_cache")
     public List<Map<String, Object>> listCache(
         @RequestParam("resource_id") Long resourceId,
         @RequestParam("resource_type") String resourceType
@@ -71,6 +76,7 @@ public class WatermarkController {
      * 清除水印缓存
      */
     @DeleteMapping("/cache/{cache_id}")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "watermark_cache", resourceId = "#cacheId")
     public ResponseEntity<Void> deleteCache(@PathVariable("cache_id") Long cacheId) {
         // 实际生产：从 Redis 删除
         log.info("watermark_cache_invalidated, cache_id={}", cacheId);

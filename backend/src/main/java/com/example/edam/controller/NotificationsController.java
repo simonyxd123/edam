@@ -4,6 +4,8 @@ import com.example.edam.security.CurrentUserId;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -42,7 +44,7 @@ public class NotificationsController {
     @GetMapping("/ws/notifications")
     @Operation(summary = "（已废弃）请改用 WebSocket 端点 /ws")
     public ResponseEntity<Map<String, Object>> websocketHandshake(
-            @RequestParam(required = false) String token) {
+        @RequestParam(required = false) String token) {
         Map<String, Object> body = new HashMap<>();
         body.put("error", "deprecated_endpoint");
         body.put("detail", "该端点不是 WebSocket 端点。真正的实时通知通道是 /ws"
@@ -53,12 +55,13 @@ public class NotificationsController {
 
     @GetMapping("/notifications")
     @Operation(summary = "当前用户通知列表")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "notification")
     public Map<String, Object> list(
-            @RequestParam(required = false) Boolean is_read,
-            @RequestParam(required = false) String type,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int page_size,
-            @CurrentUserId Long userId) {
+        @RequestParam(required = false) Boolean is_read,
+        @RequestParam(required = false) String type,
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int page_size,
+        @CurrentUserId Long userId) {
 
         log.info("notifications_list user_id={} is_read={} type={}", userId, is_read, type);
         Map<String, Object> response = new HashMap<>();
@@ -72,15 +75,19 @@ public class NotificationsController {
 
     @PostMapping("/notifications/{notif_id}/read")
     @Operation(summary = "标记已读")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "notification", resourceId = "#notifId",
+        detail = "action=mark_read")
     public ResponseEntity<Void> markRead(
-            @PathVariable("notif_id") Long notifId,
-            @CurrentUserId Long userId) {
+        @PathVariable("notif_id") Long notifId,
+        @CurrentUserId Long userId) {
         log.info("notification_read notif_id={} user_id={}", notifId, userId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/notifications/read-all")
     @Operation(summary = "全部标记已读")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "notification",
+        detail = "action=mark_all_read")
     public Map<String, Object> markAllRead(@CurrentUserId Long userId) {
         log.info("notifications_read_all user_id={}", userId);
         return Map.of("updated_count", 0);
@@ -88,6 +95,7 @@ public class NotificationsController {
 
     @GetMapping("/notifications/preferences")
     @Operation(summary = "获取通知偏好")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "notification_preference")
     public Map<String, Object> getPreferences(@CurrentUserId Long userId) {
         return Map.of(
             "channels", Map.of("email", true, "sms", false, "im_webhook", true, "in_app", true),
@@ -98,9 +106,10 @@ public class NotificationsController {
 
     @PutMapping("/notifications/preferences")
     @Operation(summary = "更新通知偏好")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "notification_preference")
     public Map<String, Object> updatePreferences(
-            @RequestBody Map<String, Object> body,
-            @CurrentUserId Long userId) {
+        @RequestBody Map<String, Object> body,
+        @CurrentUserId Long userId) {
         log.info("notification_preferences_updated user_id={}", userId);
         return body;
     }

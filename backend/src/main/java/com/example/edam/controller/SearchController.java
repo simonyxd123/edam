@@ -1,5 +1,7 @@
 package com.example.edam.controller;
 
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DocResource;
@@ -32,12 +34,13 @@ public class SearchController {
 
     @GetMapping("/search/videos")
     @Operation(summary = "视频全文检索")
+    @AuditOp(op = AuditOpType.SEARCH, resourceType = "video")
     public Map<String, Object> searchVideos(
-            @RequestParam String q,
-            @RequestParam(required = false) String classification_lv,
-            @RequestParam(defaultValue = "true") boolean highlight,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int page_size) {
+        @RequestParam String q,
+        @RequestParam(required = false) String classification_lv,
+        @RequestParam(defaultValue = "true") boolean highlight,
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int page_size) {
 
         log.info("search_videos q={} classification_lv={}", q, classification_lv);
         // q 真正参与过滤：此前收了 q 却完全不用，返回全量列表 ——
@@ -52,12 +55,13 @@ public class SearchController {
 
     @GetMapping("/search/documents")
     @Operation(summary = "文档全文检索")
+    @AuditOp(op = AuditOpType.SEARCH, resourceType = "document")
     public Map<String, Object> searchDocuments(
-            @RequestParam String q,
-            @RequestParam(required = false) String file_type,
-            @RequestParam(defaultValue = "true") boolean highlight,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int page_size) {
+        @RequestParam String q,
+        @RequestParam(required = false) String file_type,
+        @RequestParam(defaultValue = "true") boolean highlight,
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int page_size) {
 
         log.info("search_documents q={} file_type={}", q, file_type);
         // 同上：q 真正参与过滤

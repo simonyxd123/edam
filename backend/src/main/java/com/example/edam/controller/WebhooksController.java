@@ -1,6 +1,8 @@
 package com.example.edam.controller;
 
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -23,6 +25,7 @@ public class WebhooksController {
 
     @GetMapping("/webhooks")
     @Operation(summary = "当前用户注册的回调列表")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "webhook")
     public List<Map<String, Object>> list(@CurrentUserId Long userId) {
         log.info("webhook_list user_id={}", userId);
         return List.of();
@@ -30,9 +33,11 @@ public class WebhooksController {
 
     @PostMapping("/webhooks")
     @Operation(summary = "注册回调")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "webhook",
+        detail = "event=#request.event")
     public ResponseEntity<Map<String, Object>> create(
-            @RequestBody CreateWebhookRequest request,
-            @CurrentUserId Long userId) {
+        @RequestBody CreateWebhookRequest request,
+        @CurrentUserId Long userId) {
 
         log.info("webhook_create user_id={} url={}", userId, request.url);
         // 生成 secret（仅创建时返回一次）
@@ -49,19 +54,22 @@ public class WebhooksController {
 
     @DeleteMapping("/webhooks/{webhook_id}")
     @Operation(summary = "注销回调")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "webhook", resourceId = "#webhookId")
     public ResponseEntity<Void> delete(
-            @PathVariable("webhook_id") Long webhookId,
-            @CurrentUserId Long userId) {
+        @PathVariable("webhook_id") Long webhookId,
+        @CurrentUserId Long userId) {
         log.info("webhook_delete user_id={} webhook_id={}", userId, webhookId);
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/webhooks/{webhook_id}/deliveries")
     @Operation(summary = "回调投递历史")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "webhook_delivery",
+        resourceId = "#webhookId")
     public List<Map<String, Object>> deliveries(
-            @PathVariable("webhook_id") Long webhookId,
-            @CurrentUserId Long userId,
-            @RequestParam(defaultValue = "1") int page) {
+        @PathVariable("webhook_id") Long webhookId,
+        @CurrentUserId Long userId,
+        @RequestParam(defaultValue = "1") int page) {
         log.info("webhook_deliveries user_id={} webhook_id={}", userId, webhookId);
         return List.of();
     }

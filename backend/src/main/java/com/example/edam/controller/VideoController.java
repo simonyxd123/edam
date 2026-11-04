@@ -1,6 +1,8 @@
 package com.example.edam.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.dto.VideoResponse;
@@ -45,6 +47,7 @@ public class VideoController {
     private String workerToken;
 
     @GetMapping
+    @AuditOp(op = AuditOpType.LIST, resourceType = "video")
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size,
@@ -57,6 +60,8 @@ public class VideoController {
 
     @PostMapping
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:upload')")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "video",
+        detail = "title=#title, classification_lv=#classificationLv")
     public ResponseEntity<Map<String, Object>> upload(
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
@@ -86,6 +91,7 @@ public class VideoController {
     }
 
     @GetMapping("/{video_id}")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "video", resourceId = "#videoId")
     public ResponseEntity<?> getById(@PathVariable("video_id") Long videoId,
                                     @CurrentUserId Long currentUserId) {
         // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
@@ -120,9 +126,11 @@ public class VideoController {
      * 任意对象读链）。现在要求带 X-Worker-Token 头。
      */
     @PatchMapping("/{video_id}/status")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "video", resourceId = "#videoId",
+        detail = "hls_status=#request.hlsStatus, fingerprint_status=#request.fingerprintStatus")
     public ResponseEntity<Map<String, Object>> updateStatus(
-            @PathVariable("video_id") Long videoId,
-            @RequestBody VideoStatusUpdateRequest request,
+        @PathVariable("video_id") Long videoId,
+        @RequestBody VideoStatusUpdateRequest request,
             // 参数名不能叫 workerToken —— 会遮蔽同名字段，鉴权就永远拿配置值比
             @RequestHeader(value = "X-Worker-Token", required = false) String providedWorkerToken
     ) {
@@ -148,6 +156,7 @@ public class VideoController {
 
     @DeleteMapping("/{video_id}")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "video", resourceId = "#videoId")
     public ResponseEntity<Void> delete(
         @PathVariable("video_id") Long videoId,
         @CurrentUserId Long currentUserId
@@ -158,6 +167,8 @@ public class VideoController {
 
     @PostMapping("/batch-delete")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:delete')")
+    @AuditOp(op = AuditOpType.BATCH_DELETE, resourceType = "video",
+        detail = "count=#request.videoIds?.size()")
     public ResponseEntity<Map<String, Object>> batchDelete(
         @RequestBody BatchDeleteRequest request,
         @CurrentUserId Long operatorId
@@ -194,6 +205,9 @@ public class VideoController {
      */
     @PostMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
+    @AuditOp(op = AuditOpType.GRANT_PERMISSION, resourceType = "video",
+        resourceId = "#request.videoId",
+        detail = "user_count=#request.userIds?.size(), actions=#request.actions")
     public ResponseEntity<Map<String, Object>> batchPermission(
         @RequestBody BatchPermissionRequest request,
         @CurrentUserId Long currentUserId
@@ -238,6 +252,9 @@ public class VideoController {
      */
     @DeleteMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
+    @AuditOp(op = AuditOpType.REVOKE_PERMISSION, resourceType = "video",
+        resourceId = "#request.videoId",
+        detail = "user_count=#request.userIds?.size()")
     public ResponseEntity<Map<String, Object>> revokePermission(
         @RequestBody BatchPermissionRequest request,
         @CurrentUserId Long currentUserId
@@ -263,6 +280,8 @@ public class VideoController {
      */
     @GetMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:share')")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "video_permission",
+        resourceId = "#videoId")
     public ResponseEntity<Map<String, Object>> listPermission(
         @RequestParam("video_id") Long videoId,
         @CurrentUserId Long currentUserId

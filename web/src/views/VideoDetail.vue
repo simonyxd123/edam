@@ -21,6 +21,14 @@ const video = ref<any>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const m3u8Url = ref<string>('');
 const token = ref<string>('');
+/**
+ * 播放会话 ID（后端签发播放 token 时一起给的）。
+ *
+ * <p>用于上报播放事件到 play_log（方案书 §7.1 播放日志表）——
+ * 播放日志是**溯源链的最后一环**：视频外泄时靠它把
+ * "某工号在某个时间点把哪个视频看完了"这条证据固化下来。
+ */
+const playbackSessionId = ref<string>('');
 const hls = ref<Hls | null>(null);
 const loading = ref(true);
 const errorMsg = ref('');
@@ -100,6 +108,7 @@ async function loadVideo() {
       : `${window.location.origin}${tk.m3u8_url}`;
     m3u8Url.value = fullUrl;
     token.value = tk.token;
+    playbackSessionId.value = tk.session_id || '';
     console.log('[VideoDetail] m3u8 URL:', fullUrl);
 
     // 3. HLS.js 播放
@@ -108,9 +117,11 @@ async function loadVideo() {
     await nextTick();
     console.log('[VideoDetail] after nextTick videoEl.value=', !!videoEl.value);
     if (videoEl.value && Hls.isSupported()) {
+      bindPlaybackEvents();
       createPlayer(m3u8Url.value);
     } else if (videoEl.value) {
       // Safari 原生 HLS
+      bindPlaybackEvents();
       videoEl.value.src = m3u8Url.value;
       console.log('[VideoDetail] using native HLS (Safari path)');
     }
@@ -305,6 +316,44 @@ function destroyHls() {
     /* noop */
   }
   hls.value = null;
+}
+
+/**
+ * 上报播放事件到 play_log。
+ *
+ * <p><b>为什么前端要报</b>：后端只知道"这个用户来要过播放凭据"，
+ * 不知道他**看了多久、看到哪儿、有没有中途暂停**。
+ * 而这些恰恰是溯源时最需要的证据 —— 方案书 §7.1 把 play_log
+ * 和 operation_log 并列为"审计与溯源"两张核心表，
+ * §7.3 更是规定播放日志保留 365 天（比操作日志的 180 天更长）。
+ *
+ * <p><b>失败了也不能影响播放</b>：上报是旁路，写不进去就当没发生。
+ */
+function reportPlaybackEvent(event: string) {
+  const sessionId = playbackSessionId.value;
+  if (!sessionId) return;
+  const el = videoEl.value;
+  const progress = el ? Math.floor(el.currentTime || 0) : 0;
+  // 不 await：上报不该挡住 UI；silent：失败也不弹提示（旁路调用不该打扰用户）
+  api.post(`/playback/${videoId.value}/log`, {
+    session_id: sessionId,
+    event,
+    progress_sec: progress,
+    // 页面模板里始终叠着动态明水印（见 .video-watermark），所以这里恒为 true
+    watermark_applied: true,
+  }, { silent: true } as any).catch(() => {
+    /* 上报失败不影响播放 */
+  });
+}
+
+/** 绑定播放事件监听（只绑一次） */
+function bindPlaybackEvents() {
+  const el = videoEl.value;
+  if (!el || el.dataset.playbackBound === '1') return;
+  el.dataset.playbackBound = '1';
+  el.addEventListener('play', () => reportPlaybackEvent('start'));
+  el.addEventListener('pause', () => reportPlaybackEvent('pause'));
+  el.addEventListener('ended', () => reportPlaybackEvent('ended'));
 }
 
 /**

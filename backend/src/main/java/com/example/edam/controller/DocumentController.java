@@ -9,7 +9,8 @@ import com.example.edam.model.SysUser;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
-import com.example.edam.service.AuditService;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.service.WatermarkService;
@@ -54,7 +55,6 @@ public class DocumentController {
     private final DocumentService documentService;
     private final DocResourceRepository docRepository;
     private final MinioClient minioClient;
-    private final AuditService auditService;
     private final WatermarkService watermarkService;
     private final com.example.edam.service.DocumentPreviewService previewService;
     private final com.example.edam.service.DocPermissionService docPermissionService;
@@ -64,6 +64,7 @@ public class DocumentController {
     private String documentsBucket;
 
     @GetMapping
+    @AuditOp(op = AuditOpType.LIST, resourceType = "document")
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size,
@@ -76,6 +77,8 @@ public class DocumentController {
 
     @PostMapping
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:upload')")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "document",
+        detail = "title=#title, classification_lv=#classificationLv, watermark=#enableWatermark")
     public ResponseEntity<Map<String, Object>> upload(
         @RequestParam("file") MultipartFile file,
         @RequestParam("classification_lv") String classificationLv,
@@ -147,6 +150,7 @@ public class DocumentController {
     }
 
     @GetMapping("/{doc_id}")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "document", resourceId = "#docId")
     public ResponseEntity<?> getById(@PathVariable("doc_id") Long docId,
                                      @CurrentUserId Long currentUserId) {
         // 返回 DTO 而不是实体：实体的状态/密级是 Integer，前端当字符串比较恒不成立
@@ -179,9 +183,11 @@ public class DocumentController {
      * 生产建议：加 Range 支持 / ETag / Cache-Control: private
      */
     @GetMapping("/{doc_id}/preview")
+    @AuditOp(op = AuditOpType.PREVIEW, resourceType = "document", resourceId = "#docId",
+        detail = "watermark=on")
     public void preview(
-            @PathVariable("doc_id") Long docId,
-            @CurrentUserId(required = false) Long userId,
+        @PathVariable("doc_id") Long docId,
+        @CurrentUserId(required = false) Long userId,
             jakarta.servlet.http.HttpServletRequest request,
             HttpServletResponse response
     ) {
@@ -200,13 +206,6 @@ public class DocumentController {
         log.info("doc_preview, doc_id={}, user_id={}, mime={}, size={}, watermark=true",
             docId, userId, content.mime(), content.bytes().length);
 
-        // 写审计
-        if (userId != null) {
-            auditService.log(userId, "preview", "Document", docId, "success",
-                "ip=" + request.getRemoteAddr() + ", mime=" + content.mime() + ", watermark=on",
-                request.getRemoteAddr(),
-                request.getHeader("User-Agent"));
-        }
 
         try {
             response.setContentLengthLong(content.bytes().length);
@@ -232,6 +231,7 @@ public class DocumentController {
 
     @DeleteMapping("/{doc_id}")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:delete')")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "document", resourceId = "#docId")
     public ResponseEntity<Void> delete(
         @PathVariable("doc_id") Long docId,
         @CurrentUserId Long currentUserId
@@ -242,6 +242,8 @@ public class DocumentController {
 
     @PostMapping("/batch-delete")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:delete')")
+    @AuditOp(op = AuditOpType.BATCH_DELETE, resourceType = "document",
+        detail = "count=#request.docIds?.size()")
     public ResponseEntity<Map<String, Object>> batchDelete(
         @RequestBody BatchDeleteRequest request,
         @CurrentUserId Long operatorId
@@ -261,6 +263,7 @@ public class DocumentController {
     }
 
     @GetMapping("/search")
+    @AuditOp(op = AuditOpType.SEARCH, resourceType = "document")
     public Map<String, Object> search(
         @RequestParam("q") String query,
         @RequestParam(required = false) String file_type,
@@ -300,6 +303,9 @@ public class DocumentController {
      */
     @PostMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    @AuditOp(op = AuditOpType.GRANT_PERMISSION, resourceType = "document",
+        resourceId = "#request.docId",
+        detail = "user_count=#request.userIds?.size(), actions=#request.actions")
     public ResponseEntity<Map<String, Object>> batchPermission(
         @RequestBody BatchPermissionRequest request,
         @CurrentUserId Long currentUserId
@@ -344,6 +350,9 @@ public class DocumentController {
      */
     @DeleteMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    @AuditOp(op = AuditOpType.REVOKE_PERMISSION, resourceType = "document",
+        resourceId = "#request.docId",
+        detail = "user_count=#request.userIds?.size()")
     public ResponseEntity<Map<String, Object>> revokePermission(
         @RequestBody BatchPermissionRequest request,
         @CurrentUserId Long currentUserId
@@ -370,6 +379,8 @@ public class DocumentController {
      */
     @GetMapping("/batch-permission")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:share')")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "document_permission",
+        resourceId = "#docId")
     public ResponseEntity<Map<String, Object>> listPermission(
         @RequestParam("doc_id") Long docId,
         @CurrentUserId Long currentUserId

@@ -1,5 +1,7 @@
 package com.example.edam.security.webauthn;
 
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
@@ -46,6 +48,8 @@ public class WebAuthnController {
      * 步骤 1：开始注册 → 生成 challenge + 注册选项
      */
     @PostMapping("/register/begin")
+    @AuditOp(op = AuditOpType.LOGIN, resourceType = "webauthn_credential",
+      detail = "action=register_begin")
     public ResponseEntity<RegistrationChallengeResponse> beginRegistration(
             @RequestBody BeginRegistrationRequest request,
             @CurrentUserId Long userId) {
@@ -94,6 +98,8 @@ public class WebAuthnController {
      * 步骤 2：完成注册 → 验证 attestation + 存储凭据
      */
     @PostMapping("/register/complete")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "webauthn_credential",
+      detail = "action=register_complete")
     public ResponseEntity<RegistrationCompleteResponse> completeRegistration(
             @RequestBody CompleteRegistrationRequest request,
             @CurrentUserId Long userId) {
@@ -136,6 +142,8 @@ public class WebAuthnController {
      * 步骤 1：开始认证 → 生成 challenge
      */
     @PostMapping("/login/begin")
+    @AuditOp(op = AuditOpType.LOGIN, resourceType = "webauthn_credential",
+      detail = "action=login_begin", hideParams = true)
     public ResponseEntity<LoginChallengeResponse> beginLogin(
             @RequestBody BeginLoginRequest request) {
 
@@ -171,6 +179,8 @@ public class WebAuthnController {
      * 步骤 2：完成认证 → 验证 assertion + 签发 JWT
      */
     @PostMapping("/login/complete")
+    @AuditOp(op = AuditOpType.LOGIN, resourceType = "webauthn_credential",
+      detail = "action=login_complete", hideParams = true)
     public ResponseEntity<LoginCompleteResponse> completeLogin(
             @RequestBody CompleteLoginRequest request) {
 
@@ -216,6 +226,7 @@ public class WebAuthnController {
      * 列出当前用户所有 WebAuthn 凭据
      */
     @GetMapping("/credentials")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "webauthn_credential")
     public ResponseEntity<List<CredentialInfo>> listCredentials(
             @CurrentUserId Long userId) {
         List<WebAuthnCredential> creds = credentialRepository.findActiveByUserId(userId);
@@ -239,6 +250,8 @@ public class WebAuthnController {
      * 撤销指定凭据
      */
     @DeleteMapping("/credentials/{credentialId}")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "webauthn_credential",
+      detail = "credential_id=#credentialId")
     public ResponseEntity<Void> revokeCredential(
             @PathVariable String credentialId,
             @CurrentUserId Long userId) {

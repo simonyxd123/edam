@@ -64,9 +64,10 @@ class PlaybackControllerTest {
         VideoPermissionService videoPermissionService = mock(VideoPermissionService.class);
         jwtTokenProvider = mock(JwtTokenProvider.class);
         minioClient = mock(MinioClient.class);
-        AuditService auditService = mock(AuditService.class);
+        com.example.edam.service.PlayLogService playLogService =
+            mock(com.example.edam.service.PlayLogService.class);
         controller = new PlaybackController(videoService, videoPermissionService,
-            jwtTokenProvider, minioClient, auditService);
+            jwtTokenProvider, minioClient, playLogService);
         ReflectionTestUtils.setField(controller, "videosBucket", "edam-videos");
         ReflectionTestUtils.setField(controller, "keyUrlTemplate", "/api/v1/playback/%d/key");
         // 默认：token 验签通过、且是绑定到该视频的播放 token

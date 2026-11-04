@@ -52,7 +52,6 @@ class DocPermissionControllerTest {
             documentService,
             mock(com.example.edam.repository.DocResourceRepository.class),
             mock(io.minio.MinioClient.class),
-            mock(com.example.edam.service.AuditService.class),
             mock(com.example.edam.service.WatermarkService.class),
             mock(com.example.edam.service.DocumentPreviewService.class),
             docPermissionService,

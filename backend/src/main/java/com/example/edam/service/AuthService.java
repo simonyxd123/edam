@@ -167,7 +167,8 @@ public class AuthService {
         log.info("用户登录成功: employee_no={}, session_id={}, roles={}",
             employeeNo, sessionId, roleCodes);
 
-        // 审计日志在 Controller 层调 auditHelper.logAudit 写（带真实 IP）
+        // 审计日志由 Controller 层的 @AuditOp 注解 + 审计切面自动写
+        // （成功/失败/拒绝三态齐全，且带真实 IP —— 手工 log 只能记到成功）
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", accessToken);
@@ -210,7 +211,7 @@ public class AuthService {
 
     /**
      * 登出（撤销 refresh_token）
-     * 审计日志在 Controller 层调 auditHelper.logAudit 写（带真实 IP）
+     * 审计日志由 Controller 层的 @AuditOp 注解 + 审计切面自动写
      */
     public void logout(String refreshToken) {
         if (refreshToken != null) {

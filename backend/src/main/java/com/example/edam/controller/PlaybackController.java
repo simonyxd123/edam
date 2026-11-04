@@ -3,7 +3,9 @@ package com.example.edam.controller;
 import com.example.edam.model.VideoResource;
 import io.jsonwebtoken.Claims;
 import com.example.edam.security.JwtTokenProvider;
-import com.example.edam.service.AuditService;
+import com.example.edam.audit.AuditAspect;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import com.example.edam.security.CurrentUserId;
@@ -40,7 +42,7 @@ public class PlaybackController {
     private final VideoPermissionService videoPermissionService;
     private final JwtTokenProvider jwtTokenProvider;
     private final MinioClient minioClient;
-    private final AuditService auditService;
+    private final com.example.edam.service.PlayLogService playLogService;
 
     @Value("${minio.bucket.videos}")
     private String videosBucket;
@@ -69,6 +71,8 @@ public class PlaybackController {
      * 获取播放 Token
      */
     @PostMapping("/{video_id}/token")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=start, classification_lv=#result?.body?.get('classification_lv')")
     public ResponseEntity<Map<String, Object>> getToken(
         @PathVariable("video_id") Long videoId,
         @CurrentUserId Long userId,
@@ -87,10 +91,6 @@ public class PlaybackController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
         }
 
-        // 写审计日志：视频预览
-        auditService.log(userId, "preview", "video", videoId, "success",
-            "ip=" + request.getRemoteAddr() + ", title=" + video.getTitle(),
-            request.getRemoteAddr(), request.getHeader("User-Agent"));
 
         // 1. 签发短时 JWT（**绑定到这个视频** —— 见 createPlaybackToken 的说明：
         //    m3u8/segment/key 是 permitAll，只靠 query token 鉴权，
@@ -125,9 +125,11 @@ public class PlaybackController {
      * 生产：建议换 presigned MinIO URL（5 分钟过期），无需后端代理。
      */
     @GetMapping(value = "/{video_id}/playlist.m3u8", produces = "application/vnd.apple.mpegurl")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=playlist")
     public ResponseEntity<byte[]> getPlaylist(
-            @PathVariable("video_id") Long videoId,
-            @RequestParam("token") String token,
+        @PathVariable("video_id") Long videoId,
+        @RequestParam("token") String token,
             jakarta.servlet.http.HttpServletRequest request) {
         // 1. 验证 token（不依赖 Spring Security context，query string 取）
         //
@@ -226,10 +228,12 @@ public class PlaybackController {
      * HLS segment（.ts）代理
      */
     @GetMapping(value = "/{video_id}/segment/{filename:.+}", produces = "video/mp2t")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=segment, file=#filename", auditSuccess = false)
     public ResponseEntity<byte[]> getSegment(
-            @PathVariable("video_id") Long videoId,
-            @PathVariable("filename") String filename,
-            @RequestParam("token") String token) {
+        @PathVariable("video_id") Long videoId,
+        @PathVariable("filename") String filename,
+        @RequestParam("token") String token) {
         // 1. 验证 token（必须是绑定到本视频的播放 token —— 见 getPlaylist 的说明）
         Claims claims;
         try {
@@ -410,6 +414,8 @@ public class PlaybackController {
      * 避免被 segment 代理暴露）。
      */
     @GetMapping("/{video_id}/key")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=key")
     public ResponseEntity<byte[]> getKey(
         @PathVariable("video_id") Long videoId,
         @RequestParam("token") String token
@@ -499,21 +505,63 @@ public class PlaybackController {
      * 上报播放日志
      */
     @PostMapping("/{video_id}/log")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=#request.event, progress_sec=#request.progressSec")
     public ResponseEntity<Void> reportLog(
         @PathVariable("video_id") Long videoId,
         @RequestBody PlaybackLogRequest request,
-        @CurrentUserId Long userId
+        @CurrentUserId Long userId,
+        HttpServletRequest httpRequest
     ) {
-        // 实际生产：写入 play_log 表 + 异步上报安全审计
-        log.info("playback_log, video_id={}, user_id={}, event={}, progress={}s",
-            videoId, userId, request.getEvent(), request.getProgressSec());
-
         // 验证 session
         if (request.getSessionId() == null || request.getSessionId().isEmpty()) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
+        // 写 play_log（方案书 §7.1 播放日志表；§7.3 保留 365 天）
+        //
+        // 这是**溯源链的最后一环**：operation_log 记"谁点了播放"，
+        // play_log 记"谁把哪个视频看了多久、看到哪儿、期间有没有水印"。
+        // 视频外泄时，靠它把"某工号在某个时间点看完了内部视频"这条证据固化下来。
+        playLogService.record(
+            userId, videoId, request.getSessionId(),
+            request.getEvent(), request.getProgressSec(),
+            clientIpOf(httpRequest), userAgentOf(httpRequest),
+            request.getWatermarkApplied());
+
         return ResponseEntity.noContent().build();
+    }
+
+    /** 真实客户端 IP（X-Forwarded-For → X-Real-IP → RemoteAddr） */
+    private String clientIpOf(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        String xff = request.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            int comma = xff.indexOf(',');
+            String first = (comma > 0 ? xff.substring(0, comma) : xff).trim();
+            if (!first.isEmpty() && !"unknown".equalsIgnoreCase(first)) {
+                return first;
+            }
+        }
+        String xri = request.getHeader("X-Real-IP");
+        if (xri != null && !xri.isBlank()) {
+            return xri.trim();
+        }
+        return request.getRemoteAddr();
+    }
+
+    /** User-Agent（截断到 200 字符） */
+    private String userAgentOf(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        String ua = request.getHeader("User-Agent");
+        if (ua == null) {
+            return "unknown";
+        }
+        return ua.length() > 200 ? ua.substring(0, 200) : ua;
     }
 
     @Data
@@ -522,5 +570,7 @@ public class PlaybackController {
         private String event;
         private String timestamp;
         private Integer progressSec;
+        /** 客户端是否已叠加动态水印（溯源时用来判断"能不能指认到人"） */
+        private Boolean watermarkApplied;
     }
 }

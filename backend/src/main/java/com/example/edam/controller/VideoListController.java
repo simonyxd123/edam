@@ -1,6 +1,8 @@
 package com.example.edam.controller;
 
 import com.example.edam.model.VideoResource;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.service.VideoService;
 import com.example.edam.util.CursorUtil;
 import io.swagger.v3.oas.annotations.Operation;
@@ -35,11 +37,12 @@ public class VideoListController {
      */
     @GetMapping
     @Operation(summary = "视频资源列表（cursor 分页）")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "video")
     public Map<String, Object> listCursor(
-            @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) String classification_lv,
-            @RequestParam(required = false) Long uploader_id) {
+        @RequestParam(defaultValue = "20") int limit,
+        @RequestParam(required = false) String cursor,
+        @RequestParam(required = false) String classification_lv,
+        @RequestParam(required = false) Long uploader_id) {
 
         // 限制 limit 范围（防御性）
         limit = Math.max(1, Math.min(limit, 100));

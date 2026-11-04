@@ -26,13 +26,31 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RestAuthenticationEntryPoint authenticationEntryPoint;
     private final RestAccessDeniedHandler accessDeniedHandler;
+    /**
+     * 审计 Service 用 {@link ObjectProvider} 而不是直接注入。
+     *
+     * <p>原因：{@code SecurityConfigAuthStatusTest} 是一个**切片测试** ——
+     * 它刻意不加载 DataSource / MyBatis（{@code @WebMvcTest} 风格），
+     * 于是没有 {@code AuditService} bean。直接注入会让整个上下文起不来，
+     * 而这个测试要验的其实是"公开端点不带 token 也能过"。
+     *
+     * <p>{@code ObjectProvider.getIfAvailable()} 在 bean 存在时正常拿到，
+     * 不存在时返回 null ⇒ 审计兜底过滤器不注册 ——
+     * 生产环境里 AuditService 一定在（它是 @Service），所以审计不会被关掉。
+     */
+    private final org.springframework.beans.factory.ObjectProvider<com.example.edam.service.AuditService> auditServiceProvider;
+    private final org.springframework.beans.factory.ObjectProvider<com.example.edam.util.AuditHelper> auditHelperProvider;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           RestAuthenticationEntryPoint authenticationEntryPoint,
-                          RestAccessDeniedHandler accessDeniedHandler) {
+                          RestAccessDeniedHandler accessDeniedHandler,
+                          org.springframework.beans.factory.ObjectProvider<com.example.edam.service.AuditService> auditServiceProvider,
+                          org.springframework.beans.factory.ObjectProvider<com.example.edam.util.AuditHelper> auditHelperProvider) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.authenticationEntryPoint = authenticationEntryPoint;
         this.accessDeniedHandler = accessDeniedHandler;
+        this.auditServiceProvider = auditServiceProvider;
+        this.auditHelperProvider = auditHelperProvider;
     }
 
     @Bean
@@ -70,11 +88,40 @@ public class SecurityConfig {
             .exceptionHandling(ex -> ex
                 .authenticationEntryPoint(authenticationEntryPoint)
                 .accessDeniedHandler(accessDeniedHandler));
+
+        // 审计兜底过滤器：记录"没进控制器就被 401/403 挡下"的请求。
+        // 必须放在 Security 链**内部**、JWT 过滤器**之后** ——
+        // 这样 finally 里 SecurityContextHolder 还留着操作者身份
+        // （放到链外会被 Security 的过滤器清空）。
+        // 放在链外还有个更麻烦的后果：Spring Boot 会把它当成普通
+        // Servlet Filter 再自动注册一份 ⇒ 同一个请求记两条。
+        //
+        // 没有 AuditService bean 时（切片测试）不注册 ——
+        // addFilterAfter 不接受 null。
+        com.example.edam.audit.AuditAccessFilter auditFilter = auditAccessFilter();
+        if (auditFilter != null) {
+            http.addFilterAfter(auditFilter, JwtAuthenticationFilter.class);
+        }
+
         return http.build();
     }
 
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder(12);
+    }
+
+    /**
+     * 审计兜底过滤器（bean 不存在时返回 null ⇒ 不注册）。
+     *
+     * @see #auditServiceProvider
+     */
+    private com.example.edam.audit.AuditAccessFilter auditAccessFilter() {
+        com.example.edam.service.AuditService auditService = auditServiceProvider.getIfAvailable();
+        com.example.edam.util.AuditHelper auditHelper = auditHelperProvider.getIfAvailable();
+        if (auditService == null || auditHelper == null) {
+            return null;
+        }
+        return new com.example.edam.audit.AuditAccessFilter(auditService, auditHelper);
     }
 }

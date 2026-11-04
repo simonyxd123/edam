@@ -11,7 +11,8 @@ import com.example.edam.repository.SysPermissionRepository;
 import com.example.edam.repository.SysRolePermissionRepository;
 import com.example.edam.repository.SysRoleRepository;
 import com.example.edam.repository.SysUserRoleRepository;
-import com.example.edam.service.AuditService;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.service.PermissionService;
 import com.example.edam.security.CurrentUserId;
 import com.example.edam.util.TimeUtil;
@@ -47,16 +48,16 @@ public class RbacController {
     private final SysRoleRepository roleRepository;
     private final SysRolePermissionRepository rolePermRepository;
     private final SysUserRoleRepository userRoleRepository;
-    private final AuditService auditService;
     private final PermissionService permissionService;
 
     // ============== 权限目录（只读） ==============
 
     @GetMapping("/permissions")
     @PreAuthorize("hasAuthority('role:read') or hasAuthority('user:read')")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "permission")
     @Operation(summary = "权限目录列表")
     public List<PermissionDTO> listPermissions(
-            @RequestParam(value = "resource_type", required = false) String resourceType) {
+        @RequestParam(value = "resource_type", required = false) String resourceType) {
         List<SysPermission> list = (resourceType == null || resourceType.isBlank())
             ? permissionRepository.findAll()
             : permissionRepository.findByResourceType(resourceType);
@@ -67,6 +68,7 @@ public class RbacController {
 
     @GetMapping("/roles")
     @PreAuthorize("hasAuthority('role:read')")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "role")
     @Operation(summary = "角色列表（含权限）")
     public List<Map<String, Object>> listRoles() {
         List<SysRole> roles = roleRepository.selectList(null);
@@ -91,11 +93,13 @@ public class RbacController {
 
     @PostMapping("/roles")
     @PreAuthorize("hasAuthority('role:manage')")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "role",
+        detail = "code=#req.code, name=#req.name")
     @Transactional
     @Operation(summary = "创建角色")
     public Map<String, Object> createRole(
-            @RequestBody CreateRoleRequest req,
-            @CurrentUserId Long operatorId) {
+        @RequestBody CreateRoleRequest req,
+        @CurrentUserId Long operatorId) {
         if (req.code == null || req.code.isBlank()) {
             throw new IllegalArgumentException("角色 code 必填");
         }
@@ -115,8 +119,6 @@ public class RbacController {
             assignPermissionsInternal(role.getId(), req.permission_ids);
         }
 
-        auditService.log(operatorId, "create_role", "role", role.getId(), "success",
-            "code=" + req.code, null, null);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("id", role.getId());
         resp.put("code", role.getCode());
@@ -126,12 +128,14 @@ public class RbacController {
 
     @PutMapping("/roles/{role_id}")
     @PreAuthorize("hasAuthority('role:manage')")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "role", resourceId = "#roleId",
+        detail = "name=#req.name, permission_count=#req.permission_ids?.size()")
     @Transactional
     @Operation(summary = "更新角色（权限全量替换）")
     public Map<String, Object> updateRole(
-            @PathVariable("role_id") Long roleId,
-            @RequestBody UpdateRoleRequest req,
-            @CurrentUserId Long operatorId) {
+        @PathVariable("role_id") Long roleId,
+        @RequestBody UpdateRoleRequest req,
+        @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
         if (Boolean.TRUE.equals(role.getIsSystem())) {
@@ -145,7 +149,6 @@ public class RbacController {
             rolePermRepository.deleteByRoleId(roleId);
             assignPermissionsInternal(roleId, req.permission_ids);
         }
-        auditService.log(operatorId, "update_role", "role", roleId, "success", null, null, null);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("id", roleId);
         return resp;
@@ -153,11 +156,12 @@ public class RbacController {
 
     @DeleteMapping("/roles/{role_id}")
     @PreAuthorize("hasAuthority('role:manage')")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "role", resourceId = "#roleId")
     @Transactional
     @Operation(summary = "删除角色（系统角色不可删）")
     public Map<String, Object> deleteRole(
-            @PathVariable("role_id") Long roleId,
-            @CurrentUserId Long operatorId) {
+        @PathVariable("role_id") Long roleId,
+        @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
         if (Boolean.TRUE.equals(role.getIsSystem())) {
@@ -170,26 +174,25 @@ public class RbacController {
         userRoleRepository.delete(
             new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<SysUserRole>()
                 .eq("role_id", roleId));
-        auditService.log(operatorId, "delete_role", "role", roleId, "success", null, null, null);
         return Map.of("id", roleId, "deleted", true);
     }
 
     @PostMapping("/roles/{role_id}/permissions")
     @PreAuthorize("hasAuthority('role:manage')")
+    @AuditOp(op = AuditOpType.GRANT_PERMISSION, resourceType = "role", resourceId = "#roleId",
+        detail = "permission_count=#req.permission_ids?.size()")
     @Transactional
     @Operation(summary = "分配权限到角色（全量替换）")
     public Map<String, Object> assignPermissions(
-            @PathVariable("role_id") Long roleId,
-            @RequestBody AssignPermissionsRequest req,
-            @CurrentUserId Long operatorId) {
+        @PathVariable("role_id") Long roleId,
+        @RequestBody AssignPermissionsRequest req,
+        @CurrentUserId Long operatorId) {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
 
         rolePermRepository.deleteByRoleId(roleId);
         int n = assignPermissionsInternal(roleId, req.permission_ids);
 
-        auditService.log(operatorId, "assign_permissions", "role", roleId, "success",
-            "permission_count=" + n, null, null);
         return Map.of("role_id", roleId, "assigned_count", n);
     }
 
@@ -218,8 +221,9 @@ public class RbacController {
      */
     @GetMapping("/users/{user_id}/permissions")
     @Operation(summary = "用户的有效权限（含 RBAC + 资源 ACL）")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "user_permission", resourceId = "#userId")
     public List<Map<String, Object>> getUserPermissions(
-            @PathVariable("user_id") Long userId) {
+        @PathVariable("user_id") Long userId) {
         return permissionService.getUserPermissionCodes(userId).stream().map(code -> {
             Map<String, Object> item = new LinkedHashMap<>();
             String[] parts = code.split(":", 2);
@@ -233,6 +237,7 @@ public class RbacController {
 
     @GetMapping("/users/{user_id}/roles")
     @PreAuthorize("hasAuthority('user:read') or hasAuthority('role:read')")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "user_role", resourceId = "#userId")
     @Operation(summary = "查询用户的角色")
     public List<Map<String, Object>> getUserRoles(@PathVariable("user_id") Long userId) {
         List<SysRole> roles = userRoleRepository.findRolesByUserId(userId);
@@ -249,12 +254,14 @@ public class RbacController {
 
     @PostMapping("/users/{user_id}/roles")
     @PreAuthorize("hasAuthority('user:manage')")
+    @AuditOp(op = AuditOpType.GRANT_PERMISSION, resourceType = "user", resourceId = "#userId",
+        detail = "action=assign_roles, role_count=#req.role_ids?.size()")
     @Transactional
     @Operation(summary = "分配角色给用户（全量替换）")
     public Map<String, Object> assignRolesToUser(
-            @PathVariable("user_id") Long userId,
-            @RequestBody AssignRolesRequest req,
-            @CurrentUserId Long operatorId) {
+        @PathVariable("user_id") Long userId,
+        @RequestBody AssignRolesRequest req,
+        @CurrentUserId Long operatorId) {
         int n = 0;
         if (req.role_ids != null && !req.role_ids.isEmpty()) {
             userRoleRepository.deleteByUserId(userId);
@@ -271,8 +278,6 @@ public class RbacController {
             // 空列表 = 清空
             userRoleRepository.deleteByUserId(userId);
         }
-        auditService.log(operatorId, "assign_roles", "user", userId, "success",
-            "role_count=" + n, null, null);
         return Map.of("user_id", userId, "assigned_count", n);
     }
 

@@ -1,11 +1,12 @@
 package com.example.edam.controller;
 
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.security.sso.SsoStateStore;
 import com.example.edam.exception.RateLimitExceededException;
 import com.example.edam.security.ClientIpResolver;
 import com.example.edam.security.LoginRateLimiter;
 import com.example.edam.service.AuthService;
-import com.example.edam.util.AuditHelper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -25,6 +26,11 @@ import java.util.Map;
  * 对应 openapi.yaml tag: auth
  *
  * v3.2 V-3：登录限流已集成（IP 5/min + 工号 3/min）
+ *
+ * <p>审计说明（2026-11-03）：登录/登出原先是**手写** auditHelper.logAudit，
+ * 只能记到"走到那行为止"。改成 {@link AuditOp} 注解后由切面包住整个方法，
+ * 于是**限流拒绝、密码错误、账号锁定**这些异常路径也都会留痕 ——
+ * 而它们恰恰是安全审计最关心的一类。
  */
 @Slf4j
 @RestController
@@ -37,13 +43,16 @@ public class AuthController {
     private final SsoStateStore ssoStateStore;
     private final LoginRateLimiter loginRateLimiter;
     private final ClientIpResolver clientIpResolver;
-    private final AuditHelper auditHelper;
 
     @PostMapping("/login")
     @Operation(summary = "用户登录", description = "工号 + 密码登录。限流策略：IP 5/min、工号 3/min；连续 5 次密码错误锁定 30 分钟")
     @SecurityRequirements
+    @AuditOp(op = AuditOpType.LOGIN, resourceType = "auth",
+        userId = "#result?.body?.get('user_id')",
+        detail = "employee_no=#request.employeeNo",
+        hideParams = true)
     public ResponseEntity<Map<String, Object>> login(
-            @RequestBody LoginRequest request,
+        @RequestBody LoginRequest request,
             HttpServletRequest httpRequest) {
 
         String clientIp = clientIpResolver.resolve(httpRequest);
@@ -61,28 +70,12 @@ public class AuthController {
         }
 
         // Step 2：调用业务（密码错误由 AuthService 内部累计 + 锁定）
-        // 用 try-catch 捕获 RuntimeException，失败时写 audit（result="failure"）
-        Map<String, Object> response;
-        try {
-            response = authService.login(
-                request.getEmployeeNo(),
-                request.getPassword(),
-                request.getMfaCode()
-            );
-        } catch (RuntimeException e) {
-            // 写登录失败审计（userId 未知，detail 保留 employee_no + 失败原因）
-            auditHelper.logAudit(
-                null, "login", "auth", null, "failure",
-                "employee_no=" + request.getEmployeeNo() + ", reason=" + e.getMessage(),
-                httpRequest);
-            throw e;
-        }
-
-        // 写成功审计
-        Long userId = ((Number) response.get("user_id")).longValue();
-        auditHelper.logAudit(
-            userId, "login", "auth", null, "success",
-            "employee_no=" + request.getEmployeeNo(), httpRequest);
+        // 成功/失败的审计由 @AuditOp 切面统一记录（含失败原因），这里不再手写
+        Map<String, Object> response = authService.login(
+            request.getEmployeeNo(),
+            request.getPassword(),
+            request.getMfaCode()
+        );
 
         return ResponseEntity.ok()
             .header("X-RateLimit-Remaining", String.valueOf(result.getRemainingTokens()))
@@ -92,6 +85,7 @@ public class AuthController {
     @PostMapping("/refresh")
     @Operation(summary = "刷新 access_token")
     @SecurityRequirements
+    @AuditOp(op = AuditOpType.TOKEN_REFRESH, resourceType = "auth", hideParams = true)
     public ResponseEntity<Map<String, Object>> refresh(@RequestBody RefreshRequest request) {
         Map<String, Object> response = authService.refresh(request.getRefreshToken());
         return ResponseEntity.ok(response);
@@ -99,24 +93,23 @@ public class AuthController {
 
     @PostMapping("/logout")
     @Operation(summary = "登出")
+    @AuditOp(op = AuditOpType.LOGOUT, resourceType = "auth", hideParams = true,
+        detail = "refresh_token cleared")
     public ResponseEntity<Void> logout(
-            @RequestBody(required = false) LogoutRequest request,
+        @RequestBody(required = false) LogoutRequest request,
             HttpServletRequest httpRequest) {
         if (request != null && request.getRefreshToken() != null) {
             authService.logout(request.getRefreshToken());
         }
-        // 写审计日志：从 body 取 user_id（前端在 user store 拿到 user_id 后塞进 body）
-        Long userId = request != null ? request.getUserId() : null;
-        if (userId != null) {
-            auditHelper.logAudit(userId, "logout", "auth", null, "success",
-                "refresh_token cleared", httpRequest);
-        }
+        // 操作者取自 JWT（SecurityContext），不再信客户端 body 里的 user_id ——
+        // 那个字段是客户端可伪造的，写进审计等于给伪造留后门。
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/me")
     @Operation(summary = "获取当前用户信息")
-    public ResponseEntity<Map<String, Object>> me() {
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "user", resourceId = "#userId")
+    public ResponseEntity<Map<String, Object>> me(@com.example.edam.security.CurrentUserId Long userId) {
         Map<String, Object> response = authService.getCurrentUser();
         return ResponseEntity.ok(response);
     }
@@ -129,8 +122,10 @@ public class AuthController {
      */
     @PutMapping("/profile")
     @Operation(summary = "修改当前用户个人资料")
+    @AuditOp(op = AuditOpType.PROFILE_UPDATE, resourceType = "user", resourceId = "#userId",
+        detail = "email=#request.email, phone=#request.phone")
     public ResponseEntity<Map<String, Object>> updateProfile(
-            @RequestBody ProfileRequest request,
+        @RequestBody ProfileRequest request,
             @com.example.edam.security.CurrentUserId Long userId) {
         authService.updateProfile(userId, request.getEmail(), request.getPhone(), request.getRealName());
         return ResponseEntity.ok(authService.getCurrentUser());
@@ -144,8 +139,10 @@ public class AuthController {
      */
     @PostMapping("/change-password")
     @Operation(summary = "自助修改密码")
+    @AuditOp(op = AuditOpType.PASSWORD_CHANGE, resourceType = "user", resourceId = "#userId",
+        hideParams = true)
     public ResponseEntity<Map<String, Object>> changePassword(
-            @RequestBody ChangePasswordRequest request,
+        @RequestBody ChangePasswordRequest request,
             @com.example.edam.security.CurrentUserId Long userId) {
         authService.changePassword(userId, request.getOldPassword(), request.getNewPassword());
         return ResponseEntity.ok(Map.of("changed", true));
@@ -176,8 +173,9 @@ public class AuthController {
      */
     @PostMapping("/sso/exchange")
     @Operation(summary = "SSO 一次性登录码换 token")
+    @AuditOp(op = AuditOpType.SSO_LOGIN, resourceType = "auth", hideParams = true)
     public ResponseEntity<Map<String, Object>> ssoExchange(
-            @RequestBody SsoExchangeRequest request) {
+        @RequestBody SsoExchangeRequest request) {
         Map<String, String> tokens = ssoStateStore.consumeLoginCode(request.getCode());
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", tokens.get("access_token"));

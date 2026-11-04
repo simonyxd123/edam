@@ -1,5 +1,7 @@
 package com.example.edam.controller;
 
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.edam.model.VideoTag;
 import com.example.edam.repository.TagRepository;
@@ -36,9 +38,10 @@ public class TagsController {
 
     @GetMapping("/tags")
     @Operation(summary = "标签列表")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "tag")
     public List<com.example.edam.model.Tag> list(
-            @RequestParam(required = false) String type,
-            @RequestParam(required = false) String keyword) {
+        @RequestParam(required = false) String type,
+        @RequestParam(required = false) String keyword) {
         LambdaQueryWrapper<com.example.edam.model.Tag> wrapper = new LambdaQueryWrapper<>();
         if (type != null && !type.isBlank()) {
             wrapper.eq(com.example.edam.model.Tag::getType, type);
@@ -52,6 +55,8 @@ public class TagsController {
 
     @PostMapping("/tags")
     @Operation(summary = "创建标签")
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "tag",
+        detail = "name=#request.name, type=#request.type")
     @PreAuthorize("hasAuthority('tag:manage')")
     @Transactional
     public ResponseEntity<com.example.edam.model.Tag> create(@RequestBody CreateTagRequest request) {
@@ -70,6 +75,7 @@ public class TagsController {
 
     @GetMapping("/tags/{tag_id}")
     @Operation(summary = "标签详情")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "tag", resourceId = "#tagId")
     public ResponseEntity<com.example.edam.model.Tag> getById(@PathVariable("tag_id") Long tagId) {
         com.example.edam.model.Tag t = tagRepository.selectById(tagId);
         return t == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(t);
@@ -77,6 +83,7 @@ public class TagsController {
 
     @DeleteMapping("/tags/{tag_id}")
     @Operation(summary = "删除标签")
+    @AuditOp(op = AuditOpType.DELETE, resourceType = "tag", resourceId = "#tagId")
     @PreAuthorize("hasAuthority('tag:manage')")
     @Transactional
     public ResponseEntity<Void> delete(@PathVariable("tag_id") Long tagId) {
@@ -92,11 +99,13 @@ public class TagsController {
      */
     @PostMapping("/videos/{video_id}/tags")
     @Operation(summary = "给视频添加标签")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "video", resourceId = "#videoId",
+        detail = "action=add_tags, tag_count=#body?.get('tag_ids')?.size()")
     @PreAuthorize("hasAuthority('video:edit')")
     @Transactional
     public ResponseEntity<Map<String, Object>> addToVideo(
-            @PathVariable("video_id") Long videoId,
-            @RequestBody Map<String, List<Long>> body) {
+        @PathVariable("video_id") Long videoId,
+        @RequestBody Map<String, List<Long>> body) {
         List<Long> tagIds = body.get("tag_ids");
         if (tagIds == null || tagIds.isEmpty()) {
             throw new IllegalArgumentException("tag_ids 不能为空");
@@ -126,6 +135,8 @@ public class TagsController {
 
     @DeleteMapping("/videos/{video_id}/tags")
     @Operation(summary = "从视频移除标签")
+    @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "video", resourceId = "#videoId",
+        detail = "action=remove_tags")
     @PreAuthorize("hasAuthority('video:edit')")
     @Transactional
     public ResponseEntity<Void> removeFromVideo(@PathVariable("video_id") Long videoId) {

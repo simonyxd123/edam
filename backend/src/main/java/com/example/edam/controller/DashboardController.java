@@ -4,6 +4,8 @@ import com.example.edam.repository.DistributionApprovalRepository;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.VideoResourceRepository;
 import lombok.RequiredArgsConstructor;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -30,6 +32,7 @@ public class DashboardController {
     private final DistributionApprovalRepository distributionRepository;
 
     @GetMapping("/stats")
+    @AuditOp(op = AuditOpType.LIST, resourceType = "dashboard")
     public Map<String, Object> stats() {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("total_videos", videoRepository.countActive());

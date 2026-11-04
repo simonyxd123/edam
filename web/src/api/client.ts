@@ -79,6 +79,9 @@ class ApiClient {
         const signal = error.config?.signal as { __idleTimeout?: boolean } | undefined;
         const isUploadIdleAbort = !!signal?.__idleTimeout && isCanceled;
 
+        // 静默模式：后台旁路请求（播放事件上报等）失败时不弹提示
+        const isSilent = (error.config as any)?.silent === true;
+
         // 会话失效判定：只认 401（+ 真正的网络无响应）。
         //
         // 原来写成 `status >= 400 && status < 500` —— 那样 403 权限不足、
@@ -122,7 +125,11 @@ class ApiClient {
           }
         }
 
-        if (isUploadIdleAbort) {
+        if (isSilent) {
+          // 静默请求（后台旁路调用，如播放事件上报）：
+          // 失败也不弹提示 —— 用户对"埋点上报失败"无能为力，弹了只是干扰。
+          // 会话失效的处理仍照常走（上面已经处理过了）。
+        } else if (isUploadIdleAbort) {
           ElMessage.error(`上传超过 ${UPLOAD_IDLE_TIMEOUT_MS / 60000} 分钟无进展，已中止，请检查网络后重试`);
         } else if (isTimeout) {
           ElMessage.error('请求超时，请检查网络后重试');

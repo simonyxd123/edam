@@ -2,6 +2,7 @@ package com.example.edam.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.edam.audit.AuditOpType;
 import com.example.edam.dto.AuditLogDTO;
 import com.example.edam.model.OperationLog;
 import com.example.edam.model.SysUser;
@@ -62,42 +63,82 @@ public class AuditService {
 
     // ============== 写入 ==============
 
-    @Async
+    @Async("auditExecutor")
     public void log(Long userId, String operationType, String resourceType,
                     Long resourceId, String result) {
-        try {
-            OperationLog entry = new OperationLog();
-            entry.setUserId(userId);
-            entry.setOperationType(operationType);
-            entry.setResourceType(resourceType != null ? resourceType : "system");
-            entry.setResourceId(resourceId);
-            entry.setResult(parseResult(result));
-            entry.setTimestamp(java.time.OffsetDateTime.now());
-            operationLogRepository.insert(entry);
-        } catch (Exception e) {
-            AUDIT_WRITE_FAILURES.increment();
-            log.error("audit_log_write_failed, user_id={}, op={}", userId, operationType, e);
-        }
+        write(userId, operationType, resourceType, resourceId, result,
+            null, null, null, null, null, null, null, null);
     }
 
+    @Async("auditExecutor")
     public void log(Long userId, String operationType, String resourceType,
                     Long resourceId, String result, String detail, String ip, String userAgent) {
+        write(userId, operationType, resourceType, resourceId, result,
+            detail, ip, userAgent, null, null, null, null, null);
+    }
+
+    /**
+     * 完整写入（审计切面 {@code AuditAspect} 走这条）。
+     *
+     * <p><b>异步</b>：审计写库不能拖慢业务请求。
+     * 但也**不能丢** —— 线程池队列满时用 CallerRunsPolicy 由请求线程自己写。
+     */
+    @Async("auditExecutor")
+    public void log(Long userId, String operationType, String resourceType,
+                    Long resourceId, String result, String detail, String ip, String userAgent,
+                    String httpMethod, String endpoint, Integer statusCode,
+                    Long durationMs, String sessionId) {
+        write(userId, operationType, resourceType, resourceId, result,
+            detail, ip, userAgent, httpMethod, endpoint, statusCode, durationMs, sessionId);
+    }
+
+    /**
+     * 真正落库的地方。
+     *
+     * <p>所有公开的 log(...) 最终都汇到这里 —— 保证"字段怎么填"只有一份实现，
+     * 不会因为某条路径忘了填某个字段而出现半截记录。
+     */
+    private void write(Long userId, String operationType, String resourceType,
+                       Long resourceId, String result, String detail, String ip, String userAgent,
+                       String httpMethod, String endpoint, Integer statusCode,
+                       Long durationMs, String sessionId) {
         try {
             OperationLog entry = new OperationLog();
             entry.setUserId(userId);
             entry.setOperationType(operationType);
-            entry.setResourceType(resourceType != null ? resourceType : "system");
+            entry.setResourceType(normalizeResourceType(resourceType));
             entry.setResourceId(resourceId);
             entry.setResult(parseResult(result));
             entry.setDetail(truncateDetail(detail));
             entry.setIp(ip);
             entry.setUserAgent(userAgent);
+            entry.setHttpMethod(httpMethod);
+            entry.setEndpoint(endpoint);
+            entry.setStatusCode(statusCode);
+            entry.setDurationMs(durationMs == null ? null : durationMs.intValue());
+            entry.setSessionId(sessionId);
             entry.setTimestamp(java.time.OffsetDateTime.now());
             operationLogRepository.insert(entry);
         } catch (Exception e) {
             AUDIT_WRITE_FAILURES.increment();
-            log.error("audit_log_write_failed, user_id={}, op={}", userId, operationType, e);
+            log.error("audit_log_write_failed, user_id={}, op={}, endpoint={}",
+                userId, operationType, endpoint, e);
         }
+    }
+
+    /**
+     * 资源类型归一化成小写。
+     *
+     * <p>为什么要归一化：库里历史上有 {@code Document}（首字母大写，唯一一处）
+     * 和其它全小写的（{@code video}/{@code user}/{@code role}/{@code auth}）。
+     * 不归一化的话，按 {@code resource_type=document} 查会漏掉全部文档预览记录 ——
+     * 而"谁预览过哪些文档"恰恰是防泄密审计的核心问题。
+     */
+    private String normalizeResourceType(String resourceType) {
+        if (resourceType == null || resourceType.isBlank()) {
+            return "system";
+        }
+        return resourceType.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     /** 截断超长 detail —— 宁可少写几个字，也不能让整条审计记录写不进去。 */
@@ -121,16 +162,42 @@ public class AuditService {
     // ============== 查询 ==============
 
     /**
-     * 列表（分页 + 过滤），JOIN sys_user 取 employee_no
+     * 列表（分页 + 过滤），JOIN sys_user 取 employee_no。
+     *
+     * @param operationType 规范操作名（如 {@code create}）。
+     *                       会自动**展开成历史别名的等价集合** ——
+     *                       库里存成 {@code upload} / {@code create_role} 的老记录
+     *                       也能按 {@code create} 查到，否则老数据在审计页上"凭空消失"。
+     * @param result        {@code success} / {@code failure} / {@code denied}，null 表示不限。
+     * @param resourceType  资源类型过滤，null/空表示不限。
      */
     public Page<AuditLogDTO> list(int page, int pageSize,
                                   Long userId, String operationType,
-                                  LocalDateTime startTime, LocalDateTime endTime) {
+                                  LocalDateTime startTime, LocalDateTime endTime,
+                                  String result, String resourceType) {
 
         LambdaQueryWrapper<OperationLog> wrapper = new LambdaQueryWrapper<>();
         if (userId != null) wrapper.eq(OperationLog::getUserId, userId);
         if (operationType != null && !operationType.isBlank()) {
-            wrapper.eq(OperationLog::getOperationType, operationType);
+            Set<String> stored = AuditOpType.storedValuesFor(operationType);
+            if (stored.size() == 1) {
+                wrapper.eq(OperationLog::getOperationType, operationType);
+            } else {
+                wrapper.in(OperationLog::getOperationType, stored);
+            }
+        }
+        if (result != null && !result.isBlank()) {
+            wrapper.eq(OperationLog::getResult, parseResult(result));
+        }
+        if (resourceType != null && !resourceType.isBlank()) {
+            // 同时匹配历史遗留的大写写法（Document），否则老记录查不出来
+            String lower = resourceType.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!lower.equals(resourceType)) {
+                wrapper.and(w -> w.eq(OperationLog::getResourceType, lower)
+                    .or().eq(OperationLog::getResourceType, resourceType));
+            } else {
+                wrapper.eq(OperationLog::getResourceType, lower);
+            }
         }
         if (startTime != null) wrapper.ge(OperationLog::getTimestamp, startTime);
         if (endTime != null) wrapper.le(OperationLog::getTimestamp, endTime);
@@ -159,11 +226,17 @@ public class AuditService {
             dto.setId(ol.getId());
             dto.setUserId(ol.getUserId());
             dto.setEmployeeNo(empNoMap.get(ol.getUserId()));
-            dto.setOperationType(ol.getOperationType());
-            dto.setResourceType(ol.getResourceType());
+            // 历史别名归并成规范名（库里存的是原值，不改写）
+            dto.setOperationType(AuditOpType.normalize(ol.getOperationType()));
+            dto.setResourceType(normalizeResourceType(ol.getResourceType()));
             dto.setResourceId(ol.getResourceId());
             dto.setIp(ol.getIp());
             dto.setUserAgent(ol.getUserAgent());
+            dto.setHttpMethod(ol.getHttpMethod());
+            dto.setEndpoint(ol.getEndpoint());
+            dto.setStatusCode(ol.getStatusCode());
+            dto.setDurationMs(ol.getDurationMs());
+            dto.setSessionId(ol.getSessionId());
             dto.setDetail(ol.getDetail());
             dto.setTimestamp(ol.getTimestamp() != null
                 ? ol.getTimestamp().toLocalDateTime()
@@ -175,5 +248,26 @@ public class AuditService {
         Page<AuditLogDTO> out = new Page<>(pageResult.getCurrent(), pageResult.getSize(), pageResult.getTotal());
         out.setRecords(dtos);
         return out;
+    }
+
+    /**
+     * 全部资源类型（审计页筛选下拉用）。
+     *
+     * <p>从库里 DISTINCT 出来，而不是写死清单 —— 资源类型会随业务增长，
+     * 写死的清单会让新类型在审计页上查不出来。
+     */
+    public List<String> distinctResourceTypes() {
+        return operationLogRepository
+            .selectObjs(new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<OperationLog>()
+                .select("DISTINCT resource_type")
+                .isNotNull("resource_type")
+                .ne("resource_type", "")
+                .orderByAsc("resource_type"))
+            .stream()
+            .map(String::valueOf)
+            .map(this::normalizeResourceType)
+            .distinct()
+            .sorted()
+            .collect(Collectors.toList());
     }
 }

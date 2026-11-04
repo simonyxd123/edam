@@ -9,6 +9,8 @@ import com.example.edam.model.DistributionApproval;
 import com.example.edam.repository.DistributionApprovalRepository;
 import com.example.edam.security.CurrentUserId;
 import lombok.Data;
+import com.example.edam.audit.AuditOp;
+import com.example.edam.audit.AuditOpType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -33,6 +35,7 @@ public class DistributionController {
     private final DistributionApprovalRepository approvalRepository;
 
     @GetMapping
+    @AuditOp(op = AuditOpType.LIST, resourceType = "distribution_approval")
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size,
@@ -54,6 +57,8 @@ public class DistributionController {
 
     @PostMapping
     @Transactional
+    @AuditOp(op = AuditOpType.CREATE, resourceType = "distribution_approval",
+        detail = "doc_id=#request.docId, recipient_org=#request.externalRecipient?.org")
     public ResponseEntity<Map<String, Object>> create(
         @RequestBody CreateApprovalRequest request,
         @CurrentUserId Long applicantId
@@ -80,6 +85,8 @@ public class DistributionController {
     }
 
     @GetMapping("/{approval_id}")
+    @AuditOp(op = AuditOpType.DETAIL, resourceType = "distribution_approval",
+        resourceId = "#approvalId")
     public Map<String, Object> getById(@PathVariable("approval_id") Long approvalId) {
         DistributionApproval approval = approvalRepository.selectById(approvalId);
         if (approval == null) {
@@ -90,6 +97,8 @@ public class DistributionController {
 
     @PostMapping("/{approval_id}/decide")
     @Transactional
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "distribution_approval",
+        resourceId = "#approvalId", detail = "decision=#request.decision")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:approve')")
     public ResponseEntity<Map<String, Object>> decide(
         @PathVariable("approval_id") Long approvalId,
@@ -122,6 +131,8 @@ public class DistributionController {
     }
 
     @PostMapping("/{approval_id}/revoke")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "distribution_approval",
+        resourceId = "#approvalId", detail = "action=revoke")
     @Transactional
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:approve')")
     public ResponseEntity<Void> revoke(
