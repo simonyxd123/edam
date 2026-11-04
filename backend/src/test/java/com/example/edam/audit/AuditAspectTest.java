@@ -85,11 +85,9 @@ class AuditAspectTest {
     @Test
     @DisplayName("正常返回 ⇒ success")
     void successIsRecorded() throws Throwable {
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("success");
 
-        aspect.around(pjp, opOf("success"));
+        aspect.around(pjp);
 
         assertEquals("success", capturedResult());
         assertEquals(7L, capturedResourceId());
@@ -99,12 +97,11 @@ class AuditAspectTest {
     @Test
     @DisplayName("方法抛异常 ⇒ failure，且异常原因进 detail")
     void failureIsRecorded() throws Throwable {
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        givenMethod("failure");
         when(pjp.proceed()).thenThrow(new IllegalArgumentException("分类参数非法"));
 
         try {
-            aspect.around(pjp, opOf("failure"));
+            aspect.around(pjp);
         } catch (IllegalArgumentException expected) {
             // 异常必须原样抛出 —— 审计不能改变业务语义
         }
@@ -117,12 +114,11 @@ class AuditAspectTest {
     @Test
     @DisplayName("权限不足（AccessDeniedException）⇒ denied")
     void deniedIsRecorded() throws Throwable {
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        givenMethod("denied");
         when(pjp.proceed()).thenThrow(new AccessDeniedException("权限不足"));
 
         try {
-            aspect.around(pjp, opOf("denied"));
+            aspect.around(pjp);
         } catch (AccessDeniedException expected) {
             // 原样抛出
         }
@@ -136,12 +132,11 @@ class AuditAspectTest {
     void forbiddenResponseWithoutExceptionIsDenied() throws Throwable {
         // 项目里有一批接口是 return ResponseEntity.status(FORBIDDEN).body(...)
         // 而不是抛异常 —— 只看异常会把它们记成 success
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        givenMethod("deniedResponse");
         when(pjp.proceed()).thenReturn(
             org.springframework.http.ResponseEntity.status(403).build());
 
-        aspect.around(pjp, opOf("deniedResponse"));
+        aspect.around(pjp);
 
         assertEquals("denied", capturedResult());
         assertEquals(403, capturedStatusCode());
@@ -156,11 +151,9 @@ class AuditAspectTest {
     void userIdComesFromSecurityContext() throws Throwable {
         SecurityContextHolder.getContext().setAuthentication(
             new UsernamePasswordAuthenticationToken("42", null, List.of()));
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("success");
 
-        aspect.around(pjp, opOf("success"));
+        aspect.around(pjp);
 
         assertEquals(42L, capturedUserId());
     }
@@ -169,11 +162,9 @@ class AuditAspectTest {
     @DisplayName("真实客户端 IP 取 X-Forwarded-For 的第一个（反代后面拿到的都是代理 IP）")
     void clientIpPrefersForwardedFor() throws Throwable {
         request.addHeader("X-Forwarded-For", "203.0.113.7, 10.0.0.1");
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("success");
 
-        aspect.around(pjp, opOf("success"));
+        aspect.around(pjp);
 
         assertEquals("203.0.113.7", capturedIp());
     }
@@ -183,11 +174,9 @@ class AuditAspectTest {
     void endpointUsesRouteTemplate() throws Throwable {
         request.setAttribute("org.springframework.web.servlet.HandlerMapping.bestMatchingPattern",
             "/videos/{video_id}");
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("success");
 
-        aspect.around(pjp, opOf("success"));
+        aspect.around(pjp);
 
         assertEquals("/videos/{video_id}", capturedEndpoint());
     }
@@ -201,11 +190,9 @@ class AuditAspectTest {
     void sensitiveQueryParamsAreMasked() throws Throwable {
         request.setParameter("keyword", "内部培训");
         request.setParameter("token", "eyJhbGciOi.JIUzI1NiJ9.sig");
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("withParams");
 
-        aspect.around(pjp, opOf("withParams"));
+        aspect.around(pjp);
 
         String detail = capturedDetail();
         assertTrue(detail.contains("keyword=内部培训"), "普通参数要保留：" + detail);
@@ -217,11 +204,9 @@ class AuditAspectTest {
     @DisplayName("hideParams ⇒ 整条参数摘要都不落库")
     void hideParamsSuppressesSummary() throws Throwable {
         request.setParameter("keyword", "内部培训");
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("hiddenParams");
 
-        aspect.around(pjp, opOf("hiddenParams"));
+        aspect.around(pjp);
 
         assertFalse(capturedDetail().contains("keyword"),
             "hideParams 的接口不该有参数摘要：" + capturedDetail());
@@ -234,11 +219,9 @@ class AuditAspectTest {
     @Test
     @DisplayName("auditSuccess=false 时成功不记，失败要记")
     void auditSuccessFalseSkipsSuccess() throws Throwable {
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
-        when(pjp.proceed()).thenReturn("ok");
+        givenMethod("skipSuccess");
 
-        aspect.around(pjp, opOf("skipSuccess"));
+        aspect.around(pjp);
 
         verify(auditService, never()).log(anyLong(), anyString(), anyString(),
             any(), anyString(), any(), any(), any(),
@@ -248,12 +231,11 @@ class AuditAspectTest {
     @Test
     @DisplayName("auditSuccess=false 时失败仍然要记")
     void auditSuccessFalseStillRecordsFailure() throws Throwable {
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        givenMethod("skipSuccess");
         when(pjp.proceed()).thenThrow(new IllegalStateException("MinIO 连不上"));
 
         try {
-            aspect.around(pjp, opOf("skipSuccess"));
+            aspect.around(pjp);
         } catch (IllegalStateException expected) {
             // 原样抛出
         }
@@ -265,11 +247,26 @@ class AuditAspectTest {
     // 辅助
     // ==================================================================
 
-    /** 从被测 fixture 类里取出某个方法上的 @AuditOp */
-    private AuditOp opOf(String fixtureMethod) {
+    /**
+     * 让连接点看起来像在调用 fixture 里的某个方法。
+     *
+     * <p>切面现在自己从方法签名上取 {@link AuditOp}（不再靠 Spring 绑参数），
+     * 所以测试必须把"被调用的方法"喂给它 —— 这也正是
+     * {@link AuditAspectIntegrationTest} 要在真实代理上再验一遍的原因。
+     */
+    private void givenMethod(String fixtureMethod) throws Throwable {
+        Method method = methodOf(fixtureMethod);
+        when(signature.getMethod()).thenReturn(method);
+        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
+        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        when(pjp.proceed()).thenReturn("ok");
+    }
+
+    /** 从被测 fixture 类里取出某个方法 */
+    private Method methodOf(String fixtureMethod) {
         for (Method m : Fixture.class.getDeclaredMethods()) {
             if (m.getName().equals(fixtureMethod)) {
-                return m.getAnnotation(AuditOp.class);
+                return m;
             }
         }
         throw new IllegalArgumentException("fixture 方法不存在: " + fixtureMethod);

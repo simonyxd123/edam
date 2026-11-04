@@ -8,6 +8,8 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
@@ -21,6 +23,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.HandlerMapping;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,6 +49,13 @@ import java.util.Map;
  * 权限不足抛出的 {@code AccessDeniedException} 就发生在切面之外 ——
  * 最该记的"越权尝试"反而一条不落地漏掉。
  * 把自己排成最外层，才能把授权拦截也包进来。
+ *
+ * <p><b>注意</b>：排成最外层意味着本切面<b>先于</b> Spring 的
+ * {@code ExposeInvocationInterceptor}（order = {@code HIGHEST_PRECEDENCE + 1}）执行。
+ * 这正是 {@code @Around("@annotation(auditOp)")} 这种"把注解绑成 advice 形参"的写法会炸的原因
+ * —— 注解绑不上 ⇒ 每个被审计的接口 500。
+ * 本切面<b>不</b>依赖那条链路：{@link AuditOp} 注解是自己从方法签名上取的
+ * （见 {@link #resolveAuditOp}），所以 order 想放多靠外就放多靠外。
  *
  * <p>过滤器层（JWT 校验失败）的 401 仍然进不到切面，
  * 那一类由 {@code AuditAccessFilter} 兜底。
@@ -94,12 +104,22 @@ public class AuditAspect {
     /** 单个参数值的最大长度 */
     private static final int MAX_PARAM_VALUE_LENGTH = 120;
 
-    @Around("@annotation(auditOp)")
-    public Object around(ProceedingJoinPoint pjp, AuditOp auditOp) throws Throwable {
+    @Around("@annotation(com.example.edam.audit.AuditOp)")
+    public Object around(ProceedingJoinPoint pjp) throws Throwable {
         long startedNanos = System.nanoTime();
         HttpServletRequest request = currentRequest();
         String endpoint = routeTemplate(request);
         String httpMethod = request != null ? request.getMethod() : null;
+
+        // 注解自己从方法签名上取，不靠 Spring 绑参数（原因见 resolveAuditOp 的注释）
+        AuditOp auditOp = resolveAuditOp(pjp);
+        if (auditOp == null) {
+            // 理论上到不了这里：切点只匹配带 @AuditOp 的方法。
+            // 真到了也不能把请求打挂 —— 放行，但留一条日志让人知道切面失灵了。
+            log.warn("audit_annotation_unresolved, method={}",
+                pjp.getSignature() == null ? "?" : pjp.getSignature().toLongString());
+            return pjp.proceed();
+        }
 
         // 先进来就标记：这个请求归切面管了。
         // 放在最前面（而不是写库成功之后）是为了保证"切面跑过了"这件事
@@ -127,6 +147,51 @@ public class AuditAspect {
                 log.warn("audit_aspect_write_failed, op={}, endpoint={}", auditOp.op(), endpoint, e);
             }
         }
+    }
+
+    /**
+     * 从连接点里取出 {@link AuditOp} 注解实例。
+     *
+     * <p><b>为什么不在切点里把注解当参数绑进来</b>
+     * （也就是 {@code @Around("@annotation(auditOp)")} + {@code AuditOp auditOp}）：
+     * <p>那种写法要靠 Spring 把注解通过 {@code JoinPointMatch} 绑给 advice 方法，
+     * 而 {@code JoinPointMatch} 只有在 {@code ExposeInvocationInterceptor} 跑过之后才拿得到 ——
+     * 它的 order 是 {@code HIGHEST_PRECEDENCE + 1}，
+     * <b>任何 order 比它更靠外的 advice 都会抢在它前面执行</b>。
+     * 本切面为了包住 Spring Security 的方法级授权拦截（{@code @PreAuthorize}），
+     * 用的正是 {@code HIGHEST_PRECEDENCE} ⇒ 注解绑不上 ⇒ Spring 抛
+     * {@code IllegalStateException: Required to bind 2 arguments, but only bound 1}
+     * ⇒ <b>每个被审计的接口都 500</b>。
+     * <p>Spring 自己在 {@code ExposeInvocationInterceptor} 的异常信息里写了这条坑：
+     * "advices with order HIGHEST_PRECEDENCE will execute before ExposeInvocationInterceptor!"。
+     *
+     * <p>自己从方法签名上取，就没有这层依赖，
+     * advice 的 order 也自由了（想包住授权拦截就包住，不用再和拦截器链较劲）。
+     *
+     * <p>注意切点必须写成<b>类型形式</b> {@code @annotation(全限定类名)}：
+     * 变量形式 {@code @annotation(auditOp)} 里的 {@code auditOp} 是"切点参数"，
+     * 它由 advice 方法的<b>形参</b>提供 —— advice 不再有这个形参，切点就解不出这个变量，
+     * AspectJ 解析失败 ⇒ <b>切面静默不生效</b>（比抛异常更难发现）。
+     */
+    private AuditOp resolveAuditOp(ProceedingJoinPoint pjp) {
+        if (!(pjp.getSignature() instanceof MethodSignature sig)) {
+            return null;
+        }
+        Method method = sig.getMethod();
+        Object target = pjp.getTarget();
+        if (target != null) {
+            // CGLIB 代理上拿到的可能是代理类的方法，注解不在那儿 —— 换成目标类的真实方法
+            Method specific = AopUtils.getMostSpecificMethod(method, target.getClass());
+            if (specific != null) {
+                method = specific;
+            }
+        }
+        AuditOp op = AnnotatedElementUtils.findMergedAnnotation(method, AuditOp.class);
+        if (op == null) {
+            // 兜底：万一拿到的是接口方法，注解在实现类上
+            op = AnnotatedElementUtils.findMergedAnnotation(method.getDeclaringClass(), AuditOp.class);
+        }
+        return op;
     }
 
     // ==================================================================
