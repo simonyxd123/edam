@@ -1,7 +1,7 @@
 # EDAM - 企业全格式数字资产防泄密系统
 
-[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](CHANGELOG.md)
-[![Release Status](https://img.shields.io/badge/status-v3.3%E5%8F%AF%E5%8F%91%E5%B8%83-brightgreen.svg)](modify/2026-08-28-项目最终总结v1.0-v3.3.md)
+[![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)](CHANGELOG.md)
+[![Release Status](https://img.shields.io/badge/status-v3.4%E5%B7%B2%E5%8F%91%E5%B8%83-brightgreen.svg)](modify/2026-10-03-v3.4短期W1-W4收官总结.md)
 [![API Coverage](https://img.shields.io/badge/API_Coverage-100%25-success.svg)](scripts/check_controller_coverage.py)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://openjdk.org/)
@@ -9,19 +9,39 @@
 [![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)](https://vuejs.org/)
 [![等保](https://img.shields.io/badge/%E7%AD%89%E4%BF%9D-%E4%B8%89%E7%BA%A7-blue.svg)](modify/2026-08-12-等保三级测评准备.md)
 
-> 基于开源技术栈的零商业授权费用方案，覆盖视频与文档的全链路防泄密。**v3.3 已具备发布条件**（参见 [最终总结](modify/2026-08-28-项目最终总结v1.0-v3.3.md)）。
+> 基于开源技术栈的零商业授权费用方案，覆盖视频与文档的全链路防泄密。
+> **v3.4 已发布**（2026-11-05）：v3.3 之后的授权模型、审计闭环与播放链路稳定性工作全部收口。
 
 ## 概述
 
 EDAM 是一套面向中大型企业的数字资产防泄密系统，围绕"视频 + 文档"两大资产，提供：
 
 - 🛡️ **四层架构**：前端展示 / 业务后端 / 异步流水线 / 流媒体与文档服务
-- 🔐 **七层纵深防御**：传输 / 鉴权 / 存储 / 视觉 / 频域 / 驱动 / 管理
-- 📊 **三级密级**：L1 公开 / L2 内部 / L3 机密 / L4 绝密
-- 🔍 **多模态溯源**：Canvas 明水印 + 频域盲水印 + 视频帧指纹 + Office 隐写
-- 🪪 **统一权限中心**：RBAC + 资源级 ACL + 细粒度授权
+- 🔐 **七层纵深防御**：传输 / 鉴权 / 存储 / 驱动 / 视觉 / 频域 / 管理
+- 📊 **四级密级**：L1 公开 / L2 内部 / L3 机密 / L4 绝密
+- 🔍 **多模态溯源**：Canvas 明水印 + 视频帧指纹 + 文档盲水印 / 隐写
+- 🪪 **统一权限中心**：RBAC 角色 + 资源级 ACL（密级 + 显式授权）双层判定
+- 📝 **全量操作审计**：切面自动留痕，成功 / 失败 / 拒绝三态
 - 🌐 **多环境 GitOps**：dev / staging / prod 自动化部署
 - 📜 **完整合规**：等保三级 + 国密 + 个保法 + 数据出境
+
+---
+
+## 目录
+
+- [快速开始](#快速开始)
+- [系统架构](#系统架构)
+- [权限模型](#权限模型)
+- [项目结构](#项目结构)
+- [核心 API](#核心-api)
+- [数据模型](#数据模型)
+- [开发与测试](#开发与测试)
+- [部署](#部署)
+- [监控](#监控)
+- [安全](#安全)
+- [已知限制](#已知限制)
+
+---
 
 ## 快速开始
 
@@ -32,18 +52,18 @@ EDAM 是一套面向中大型企业的数字资产防泄密系统，围绕"视�
 - Git 2.30+
 - Java 17 / Python 3.10 / Node.js 18（开发）
 
-### 1. 本地开发（5 分钟启动）
+### 1. 本地开发
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/simonyxd123/edam.git
 cd edam
 
-# 2. 启动所有依赖
-cd dev && docker-compose up -d
+# 2. 启动所有依赖（MySQL / Redis / MinIO / RabbitMQ / Vault / ES / Prometheus / Grafana / Mock）
+cd dev && docker-compose up -d && cd ..
 
-# 3. 启动后端
-cd ../backend && mvn spring-boot:run
+# 3. 启动后端（端口已在 application.yml 里配好，不用带参数）
+cd backend && mvn spring-boot:run
 
 # 4. 启动 Worker
 cd ../worker && pip install -r requirements.txt
@@ -51,24 +71,31 @@ PYTHONPATH=src python -m uvicorn edam_worker.main:app --reload --port 8001
 
 # 5. 启动前端
 cd ../web && npm install && npm run dev
-
-# 6. 访问
-#   前端：    http://localhost:5173        ← Vite dev server（vite.config.ts）
-#   后端：    http://localhost:8092/api/v1  ← 开发期约定端口
-#   MinIO：   http://localhost:9001        ← 控制台
-#   RabbitMQ：http://localhost:15672       ← 管理台
-#   Grafana： http://localhost:3000
-#
-# 注意端口：
-# - 前端是 5173 不是 3000（3000 是 compose 里的 Grafana）
-# - 开发期后端跑 8092（前端 vite proxy 默认指向它）；
-#   全链路统一 8092（application.yml / helm / 前端 vite proxy / worker 回调）：
-#     cd backend && mvn spring-boot:run          # application.yml 已是 8092，不用带参数
-# - worker 的包在 worker/src/ 下，没有 PYTHONPATH 会 ModuleNotFoundError：
-#     cd worker && PYTHONPATH=src python -m uvicorn edam_worker.main:app --reload --port 8001
 ```
 
-默认账号：`SA0001` / `admin123`（仅开发环境）
+> **worker 的包在 `worker/src/` 下**，不设 `PYTHONPATH` 会 `ModuleNotFoundError`。
+
+**端口对照**（全链路统一 8092）：
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| 前端 Vite dev server | 5173 | 代理 `/api` → `localhost:8092` |
+| 后端 | **8092** | context-path `/api/v1` |
+| MySQL | **3307** | 容器内仍是 3306，对外映射到 3307 |
+| Redis | 6379 | |
+| MinIO | 9000 / 9001 | 9001 = 控制台 |
+| RabbitMQ | 5672 / 15672 | 15672 = 管理台 |
+| Vault | 8200 | |
+| Worker | 8001 | 指标端口 9100 |
+| Grafana | 3000 | |
+
+> 端口散落在 12 个文件里，改的时候必须一起改 ——
+> `scripts/` 与 `dev/README.md` 里有端口一致性校验。
+
+默认管理员：`E000001` / `admin123`（**仅开发环境**；生产由 `ADMIN_INITIAL_PASSWORD` 注入，
+未配置则**不创建**任何默认账号 —— fail-closed）。
+
+详见 [`dev/README.md`](dev/README.md)。
 
 ### 2. 部署到 Kubernetes
 
@@ -77,304 +104,308 @@ cd ../web && npm install && npm run dev
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-# 2. 部署 EDAM（GitOps 多环境：dev/staging/prod）
+# 2. 部署 EDAM（三个环境：dev / staging / prod）
 kubectl apply -f gitops/argocd/projects/edam-appproject.yaml
-kubectl apply -f gitops/argocd/applicationset.yaml
+kubectl apply -f gitops/argocd/applications/edam-dev.yaml
+kubectl apply -f gitops/argocd/applications/edam-staging.yaml
+kubectl apply -f gitops/argocd/applications/edam-prod.yaml
 
-# 3. 等待自动同步（dev 即时，staging 5min，prod 手动审批）
+# 3. dev 自动同步（main 合入后 3 分钟内）；staging / prod 需手动同步 + 审批
 argocd app list
-argocd app sync edam-dev --watch   # 实时观察
+argocd app sync edam-dev --watch
 ```
 
-### 2.5 移动 SDK 集成（v3.3）
+### 3. 移动 SDK 集成
 
 ```bash
 # iOS（Swift Package Manager）
-# 在 Xcode → File → Add Packages → 输入 mobile-sdk/ios/EDAMPlayer 路径
-# 或 SPM URL: git@github.com:simonyxd123/edam.git, 路径 mobile-sdk/ios/EDAMPlayer
+# Xcode → File → Add Packages → mobile-sdk/ios/EDAMPlayer
 
 # Android（Gradle）
-# 在 settings.gradle.kts 添加：
-# include(":edam-player")
-# project(":edam-player").projectDir = file("../mobile-sdk/android/edam-player")
+# settings.gradle.kts:
+#   include(":edam-player")
+#   project(":edam-player").projectDir = file("../mobile-sdk/android/edam-player")
 ```
 
-### 2.6 性能压测（k6）
+SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
-```bash
-# 启动本地服务（同 1. 节）后执行
-cd perf/k6
-k6 run --out json=results.json scripts/smoke.js         # 烟囱测试
-k6 run --out json=results.json scripts/load-test.js    # 负载测试
-k6 run --out json=results.json scripts/stress-test.js  # 压测到极限
+---
 
-# 报告查看
-python3 scripts/parse_k6.py results.json > report.html
+## 系统架构
+
+```
+┌─────────────────────────────────────────────┐
+│ 前端展示层（Vue3 + Canvas 动态明水印）      │
+├─────────────────────────────────────────────┤
+│ 业务后端层（Spring Boot 3.3 + JWT + RBAC）   │
+│   19 个 Controller / 95 个 REST 端点          │
+├─────────────────────────────────────────────┤
+│ 异步处理流水线（RabbitMQ + Python Worker）   │
+│   3 条队列：video/document preprocess + watermark │
+├─────────────────────────────────────────────┤
+│ 流媒体与文档服务层（Nginx + FFmpeg + MinIO）  │
+└─────────────────────────────────────────────┘
+     ↓                ↓                ↓
+   MySQL 8.0    Redis Cluster    MinIO / Vault
+   + ES（搜索）  + Prometheus / Grafana
 ```
 
-### 3. 使用 API Mock
+详细设计见 [`ARCHITECTURE.md`](ARCHITECTURE.md) 与 [`docs/adr/`](docs/adr/)（7 篇 ADR）。
 
-```bash
-# 启动 Prism mock
-./scripts/generate-postman.sh
-# 或
-./dev/mock/prism.sh
+### 组件规模
 
-# 启动后访问 http://localhost:4010
-# 导入 dev/mock/postman_collection.json 到 Postman
-```
+| 组件 | 技术 | 规模 |
+|---|---|---|
+| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 19 Controller / 95 端点 / 23 个测试类 |
+| Worker | Python 3.10 + FastAPI + aio-pika | 3 条队列 / 6 个测试文件 |
+| 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
+| 数据库 | MySQL 8.0 + Flyway | 14 个迁移 / **35 张表** |
+| 移动 SDK | Swift + Kotlin | v3.2.0 |
+
+---
+
+## 权限模型
+
+这是整个系统的核心，**分两层**：
+
+### 第一层：RBAC —— 角色决定「能做什么操作」
+
+`sys_permission` 目录里有 **46 条**权限码，格式固定 `{资源}:{动作}`。
+四个预置角色：
+
+| 角色 | 说明 | 权限 |
+|---|---|---|
+| `admin` | 系统管理员 | 全部权限（`PermissionService` 短路返回目录全集） |
+| `dept_manager` | 部门经理 | 本部门资源的上传 / 编辑 / 分享 / 审批 / 删除 |
+| **`employee`** | **普通员工** | **只读**（10 条白名单，全是 `action='read'`） |
+| `auditor` | 审计员 | 只读 + 审计导出 |
+
+**普通员工是只读的** —— 能看列表、详情、播放、预览、水印溯源、搜索；
+不能上传、编辑、删除、分享、外发、审批、管理。
+
+> 这条基线用**白名单**而不是"把 upload 那几条删掉"，因为权限目录会随功能增长。
+> 减法只能挡住**已知**的写权限；以后有人新增一个 `xxx:export` 又在管理界面
+> 勾给了 employee，普通员工就会**默默地**多出一项写权限 —— 这在防泄密系统里
+> 是最不能接受的漂移。白名单的语义是「**没显式列出来的，一律没有**」。
+>
+> 权威来源：[`EmployeePermissions.java`](backend/src/main/java/com/example/edam/security/EmployeePermissions.java)，
+> 由 `EmployeePermissionsTest` 保证它与迁移 SQL 逐字一致。
+
+### 第二层：资源级 ACL —— 密级决定「能看哪个资源」
+
+`video_permission` / `doc_permission` 两张表存显式授权，动作用位掩码：
+
+| 位 | 含义 | 视频 | 文档 |
+|---|---|---|---|
+| 1 | view | ✅ | ✅ |
+| 2 | download | ✅ | ✅ |
+| 4 | edit | ✅ | ✅ |
+| 8 | delete | ✅ | ✅ |
+| 16 | distribute | ✅ | ✅ |
+| 32 | print | — | ✅ |
+
+**可见性判定顺序**（`VideoPermissionService` / `DocPermissionService`）：
+
+1. admin → 允许
+2. 上传者本人 → 允许
+3. 有未过期的 `view` 位授权 → 允许（**显式授权优先于密级**）
+4. L1 / L2 → 允许
+5. L3 → 上传者与访问者**同部门**
+6. L4 → 拒绝（只能靠显式授权）
+
+> **下载权与可见性是分开判定的**。方案书 5.6.1【例外】：「L1 公开资源允许下载；
+> L2-L4 默认禁止」—— 所以 L2 文档是"能预览但不能下载"，
+> `video:download` / `document:download` 这两条权限码**没有**对应的角色级端点校验。
+
+### 权限门在哪
+
+- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 95 个端点里 **46 个**有角色门。
+  哪些端点有门、门码是什么，见 [`doc/openapi.yaml`](doc/openapi.yaml) 的
+  `x-required-permission` 扩展。
+- **前端**：`v-permission` 指令按权限**隐藏**按钮（`display:none` + `data-permission-denied` 标记）。
+  > 隐藏 ≠ 拦截。前端只是不给看，真正的拦截在后端 —— 绕过前端直接调接口一律 403。
+  > 指令是"隐藏"而不是"从 DOM 删掉"：删元素会和 Vue 的虚拟 DOM 打架（vnode 还指着那个节点，
+  > 后续 patch 抛 `removeChild` 异常）。
+
+---
 
 ## 项目结构
 
 ```
 edam/
 ├── doc/                          # 方案与 API 规范
-│   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书 (v3.3)
-│   ├── openapi.yaml              # OpenAPI 3.0 规范 (65 endpoints, v3.3)
-│   ├── database_schema.md        # 26 张表详细定义
+│   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书（权威基准）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（74 paths / 95 端点 / 17 tag / 40 schema）
+│   ├── database_schema.md        # 数据表详细定义（35 张表）
+│   ├── 2026-09-03-普通员工使用手册.pdf    # 员工手册
+│   ├── 2026-09-03-管理员使用手册.pdf      # 管理员手册
 │   ├── 图1-图4 PNG + drawio     # 架构/时序/ER/数据流
-│   └── ER图.drawio / 架构图.drawio / ...    # 可编辑源文件
+│   └── ER图.drawio / 架构图.drawio / ...  # 可编辑源文件
 │
-├── docs/adr/                     # 架构决策记录 (7 篇)
-│   ├── 0001-dlp-build-vs-buy.md
-│   ├── 0002-backend-framework.md
-│   ├── ... (0003-0007)
-│   └── template.md
-│
-├── modify/                       # 评审报告
-│   ├── 2026-08-12-方案书评审与优化建议.md
-│   ├── 2026-08-12-方案书v2.0评审.md
-│   └── 2026-08-12-细化文档评审.md
+├── modify/                       # 评审报告与变更记录（50+ 篇）
 │
 ├── backend/                      # Spring Boot 后端
 │   ├── pom.xml
-│   └── src/main/java/com/example/edam/
-│       ├── EdamApplication.java
-│       ├── controller/   # Auth/Health/Video/Document/...
-│       ├── service/      # AuthService/VideoService/...
-│       ├── repository/   # MyBatis-Plus Mapper
-│       ├── model/        # 实体类
-│       ├── security/     # JWT + Spring Security
-│       └── exception/    # GlobalExceptionHandler
+│   └── src/main/
+│       ├── java/com/example/edam/
+│       │   ├── controller/       # 18 个 Controller（+ security/webauthn/ 1 个）
+│       │   ├── service/          # 13 个业务 Service
+│       │   ├── security/         # JWT + Spring Security + RBAC + 密级 + SSO
+│       │   ├── audit/            # @AuditOp 注解 + AOP 切面
+│       │   ├── model/ repository/ mapper/
+│       │   └── exception/        # GlobalExceptionHandler（Problem Details）
+│       └── resources/db/migration/   # ★ Flyway 迁移的唯一权威来源（14 个 / 35 表）
 │
 ├── worker/                       # Python Worker（异步处理）
 │   ├── requirements.txt
 │   ├── pytest.ini
-│   ├── tests/                    # 单元测试
+│   ├── tests/                    # 6 个测试文件
 │   └── src/edam_worker/
-│       ├── main.py               # FastAPI + aio-pika
-│       ├── config.py             # 配置管理
-│       └── processors/           # 视频/文档/水印
+│       ├── main.py               # FastAPI + RabbitMQ 消费 + 重试 + 自检
+│       ├── processors/           # video / document / watermark
+│       └── fingerprint/          # pHash / 盲水印 / 泄露检测
 │
 ├── web/                          # Vue 3 前端
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── src/
-│       ├── App.vue / main.ts
-│       ├── views/                # Login / Dashboard / Videos / ...
-│       ├── api/                  # API 客户端
-│       ├── stores/               # Pinia
-│       ├── router/               # Vue Router
-│       └── styles/               # SCSS
+│       ├── views/                # 10 个视图
+│       ├── api/                  # 9 个 API 模块（+ 2 个 spec）
+│       ├── stores/               # Pinia（user / 权限判定）
+│       ├── router/               # 11 条路由（meta.permission 守卫）
+│       └── utils/permission.ts   # v-permission 指令
 │
 ├── dev/                          # 本地开发
-│   ├── docker-compose.yml        # 9 服务一键启动
-│   ├── db/migration/             # Flyway SQL (26 表)
-│   ├── db/seed/                  # 种子数据
-│   ├── monitoring/               # Prometheus 配置
-│   └── mock/                     # Prism + Postman
+│   ├── docker-compose.yml        # 9 服务
+│   ├── README.md                 # 启动流程 + 端口对照 + Flyway 排障
+│   ├── cdc/                      # Debezium + ES CDC（独立进程）
+│   ├── elk/ monitoring/ waf/ mock/
 │
-├── helm/edam/                    # K8s Helm Chart
-│   ├── Chart.yaml
-│   ├── values.yaml
-│   └── templates/                # Deployment/Service/Ingress/...
+├── helm/edam/                    # K8s Helm Chart（version 1.1.0 / appVersion 3.4.0）
+├── docker/                       # backend / worker / web Dockerfile
+├── gitops/                       # ArgoCD：argocd/ + overlays/{dev,staging,prod}
+├── e2e/                          # Playwright + Cypress
+├── mobile-sdk/                   # iOS (SPM) + Android (Gradle)
+├── perf/k6/                      # 压测套件（4 档位）
+├── docs/adr/                     # 架构决策记录（7 篇）
+├── ops/sop/                      # 运维 SOP（5 篇）
+├── monitoring/                   # Grafana 看板 + Prometheus 告警
+├── scripts/                      # 自动化脚本 + 规范校验
+├── .github/workflows/            # CI / perf / release / security-scan
+├── .gitlab-ci.yml                # GitLab CI（lint → test → build → deploy）
 │
-├── docker/                       # Dockerfile
-│   ├── backend.Dockerfile        # 多阶段 JDK 17 → JRE 17
-│   ├── worker.Dockerfile         # Python + FFmpeg + LibreOffice
-│   └── web.Dockerfile            # Node 18 → Nginx 1.25
-│
-├── e2e/                          # E2E 测试
-│   ├── playwright/                # Playwright
-│   └── cypress/                  # Cypress
-│
-├── monitoring/                   # 监控告警
-│   ├── grafana/
-│   │   ├── alerts/               # PrometheusRule
-│   │   └── dashboards/           # Grafana 仪表板
-│   └── alertmanager/             # 路由 + 抑制规则
-│
-├── ops/sop/                      # 运维 SOP
-│   ├── 01-incident-response.md   # 故障应急
-│   ├── 02-disaster-recovery.md   # 灾备演练
-│   ├── 03-performance-tuning.md   # 性能调优
-│   └── 04-change-management.md   # 变更管理
-│
-├── gitops/                       # ArgoCD 多环境
-│   ├── argocd/                   # AppProject + Applications
-│   └── overlays/                 # dev/staging/prod
-│
-├── scripts/                      # 自动化脚本
-│   ├── generate-sdks.sh          # SDK 客户端生成
-│   ├── generate-postman.sh       # Postman 集合生成
-│   └── validate-openapi.sh       # OpenAPI 校验
-│
-├── .github/                      # GitHub 配置
-│   ├── workflows/                # CI / CD
-│   ├── pull_request_template.md
-│   └── ISSUE_TEMPLATE/
-│
-├── .gitlab-ci.yml                # GitLab CI
-│
-├── CLAUDE.md                     # Claude Code 项目说明
-├── CHANGELOG.md                  # 变更日志
-└── README.md                     # 本文件
+├── ARCHITECTURE.md  SECURITY.md  CHANGELOG.md  CLAUDE.md  README.md
 ```
 
-## v3.3 亮点（11 项 P0/P1/P2 全部闭环）
-
-| 类别 | 模块 | 状态 | 关键产出 |
-| --- | --- | --- | --- |
-| 🛡️ 合规 | 等保三级 P0 整改（W-1） | ✅ 9/9 | WAF + SOC + ELK + EDR + 密码策略 + 应急预案 + 漏洞扫描 + 密钥文档 + PIA |
-| 🇨🇳 合规 | 国密算法集成（W-2） | ✅ | SM4-CBC HLS + SM3 JWT + Vault Transit SM4-GCM + 国密 TLS |
-| 🇨🇳 合规 | 商密许可申请材料（W-3） | ✅ 6/6 | 信息系统密码应用方案 + 评估报告 + 申请材料清单 |
-| 🔐 安全 | SSO 集成（W-4） | ✅ | SAML 2.0 + OIDC + JIT Provisioning + 6 个 IdP 已验证 |
-| 🔐 安全 | WebAuthn / FIDO2（W-5） | ✅ AAL3 | 注册 + 登录 + 凭据管理 + 备份码 |
-| 🔍 溯源 | 频域水印生产（W-6） | ✅ | pHash 指纹库（30+ 帧）+ DCT 文档水印 + 泄露检测 |
-| 📊 安全 | 数据分类分级（W-7） | ✅ L1-L4 | 自动识别 + 强制打标 + 变更审计 |
-| 🔄 性能 | ES CDC 同步（W-10） | ✅ | Canal + Kafka + ES 5s flush + 每日对账 |
-| 📱 移动 | SDK v1.1（W-11） | ✅ | 文档预览 + 离线缓存 + 录屏检测 + 越狱检测 |
-| 🚀 DevOps | ArgoCD 多环境（W-12） | ✅ | ApplicationSet + Kustomize + Sync Wave + manual-approve |
-| 📈 性能 | k6 压测 + 容量规划（W-15） | ✅ | 核心 API + 鉴权 + 视频 + 文档全套脚本 |
-
-完整评估：[`modify/2026-08-28-项目最终总结v1.0-v3.3.md`](modify/2026-08-28-项目最终总结v1.0-v3.3.md)。
-
-## 技术栈
-
-| 类别 | 技术 | 说明 |
-|---|---|---|
-| 后端 | Java 17 + Spring Boot 3.3 + MyBatis-Plus | 企业级稳定框架 |
-| 异步处理 | Python 3.10 + FastAPI + aio-pika | GPU 加速视频处理 |
-| 前端 | Vue 3 + Vite + Pinia + Element Plus | 现代化 SPA |
-| 视频 | Nginx 1.21+ + FFmpeg + HLS + AES-128 | 工业级流媒体 |
-| 对象存储 | MinIO | S3 兼容 |
-| 数据库 | MySQL 8.0 + Redis Cluster | 关系型 + 高频缓存 |
-| 消息队列 | RabbitMQ 3.13 | 异步处理 |
-| 密钥管理 | HashiCorp Vault | 双密钥灰度轮转 |
-| 容器化 | Docker + Kubernetes + Helm | 云原生 |
-| 可观测性 | Prometheus + Grafana + ELK + SkyWalking | SRE 体系 |
-| 安全 | Spring Security + JJWT + BouncyCastle | 国密 + 国际算法双轨 |
-| CI/CD | GitHub Actions / GitLab CI | 自动化交付 |
-| 部署 | ArgoCD + External Secrets | GitOps |
+---
 
 ## 核心 API
 
-完整 API 规范：[`doc/openapi.yaml`](doc/openapi.yaml)（v3.3：65 个端点 / 36 个 schema / 16 个 tag）
-
-主要模块：
+完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**74 paths / 95 端点 / 17 tag / 40 schema**）。
 
 | Tag | 端点数 | 说明 |
 |---|---|---|
-| auth | 4 | 登录/刷新/登出/当前用户 |
-| health | 4 | Liveness/Readiness/Components |
-| users | 5 | 用户 CRUD + 密钥吊销 |
-| videos | 5 | 视频 CRUD + 批量 |
-| playback | 3 | Token / 密钥 / 日志上报 |
-| documents | 4 | 文档 CRUD + 搜索 |
-| distribution | 5 | 外发审批流程 |
-| watermarks | 3 | 水印提取 / 缓存 |
-| audit | 3 | 审计日志查询/导出 |
-| notifications | 4 | 用户通知 |
-| webhooks | 4 | 回调注册与投递 |
-| search | 2 | 全文搜索 |
-| tags | 4 | 标签管理 |
-| permissions | 3 | 角色与权限 |
-| admin | 3 | 备份与恢复 |
+| videos | 10 | 视频 CRUD、批量删除、细粒度授权 |
+| documents | 10 | 文档 CRUD、批量删除、细粒度授权、预览 |
+| permissions | 9 | 权限目录、角色 CRUD、用户角色绑定 |
+| auth | 7 | 登录 / 刷新 / 登出 / 当前用户 / 改密 / SSO 换 token |
+| users | 7 | 用户 CRUD、密码重置、密钥吊销 |
+| notifications | 6 | 通知列表、已读、偏好设置 |
+| tags | 6 | 标签 CRUD、视频打标 |
+| playback | 5 | 播放 token、m3u8、分片、密钥、日志上报 |
+| distribution | 5 | 外发审批：提交 / 查询 / 批准 / 驳回 / 撤销 |
+| health | 4 | Liveness / Readiness / Components |
+| webhooks | 4 | 回调注册与投递历史 |
+| audit | 5 | 日志查询、详情、导出、操作类型与资源类型枚举 |
+| watermarks | 3 | 水印提取、缓存列表、缓存清理 |
+| admin | 3 | 备份触发 / 恢复 |
+| preview | 2 | 文档预览 / 下载 |
+| search | 2 | 视频 / 文档检索 |
+| webauthn | 6 | FIDO2 注册与登录、凭据管理 |
+| dashboard | 1 | 仪表板统计 |
 
-## 核心数据模型
+> 端点数与实现的对账由 `scripts/check_controller_coverage.py` 自动跑，
+> 当前 **95 ↔ 95，100% 覆盖**。
 
-完整 Schema：[`doc/database_schema.md`](doc/database_schema.md)（22 张表 + v3.1 新增 8 张）
+---
+
+## 数据模型
+
+完整 Schema：[`doc/database_schema.md`](doc/database_schema.md)。
 
 ```
-用户与权限  → sys_user / sys_role / sys_permission / sys_session
+用户与权限  → sys_user / sys_dept / sys_role / sys_permission / sys_role_permission
+              sys_user_role / sys_session / sys_password_history / webauthn_credential
 资源管理    → video_resource / doc_resource / file_metadata
-权限关联    → video_permission / doc_permission / distribution_approval
+权限关联    → video_permission / doc_permission / distribution_approval(+_decision)
 审计溯源    → play_log / operation_log / watermark_cache / key_rotation_log
-终端管控    → driver_status
-通知消息    → notification / webhook / notification_preferences
+              video_fingerprint / doc_watermark / leak_detection
+数据分级    → data_classification_audit / data_classification_rule
+标签通知    → tag / video_tag / doc_tag / notification / notification_preferences
+              webhook / webhook_delivery
+终端与运维  → driver_status / backup / external_doc_view_log
 ```
 
-## 架构
+**迁移规范**：
 
-参考 [`doc/架构图.drawio`](doc/架构图.drawio) 和 [`docs/adr/`](docs/adr/)：
+- 唯一权威来源 `backend/src/main/resources/db/migration/`（`dev/db/migration/` 已废弃）
+- `validate-on-migrate: true` —— **改已应用的迁移会让所有环境启动失败**，只能加新迁移
+- 索引：高频查询在 `file_hash` / `upload_time` / `user_id` / `access_time` 上建联合索引
 
-```
-┌─────────────────────────────────────────────┐
-│ 前端展示层（Vue3 + Canvas 动态明水印）     │
-├─────────────────────────────────────────────┤
-│ 业务后端层（Spring Boot 3.x + JWT）          │
-├─────────────────────────────────────────────┤
-│ 异步处理流水线（RabbitMQ + Python Worker）  │
-├─────────────────────────────────────────────┤
-│ 流媒体与文档服务层（Nginx + FFmpeg + MinIO）  │
-└─────────────────────────────────────────────┘
-     ↓                ↓                ↓
-   MySQL 8.0    Redis Cluster    Vault KMS
-   + ES（搜索）  + MinIO（对象）   + Prometheus
-```
+---
 
-## 开发指南
+## 开发与测试
 
 ### 编译
 
 ```bash
-# 后端
-cd backend && mvn -B compile
-
-# Worker 测试
-cd worker && pytest
-
-# 前端构建
-cd web && npm run build
+cd backend && mvn -B compile     # 后端
+cd worker  && pytest              # Worker
+cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查）
 ```
 
-### E2E 测试
+### 测试
+
+| 项目 | 命令 | 规模 |
+|---|---|---|
+| 后端 | `cd backend && mvn test` | 23 个测试类 / **161 用例** |
+| 前端 | `cd web && npx vitest run` | 7 个文件 / **58 用例** |
+| Worker | `cd worker && pytest` | 6 个文件 / **68 用例**（2 个需 ffmpeg / PyPDF2，跳过） |
+| E2E | `cd e2e && npx playwright test` | Playwright + Cypress |
+
+> 后端测试需要**真实的 MySQL**（迁移是 MySQL 方言，不用 H2）。
+> 本机没起 MySQL 时，`ApplicationStartupTest` 的 6 个用例会因
+> "Communications link failure" 报错 —— 这是**环境问题，不是代码问题**，
+> CI 里 MySQL / RabbitMQ 是 service 容器。
+
+### 代码质量门禁
 
 ```bash
-# 启动 Prism mock 后台
-./dev/mock/prism.sh &
+# API 规范校验（YAML 语法 + 必需字段 + $ref 可解析）
+./scripts/validate-openapi.sh
 
-# 安装依赖（首次）
-cd e2e && npm ci    # 严格按 package-lock.json 安装
-
-# 跑 Playwright
-cd e2e && npx playwright test
-
-# 跑 Cypress
-cd e2e/cypress && npx cypress run
+# Controller ↔ OpenAPI 对账（应输出 95 ↔ 95 / 100%）
+python scripts/check_controller_coverage.py
 ```
 
-### 数据库迁移
-
-```bash
-# 启动迁移
-flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
-       -locations=filesystem:dev/db/migration migrate
-
-# 回滚
-flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
-       -locations=filesystem:dev/db/migration undo
-```
+---
 
 ## 部署
 
 ### 环境
 
-| 环境 | 命名空间 | 副本数 | 数据库 | 同步方式 |
-|---|---|---|---|---|
-| dev | edam-dev | 1 | H2/本地 MySQL | 自动 |
-| staging | edam-staging | 2 | 共享测试库 | 手动 |
-| prod | edam | 5+ | 主从 MySQL | 手动（tag 触发） |
+| 环境 | 命名空间 | 副本数 | 同步方式 |
+|---|---|---|---|
+| dev | edam-dev | 1 | 自动（main 合入后 3 分钟） |
+| staging | edam-staging | 2 | 手动 |
+| prod | edam | 5+（HPA 5-20） | 手动（tag 触发 + 审批） |
+
+> ⚠️ **Helm overlay 覆盖 base**：改 `helm/edam/values.yaml` 前**必须**查
+> `gitops/overlays/*/values.yaml` —— overlay 会静默覆盖 base 的同名项，
+> 生产环境可能悄悄用着旧值。
+> CI 部署时用 `--set *.image.tag=$IMAGE_TAG`（commit SHA）覆盖镜像 tag，
+> 必须三个服务（backend / worker / web）一起覆盖，否则会出现
+> 「backend 滚到新版本、worker 还停在旧 tag」。
 
 ### 部署前检查
 
@@ -389,6 +420,8 @@ flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
 - [ ] 备份已执行
 - [ ] 值班人员就位
 
+---
+
 ## 监控
 
 [Grafana Dashboard](http://localhost:3000) 包含：
@@ -396,28 +429,65 @@ flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
 - 业务总览（QPS / 错误率 / P99 / 在线用户）
 - 后端 JVM / 数据库 / MQ 详情
 - Nginx 流量 / Secure Link 命中率
-- 业务指标（播放/上传/审批）
+- 业务指标（播放 / 上传 / 审批 / 转码队列深度）
 
-告警规则覆盖：
+告警规则覆盖：后端（错误率 / 延迟 / Pod 重启 / 内存）、数据库（慢查询 / 主从延迟）、
+Redis / RabbitMQ / Vault、业务级（视频转码失败 / 队列卡死 / 可疑登录 / 外发撤销 / 密钥轮转）。
 
-- 后端（错误率 / 延迟 / Pod 重启 / 内存）
-- 数据库（MySQL 慢查询 / 主从延迟 / 连接数）
-- Redis / RabbitMQ / Vault
-- 业务级（视频转码失败 / 可疑登录 / 外发撤销 / 密钥轮转）
+Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`）与
+运维接口（`/ops/videos/{id}/reprocess-hls`），可单独触发失败任务的补跑。
+
+---
 
 ## 安全
 
 ### 加密策略
 
 - **传输**：TLS 1.2+
-- **应用层**：AES-256 / SM4（驱动）；AES-128（HLS）
+- **应用层**：AES-256 / SM4（驱动）；AES-128（HLS 切片）
 - **密钥管理**：HashiCorp Vault 双密钥灰度轮转
-- **PII 加密**：Vault Transit + 应用层
-- **Token**：HMAC-SHA256，不携带 PII
+- **Token**：HMAC-SHA256 签名，**不携带 PII**
+- **Worker 回调**：`X-Worker-Token` 头 + 常量时间比对，**未配置即一律拒绝**（fail-closed）
+
+### 审计
+
+所有写操作经 `@AuditOp` 注解 + AOP 切面自动留痕，落 `operation_log` 表：
+
+| 字段 | 说明 |
+|---|---|
+| `result` | 三态：`1` 成功 / `2` 失败 / `3` 拒绝（越权访问也要留痕） |
+| `detail` | 脱敏后的参数摘要（密码 / token / secret 等键名自动打码） |
+| `http_method` / `endpoint` / `status_code` / `duration_ms` | 请求元信息 |
+| `user_id` | **可空** —— 未登录的登录失败、越权尝试也要能记下来 |
+
+> 敏感信息约定：**日志中不得打印 token 本身**（连哈希都不打）。
 
 ### 漏洞报告
 
-如发现安全漏洞，请邮件至 `security@example.com`（PGP key 在 [`docs/SECURITY.md`](docs/SECURITY.md)）。
+见 [`SECURITY.md`](SECURITY.md)。
+
+---
+
+## 已知限制
+
+诚实起见 —— 下面这些是**代码里还没接线**的部分，不要按文档标题误以为已经可用：
+
+| 能力 | 现状 |
+|---|---|
+| 盲水印 | Python Worker 侧可用（DCT / 隐写 / LSB）；**Java 后端无盲水印实现**，`POST /watermarks/extract` 目前返回 mock |
+| 密级自动识别 | `DataClassificationService` / `ClassificationEnforcement` **未被任何 Controller 调用** —— 现阶段密级由客户端传入的 `classification_lv` 决定 |
+| 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.0")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
+| 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |
+| `q.watermark` 队列 | 已声明并绑定，但**后端没有生产者** —— 只有 Worker 消费端 |
+| 文档处理回调 | `DocumentProcessor` **不回写后端状态** —— 文档的 `watermark_status` / `preview_status` 没有自动闭环 |
+| ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
+| `fingerprint/` 下三个 Service | pHash / DCT / 泄露检测，**零引用**（与 `processors/` 下实现算法不一致，未接线） |
+| SSO | 默认 `edam.sso.enabled: false` |
+
+方案书里的**驱动层**（Windows minifilter / macOS Endpoint Security / Linux FUSE）
+在本仓库中**没有实现** —— 只有协议与设计文档。
+
+---
 
 ## 贡献
 
@@ -426,6 +496,8 @@ flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
 3. 提交变更（`git commit -m 'feat: 添加 amazing 功能'`）
 4. 推送分支（`git push origin feature/amazing`）
 5. 提交 PR（参考 [`PR 模板`](.github/pull_request_template.md)）
+
+---
 
 ## 许可证
 
@@ -457,7 +529,7 @@ flyway -url=jdbc:mysql://localhost:3307/edam -user=root -password=xxx \
 
 **⚠️ 重要提示**：
 
-1. 生产环境部署前，**必须**修改默认密钥（admin/admin123）
+1. 生产环境部署前，**必须**修改默认密钥（admin / admin123）
 2. 所有密钥应通过 Vault 管理，**禁止**明文存储在 Git
 3. 定期更新依赖、订阅安全公告
 4. 参考 [`ops/sop/`](ops/sop/) 制定运维流程

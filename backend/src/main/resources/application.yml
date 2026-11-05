@@ -16,7 +16,7 @@ server:
 spring:
   application:
     name: edam-backend
-    version: 3.1.0
+    version: 3.4.0
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:dev}
   jackson:

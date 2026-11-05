@@ -16,77 +16,66 @@ def norm_path(p: str) -> str:
 
 
 # 1. 扫描 Controller
-controllers_dir = Path('backend/src/main/java/com/example/edam/controller')
+#
+# 扫描范围包含两个目录：controller/ 与 security/webauthn/
+# （WebAuthnController 不在 controller/ 下，早先漏扫导致规范里 6 个 webauthn
+#  端点被误报成"未实现"）。
+#
+# 匹配方式：逐行扫描，不做整块正则。
+#   - 看到 @XxxMapping 行就记下 method + 路径（带路径的取路径，裸的取类级路径）；
+#   - 之后遇到 public/protected 方法签名行，说明这个端点的方法确实存在。
+#
+# 为什么不用整块正则：注解里常有**嵌套括号**与**多行**两种情况，
+#   @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:upload')")
+#   @AuditOp(op = AuditOpType.CREATE, resourceType = "video",
+#            detail = "title=#title, classification_lv=#classificationLv")
+# 简单正则两样都处理不好 —— 前者遇到 'video:upload' 的右括号就提前结束，
+# 后者会让「向下找方法声明」提前 break。两个 bug 叠加的结果是
+# POST /videos、POST /documents、POST /users 等裸注解端点全部漏扫。
+CONTROLLER_DIRS = [
+    Path('backend/src/main/java/com/example/edam/controller'),
+    Path('backend/src/main/java/com/example/edam/security/webauthn'),
+]
+
+MAPPING_RE = re.compile(
+    r'@(Get|Post|Put|Delete|Patch)Mapping\s*'
+    r'(?:\(\s*(?:value\s*=\s*)?"([^"]*)"[^)]*\))?'
+)
+METHOD_SIG_RE = re.compile(r'^\s{4}(public|protected)\s.*\(')
+
 implemented = {}  # {(method, path): class_name}
 
-for java_file in sorted(controllers_dir.glob('*Controller.java')):
-    text = java_file.read_text(encoding='utf-8')
-    class_mapping = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?"([^"]+)"', text)
-    class_path = (class_mapping.group(1) if class_mapping else '').rstrip('/')
-    cls = java_file.stem
-    # 匹配带路径字符串的注解
-    pattern_with_path = re.compile(
-        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*(?:value\s*=\s*)?"([^"]+)"'
-    )
-    # 匹配裸注解（无参数，映射到类路径）
-    pattern_bare = re.compile(
-        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*\)'
-    )
+for controllers_dir in CONTROLLER_DIRS:
+    for java_file in sorted(controllers_dir.glob('*Controller.java')):
+        text = java_file.read_text(encoding='utf-8')
+        lines = text.split('\n')
+        cls = java_file.stem
 
-    for m in pattern_with_path.finditer(text):
-        method = m.group(1).replace('Mapping', '').upper()
-        sub = m.group(2)
-        if sub.startswith('/'):
-            full = class_path + sub
-        else:
-            full = class_path + '/' + sub
-        full = norm_path(full)
-        implemented[(method, full)] = cls
-
-    for m in pattern_bare.finditer(text):
-        method = m.group(1).replace('Mapping', '').upper()
-        full = class_path or '/'
-        full = norm_path(full)
-        implemented[(method, full)] = cls
-
-    # 匹配裸注解（@GetMapping 后不带路径，映射到类级路径）
-    #
-    # 这里**不用正则**整块匹配 —— 原来的正则
-    #   r'@XxxMapping(?:\s*\n|\s+)(?:@\w+(?:\([^)]*\))?\s*\n)*\s*public\s+'
-    # 处理不了
-    #   @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:upload')")
-    # 这种**含嵌套括号**的全限定名注解 —— `\([^)]*\)` 遇到 'video:upload' 里的
-    # 右括号就提前结束，后面匹配不上 → POST /videos、POST /documents、
-    # POST /users 三个裸注解端点全都没被识别 → 误报"未实现"。
-    #
-    # 改成逐行扫描：看到 @XxxMapping 行就记下来，再往下找到该方法
-    # （跳过中间的其他注解行），确认后面跟着 public 方法声明。
-    mapping_re = re.compile(
-        r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*'
-        r'(?:\(\s*(?:value\s*=\s*)?"([^"]*)"[^)]*\))?'
-    )
-    lines = text.split('\n')
-    for i, line in enumerate(lines):
-        m = mapping_re.search(line)
-        if not m:
-            continue
-        method = m.group(1).replace('Mapping', '').upper()
-        sub = m.group(2)      # None = 裸注解
-        if sub is not None:
-            continue           # 带路径的上面已经处理过
-        # 往下找方法声明（中间可能有其它注解）
-        for j in range(i + 1, min(i + 12, len(lines))):
-            nxt = lines[j].strip()
-            if not nxt or nxt.startswith('@'):
-                continue
-            if nxt.startswith('public ') or nxt.startswith('protected ') \
-               or nxt.startswith('private '):
-                full = class_path or '/'
-                full = norm_path(full)
-                if (method, full) not in implemented:
-                    implemented[(method, full)] = cls
+        # 类级 @RequestMapping 前缀
+        class_path = ''
+        for line in lines:
+            s = line.strip()
+            if s.startswith('public class') or s.startswith('public final class'):
                 break
-            break   # 下一行既不是注解也不是方法声明 → 这个 mapping 不对应方法
+            if s.startswith('@'):
+                m = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?"([^"]*)"', s)
+                if m:
+                    class_path = m.group(1).rstrip('/')
+                    break
+
+        current = None  # (method, path)
+        for i, line in enumerate(lines):
+            s = line.strip()
+            m = MAPPING_RE.search(s)
+            if m and s.startswith('@'):
+                sub = m.group(2) or ''
+                current = (m.group(1).upper(), norm_path(class_path + sub if sub else (class_path or '/')))
+                continue
+            if METHOD_SIG_RE.match(line):
+                if current is not None:
+                    implemented.setdefault(current, cls)
+                current = None
+                continue
 
 # 2. 解析 OpenAPI
 with open('doc/openapi.yaml', 'r', encoding='utf-8') as f:

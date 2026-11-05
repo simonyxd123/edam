@@ -13,7 +13,7 @@ backend:
   name: backend
   image:
     repository: edam/backend
-    tag: "3.1.0"
+    tag: "3.4.0"
     pullPolicy: IfNotPresent
   replicaCount: 3
   resources:
@@ -95,7 +95,7 @@ worker:
   name: worker
   image:
     repository: edam/worker
-    tag: "3.1.0"
+    tag: "3.4.0"
     pullPolicy: IfNotPresent
   replicaCount: 2
   service:
@@ -223,7 +223,7 @@ web:
   enabled: true
   image:
     repository: edam/web
-    tag: "3.1.0"
+    tag: "3.4.0"
     pullPolicy: IfNotPresent
   replicaCount: 2
   service:

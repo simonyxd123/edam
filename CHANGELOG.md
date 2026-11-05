@@ -8,8 +8,115 @@
 ## [未发布]
 
 ### 计划中
-- v3.4 路线图启动（等保测评申请 + 商密 SDK 采购 + k6 压测 + 移动 SDK 灰度）
+- v3.4 中期（W5-W18）：等保测评现场执行 + 商密许可颁发 + 频域水印生产化灰度
 - AI 辅助文档审核（敏感信息自动识别 + LLM 二次校验）
+
+---
+
+## [3.4.0] - 2026-11-05
+
+> 本版本是 v3.3（2026-08-28）之后的**第一个完整发版**。
+> 期间共 90 次提交，主题集中在三件事：
+> **授权模型落地**、**审计闭环**、**播放链路可靠性**。
+
+### 新增
+
+#### 授权模型（RBAC + 资源级 ACL 完整落地）
+
+- **资源级 ACL 落地**：`video_permission` / `doc_permission` 两张表真正生效
+  - 可见性判定：admin → 上传者 → 显式授权（优先于密级）→ L1/L2 → L3 同部门 → L4 拒绝
+  - 动作位掩码：视频 `view/download/edit/delete/distribute`；文档额外 `print`
+  - 授权有效期（`expire_at`）、**覆盖而非叠加**语义、未知位拒绝
+  - 列表接口按可见性过滤（`applyVisibility`），不再"全量返回再前端过滤"
+  - 越权分享阻断：无 `distribute` 位不能分享别人的资源
+- **文档侧授权模型 + 前端分享界面**（`77c3143`）
+  - 新增统一的 `ShareDialog` 组件，视频 / 文档共用
+  - 动作位在前端与后端契约一致（`web/src/api/permission.spec.ts` 锁住）
+- **用户管理 + 角色 CRUD 完整版**（`e32af40`）：增 / 改 / 删 / 重置密码 / 分配角色
+- **Excel 批量导入用户**（`0d10bc0`）：前端 xlsx 解析，导入时同步绑定角色
+
+#### 审计（从"关键操作留痕"到"全量操作留痕"）
+
+- **`@AuditOp` 注解 + AOP 切面**（`9d9a624`）：全量操作自动留痕
+  - **三态留痕**：成功 / 失败 / **拒绝**（越权访问同样入账）
+  - `AuditAccessFilter` 兜底：没进控制器就被 401/403 挡下的请求也留痕
+  - 敏感键名自动打码（密码 / token / secret / mfa_code …，约 30 个键）
+  - `operation_log` 扩列：`http_method` / `endpoint` / `status_code` / `duration_ms` / `session_id`
+  - `user_id` 改**可空** —— 未登录的登录失败、越权尝试也要能记下来
+  - **日志中不得打印 token 本身**（连哈希都不打）
+- **审计切面不再靠 Spring 绑注解**（`6f86240`）：修上线后全站 500
+  - 原实现用 `@annotation(auditOp)` 参数绑定，与 `ExposeInvocationInterceptor` 顺序冲突
+  - 改为切面自行从 `MethodSignature` 解析注解，切面 order 提到 `HIGHEST_PRECEDENCE`
+
+#### 普通员工收敛为只读（本次发版的重点）
+
+- **员工基线重定义**（`7284da5`）：普通员工**只能播放 / 预览**，不能上传、不能删除
+  - 权限目录 46 条；employee 白名单 10 条，全是 `action='read'`
+  - 用**白名单**而非"删掉 upload 那几条" —— 新权限默认不给员工，杜绝权限漂移
+  - 权威来源 `EmployeePermissions.java`，由 `EmployeePermissionsTest` 保证与迁移 SQL 逐字一致
+  - 迁移 `V20261105_1000`：补 `watermark:manage`；employee 重置为白名单；
+    dept_manager 补 `video:delete` / `document:delete`（原先能上传却删不掉自己传的东西）
+- **前端按权限隐藏按钮**：`v-permission` 指令从"删元素"改为"隐藏"
+  - 删元素会和 Vue 虚拟 DOM 打架（vnode 还指着那个节点，后续 patch 抛 `removeChild`）
+  - 支持数组语义（任一命中即可），留下 `data-permission-denied` 标记便于排障
+- **顺手堵上的越权口子**（同一批改动）：
+  - `POST/DELETE /webhooks` —— 回调 URL 由客户端指定 = SSRF / 数据外传通道
+  - `DELETE /watermarks/cache/{id}` —— 权限目录里压根没有对应权限码
+  - `GET /distribution/approvals` —— 改为**只能看自己提交的**
+  - `POST /distribution/approvals` —— 只能对**自己看得见**的文档申请外发
+- **`/settings` 对所有登录用户开放**：原先路由挂着 `system:read`，
+  普通员工**连自己的密码都改不了**。现在整页开放，「系统配置」Tab 单独按 `system:read` 收口
+
+#### 播放链路可靠性
+
+- **分片地址不再猜 origin**（`a1cc0c2`）：换个账号就播不了的根因
+- **密钥地址不再只认 key.bin**（`f8b2668`）：存量播放列表拿不到密钥的根因
+- **第二次播放的密钥失步**（`422439e`）：重试改重建播放器，别用 `startLoad`
+- **HLS key 缓存重试状态机**（`2026-11-03`）+ **key URI 改写修正**
+- **播放 token 绑定 video_id + scope**：`m3u8` / `segment` / `key` 三个 permitAll 端点
+  只靠 query token，普通登录 token 会被拿来拉任意视频
+- **404 与 503 分开**：前者是"产物不存在"，后者是"对象存储挂了" —— 前端处置方式不同
+
+#### 部署与工程
+
+- **端口统一到 8092**（12 个文件）+ MySQL 对外端口统一 3307（容器内仍 3306）
+- **Flyway 收敛**：`dev/db/migration/` 的第二套迁移下线（曾导致 `validate-on-migrate` 失败）
+- **Flyway failed migration 修复** + 外键 signed/unsigned 不兼容（Error 3780）修复
+- **Worker 进程守护 + 队列卡死告警** —— 别再等用户点播放才发现
+- **Worker 运维接口**：按 video_id 重新触发 HLS、探测 MinIO 文件存在性
+- **健康探针真的会失败**（503）+ 未认证返回 401（原先恒返回 200）
+- **CI 从全红到全绿**：后端测试、e2e、db:migrate 三个 job 修复
+- **上传上限 2GB → 8GB**，连带修复被 30s 超时掐断的问题
+- **WebAuthn / FIDO2 端点补进 OpenAPI**（6 个，此前完全没写进规范）
+
+### 变更
+
+- **版本号统一到 3.4.0**：`backend/pom.xml` / `web/package.json` / `worker` / `helm` /
+  `application.yml` / `openapi.yaml` / `e2e` 此前分别是 3.1.0 / 3.3.0 / 3.1.0 / 3.1.0 / 3.1.0 /
+  3.1.0 / 3.3.0 —— 现在全部一致
+- **Helm Chart**：version 1.0.0 → 1.1.0，appVersion → 3.4.0
+- **OpenAPI 规范**：74 paths / 95 端点 / 17 tag / 40 schema
+  - 修复 **4 组重复 path 键**（YAML 只保留后一份 ⇒ 前一份是死代码，
+    其中 `/playback/*/token` 的旧定义描述的是过时的 `X-Session-Token` 头方案）
+  - 补 `x-required-permission` 扩展（46 个端点的角色门此前完全没写进规范）
+  - 补 `PermissionDTO` / `VideoResource` / `DocResource` 等缺失 schema
+- **数据库表数**：26 → **35 张**；Flyway 迁移：8 → **14 个**
+- **权限目录**：34 → **46 条**（补 `watermark:manage` / `system:read` / `system:manage` 等）
+- **测试规模**：后端 161 用例 / 前端 58 用例 / Worker 68 用例 / E2E 6 个 spec
+- **普通员工**：从"可上传可预览"改为**只读** —— 行为变更，需重新登录
+  （JWT 里的权限码是登录时签发的，旧 token 仍带 `video:upload`）
+
+### 修复
+
+见上方各节。影响面最大的几条：
+
+- 审计切面导致**上线后全站 500**
+- 分片地址猜 origin 导致**换个账号就播不了**
+- 密钥地址只认 key.bin 导致**存量播放列表拿不到密钥**
+- 第二次播放密钥失步
+- Worker 从 10-23 起**启动即崩**（实际从没起来过）
+- 审计日志全丢 + Worker 回调被拒（两个静默失败）
+- 视频/文档列表的时长、大小、上传时间全为空（Jackson 命名策略）
 
 ---
 

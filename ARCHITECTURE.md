@@ -29,7 +29,7 @@
 ┌──────────────────────────────┴───────────────────────────────────┐
 │                       业务后端层（Application）                  │
 │  Spring Boot 3.x + Spring Security + MyBatis-Plus + JJWT         │
-│  - REST API（51 端点） + WebSocket（实时通知）                    │
+│  - REST API（95 端点） + WebSocket（实时通知）                     │
 │  - 鉴权 / 权限 / 业务编排 / 事务管理                              │
 │  - 集成点：API 网关（限流/熔断）+ Vault（密钥）                  │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -177,20 +177,27 @@
 
 ## 5. 数据模型
 
-### 5.1 核心表（22 张 + 2 张分表）
+### 5.1 核心表（35 张 + 2 张分表）
 
 ```
-用户与权限（7 张）  → sys_user / sys_role / sys_role_permission /
-                       sys_user_role / sys_session / sys_permission / sys_dept
+用户与权限（9 张）  → sys_user / sys_role / sys_role_permission /
+                       sys_user_role / sys_session / sys_permission / sys_dept /
+                       sys_password_history / webauthn_credential
 资源管理（3 张）     → video_resource / doc_resource / file_metadata
 权限关联（4 张）     → video_permission / doc_permission /
                        distribution_approval / distribution_approval_decision
-审计溯源（6 张）     → play_log（按月分表）/ operation_log（按月分表）/
+审计溯源（9 张）     → play_log（按月分表）/ operation_log（按月分表）/
                        watermark_cache / key_rotation_log / driver_status /
-                       external_doc_view_log
-v3.1 新增（8 张）    → notification / notification_preferences / tag /
-                       video_tag / doc_tag / webhook / webhook_delivery / backup
+                       external_doc_view_log / video_fingerprint /
+                       doc_watermark / leak_detection
+数据分级（2 张）     → data_classification_audit / data_classification_rule
+标签通知（9 张）     → notification / notification_preferences / tag /
+                       video_tag / doc_tag / webhook / webhook_delivery
+运维（1 张）         → backup
 ```
+
+> 表结构的权威来源是 `backend/src/main/resources/db/migration/`（14 个迁移 / 35 张表），
+> 不是本文件 —— `dev/db/migration/` 里的第二套迁移已废弃。
 
 ### 5.2 数据生命周期
 
@@ -334,7 +341,7 @@ Vault 集群 × 3        4 vCPU / 8 GB / 50 GB         ¥ 60,000
 | 文档 | 路径 | 说明 |
 | --- | --- | --- |
 | 主方案书 | [`doc/企业全格式数字资产防泄密系统技术方案书.docx`](doc/) | v3.0 完整方案 |
-| OpenAPI 规范 | [`doc/openapi.yaml`](doc/openapi.yaml) | 51 端点 / 36 schema |
+| OpenAPI 规范 | [`doc/openapi.yaml`](doc/openapi.yaml) | 95 端点 / 40 schema |
 | ER 文档 | [`doc/database_schema.md`](doc/database_schema.md) | 22 表详细定义 |
 | 架构决策 | [`docs/adr/`](docs/adr/) | 7 篇关键决策 |
 | 评审报告 | [`modify/`](modify/) | 3 份评审记录 |

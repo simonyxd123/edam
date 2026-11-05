@@ -7,15 +7,46 @@
 
 ---
 
-## 表目录
+## 权威来源与核对方式
+
+**表结构的唯一权威来源是迁移脚本**，不是本文件：
+
+```
+backend/src/main/resources/db/migration/   ← Flyway 在这里读（classpath:db/migration）
+```
+
+共 **14 个迁移 / 35 张表**。本文件是对其中核心表的**详细说明**，
+不保证逐字段覆盖全部 35 张表 —— 有疑问时以迁移脚本为准。
+
+> ⚠️ **`dev/db/migration/` 已废弃**。那里曾经存在第二套 `V2026*` 迁移，
+> 两套的表名列名都不同，任何一份先跑、另一份后跑都会因
+> `validate-on-migrate: true` 直接启动失败。现在只有上面这一套。
+
+核对表数量：
+
+```bash
+grep -rhoiE "CREATE TABLE (IF NOT EXISTS )?[\`a-z_]+" \
+  backend/src/main/resources/db/migration/ \
+  | sed -E "s/.*TABLE (IF NOT EXISTS )?\`?([a-z_]+)\`?/\2/I" \
+  | tr 'A-Z' 'a-z' | sort -u | grep -v -E '^(if|not|exists)$' | wc -l
+# => 35
+```
+
+---
+
+## 表目录（35 张）
 
 | 表名 | 中文说明 | 模块 | 估算行数 |
 |---|---|---|---|
 | sys_user | 用户表 | 用户与权限 | 万级 |
+| sys_dept | 部门表 | 用户与权限 | 百级 |
 | sys_role | 角色表 | 用户与权限 | 数十 |
+| sys_permission | 权限定义表 | 用户与权限 | 数十（46 条） |
 | sys_role_permission | 角色权限关联 | 用户与权限 | 千级 |
 | sys_user_role | 用户角色关联 | 用户与权限 | 万级 |
 | sys_session | 用户会话 | 用户与权限 | 万级（滚动清理） |
+| sys_password_history | 密码历史 | 用户与权限 | 万级 |
+| webauthn_credential | WebAuthn 凭据 | 用户与权限 | 百级 |
 | video_resource | 视频资源 | 资源管理 | 十万级 |
 | doc_resource | 文档资源 | 资源管理 | 十万级 |
 | file_metadata | 文件元数据 | 资源管理 | 百万级 |
@@ -27,8 +58,18 @@
 | operation_log | 操作日志 | 审计溯源 | 千万级（按月分表） |
 | watermark_cache | 水印缓存 | 审计溯源 | 百万级 |
 | key_rotation_log | 密钥轮转日志 | 审计溯源 | 千级 |
-| driver_status | 驱动心跳 | 终端管控 | 万级 |
 | external_doc_view_log | 外发文档访问日志 | 审计溯源 | 十万级 |
+| video_fingerprint | 视频帧指纹 | 溯源 | 百万级 |
+| doc_watermark | 文档盲水印 | 溯源 | 十万级 |
+| leak_detection | 泄露检测记录 | 溯源 | 千级 |
+| data_classification_audit | 密级变更审计 | 数据分级 | 十万级 |
+| data_classification_rule | 密级规则 | 数据分级 | 百级 |
+| driver_status | 驱动心跳 | 终端管控 | 万级 |
+| tag / video_tag / doc_tag | 标签与关联 | 标签 | 千级 |
+| notification | 通知 | 通知消息 | 百万级 |
+| notification_preferences | 通知偏好 | 通知消息 | 万级 |
+| webhook / webhook_delivery | 回调与投递记录 | 通知消息 | 千级 |
+| backup | 备份记录 | 运维 | 百级 |
 
 ---
 
@@ -154,17 +195,59 @@
 | id | BIGINT UNSIGNED | PK | | |
 | code | VARCHAR(128) | UNIQUE, NOT NULL | | 权限代码（如 `video:read`） |
 | name | VARCHAR(128) | NOT NULL | | 权限名称 |
-| resource_type | VARCHAR(32) | NOT NULL | | video / document / system |
+| resource_type | VARCHAR(32) | NOT NULL | | 资源类型（video / document / system …） |
+| action | VARCHAR(32) | NOT NULL | | 动作类型（read / upload / edit / delete …） |
+| description | VARCHAR(255) | | NULL | 说明（高危权限会写，如 `admin:backup`） |
 
 **索引**：PRIMARY KEY (id), UNIQUE KEY uk_code (code)
 
-**预置权限代码示例**：
+**预置权限目录（46 条）** — 权威来源：`V20260830_1000__rbac_seed.sql`（45 条）
+\+ `V20261105_1000__employee_readonly_role.sql`（补 `watermark:manage`）。
+
+权限码格式固定为 `{resource_type}:{action}`，全小写。**`action` 字段是关键** ——
+普通员工的只读基线就是按 `action = 'read'` 划定的：
+
+| action | 含义 | 是否写操作 |
+|---|---|---|
+| `read` | 只读 | 否 |
+| `upload` / `edit` / `delete` | 上传 / 编辑 / 删除 | 是 |
+| `download` / `print` | 下载原文 / 打印 | 是 |
+| `share` / `distribute` | 分享 / 外发 | 是 |
+| `approve` | 审批 | 是 |
+| `manage` | 管理（角色、用户、Webhook、标签、密级…） | 是 |
+| `audit_export` | 审计导出 | 是 |
+| `backup` / `restore` | 备份 / 恢复 | 是（高危） |
+
+完整目录：
+
 ```
-video:read, video:download, video:upload, video:delete, video:distribute
-document:read, document:download, document:upload, document:delete, document:distribute
-document:edit, document:print
-system:audit_export, system:user_manage, system:role_manage
+dashboard:read
+video:read, video:upload, video:edit, video:delete, video:download, video:share
+document:read, document:upload, document:edit, document:delete, document:download,
+          document:print, document:share
+distribution:read, distribution:approve
+watermark:read, watermark:manage, watermark:audit_export
+audit:read, audit:audit_export
+leak:read, leak:manage
+user:read, user:manage
+role:read, role:manage
+system:read, system:manage
+admin:backup, admin:restore
+webhook:read, webhook:manage
+notification:read, notification:manage
+tag:read, tag:manage
+report:read, report:audit_export
+playback:read, search:read, preview:read
+classification:read, classification:manage
+sso:manage, mfa:manage
 ```
+
+> **注意**：目录里有权限码 ≠ 端点上有对应的 `@PreAuthorize`。
+> 端点实际校验的码见 [`doc/openapi.yaml`](openapi.yaml) 的
+> `x-required-permission` 扩展（如 `document:download` / `video:download` /
+> `document:print` 目前**没有**角色级端点校验 ——
+> 下载权由资源级 `DocPermissionService.canDownload` 按密级判定，
+> 见方案书 5.6.1「L1 公开资源允许下载」例外）。
 
 ---
 
@@ -872,6 +955,39 @@ WHERE id = ? AND version = ?
 
 ---
 
-**文档版本**：v3.1  ·  日期：2026-08-12  ·  作者：Claude Code
+## 十九、本文件未展开的表（v3.4 补充说明）
+
+上面 18 节覆盖了 35 张表中的 **18 张**。其余 **17 张** 由后续迁移新增，
+字段细节请直接看迁移脚本（本文件不重复抄写，避免与脚本漂移）：
+
+| 表名 | 引入迁移 | 说明 |
+|---|---|---|
+| `sys_password_history` | `V20260825_1000` | 密码历史，禁止重用最近 N 次用过的密码 |
+| `webauthn_credential` | `V20260826_1000` | WebAuthn / FIDO2 凭据（公钥、counter、签名计数） |
+| `video_fingerprint` | `V20260827_1000` | 视频帧 pHash 指纹库，用于泄露溯源 |
+| `doc_watermark` | `V20260827_1000` | 文档盲水印元数据（DCT 嵌入信息） |
+| `leak_detection` | `V20260827_1000` | 泄露检测记录（命中指纹 / 盲水印后落库） |
+| `data_classification_audit` | `V20260828_1000` | 密级变更审计 |
+| `data_classification_rule` | `V20260828_1000` | 密级自动识别规则 |
+| `tag` / `video_tag` / `doc_tag` | `V20260830_4000` | 标签字典与多对多关联 |
+| `notification_preferences` | `V20260812_1000` | 用户通知偏好（按类型开关） |
+| `webhook_delivery` | `V20260812_1000` | Webhook 每次投递的记录（含重试与死信） |
+| `operation_log.detail` | `V20261029_1000` | detail 字段 JSON → **TEXT**（脱敏后的明文摘要） |
+| `operation_log` 扩展列 | `V20261104_1000` | 新增 `http_method` / `endpoint` / `status_code` / `duration_ms` / `session_id`，`user_id` 改可空（未登录也要留痕） |
+
+**审计表 `operation_log` 的三态 `result`**（`V20261104_1000` 起）：
+
+| 值 | 含义 | 什么时候产生 |
+|---|---|---|
+| `1` | 成功 | 业务正常返回 |
+| `2` | 失败 | 业务抛异常 |
+| `3` | 拒绝 | `@PreAuthorize` 拒绝 / 未通过授权检查 |
+
+> `user_id` 改为**可空**是有意为之：登录失败、越权访问这类事件本来就没有
+> 已认证用户，但恰恰是最该留痕的 —— 写不进去就等于没审计。
+
+---
+
+**文档版本**：v3.4  ·  日期：2026-11-05  ·  作者：Claude Code
 **对应方案书**：v3.0 第七章
 **配套文档**：`openapi.yaml`、`图3-数据库ER图.png`

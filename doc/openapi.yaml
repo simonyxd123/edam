@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: 企业全格式数字资产防泄密系统 API
   description: |
-    本文档定义企业全格式数字资产防泄密系统的 RESTful API 规范（v3.1）。
+    本文档定义企业全格式数字资产防泄密系统的 RESTful API 规范（v3.4）。
 
     设计原则：
     - 统一鉴权：所有 API（除登录/健康检查外）需在 Header 中携带 JWT
@@ -28,7 +28,7 @@ info:
     - 写接口（POST/PUT/DELETE）：每用户 30 req/min
     - 登录接口：每 IP 5 req/min、每工号 3 req/min（详见 /auth/login）
 
-  version: 3.1.0
+  version: 3.4.0
   contact:
     name: 安全团队
     email: security@example.com
@@ -47,6 +47,8 @@ servers:
 tags:
   - name: auth
     description: 鉴权与会话
+  - name: webauthn
+    description: WebAuthn / FIDO2 无密码登录（注册与凭据管理）
   - name: health
     description: 健康检查
   - name: users
@@ -214,6 +216,7 @@ paths:
     post:
       tags: [users]
       summary: 创建用户
+      x-required-permission: user:manage
       requestBody:
         required: true
         content:
@@ -249,6 +252,7 @@ paths:
     put:
       tags: [users]
       summary: 更新用户
+      x-required-permission: user:manage
       requestBody:
         required: true
         content:
@@ -265,6 +269,7 @@ paths:
     delete:
       tags: [users]
       summary: 软删除用户（设置 status=disabled，立即吊销密钥）
+      x-required-permission: user:manage
       responses:
         '204':
           description: 删除成功
@@ -273,6 +278,7 @@ paths:
     post:
       tags: [users]
       summary: 立即吊销用户所有密钥
+      x-required-permission: user:manage
       description: 用于员工离职、违规等紧急场景
       parameters:
         - in: path
@@ -311,6 +317,7 @@ paths:
     post:
       tags: [videos]
       summary: 上传视频
+      x-required-permission: video:upload
       description: |
         上传视频文件，触发 RabbitMQ 异步处理（HLS 切片 + 帧指纹提取）。
         请求体为 multipart/form-data。
@@ -371,72 +378,16 @@ paths:
     delete:
       tags: [videos]
       summary: 删除视频（仅上传者或管理员）
+      x-required-permission: video:delete
       responses:
         '204':
           description: 删除成功
 
   # ===== 播放鉴权 =====
-  /playback/{video_id}/token:
-    post:
-      tags: [playback]
-      summary: 获取播放 Token
-      description: |
-        用户鉴权后请求播放视频，业务后端校验权限并签发 JWT。
-
-        签发前会校验**可见性**（密级 + 显式授权，见 /videos/batch-permission）：
-        没权限 ⇒ 403。
-
-        签发的 token **绑定到这个视频**（claim: scope=playback + video_id）。
-        m3u8 / segment / key 三个端点是 permitAll（播放器带不了自定义头，
-        token 只能放 query string），所以端点侧会校验 token 必须是
-        "绑定到该视频的播放 token" —— 否则普通登录 token 也能拉任意视频。
-      parameters:
-        - in: path
-          name: video_id
-          required: true
-          schema: { type: integer }
-      responses:
-        '200':
-          description: Token 签发成功
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PlaybackToken'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-  /playback/{video_id}/key:
-    get:
-      tags: [playback]
-      summary: 获取 HLS AES 密钥
-      description: |
-        HLS 播放器调用此接口获取解密密钥。响应头必须包含 Cache-Control: no-store。
-        返回的是 **一次性会话密钥**，绑定 session_id。
-      parameters:
-        - in: path
-          name: video_id
-          required: true
-          schema: { type: integer }
-        - in: header
-          name: X-Session-Token
-          required: true
-          schema: { type: string }
-          description: 会话 Token
-      responses:
-        '200':
-          description: 密钥返回
-          headers:
-            Cache-Control:
-              schema: { type: string }
-              description: no-store
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-                description: 16 字节 AES-128 密钥
-        '403':
-          $ref: '#/components/responses/Forbidden'
+  # 注意：/playback/{video_id}/token 与 /playback/{video_id}/key 的定义在
+  # 本文件下方「视频播放」小节（与 playlist.m3u8 / segment 放在一起），
+  # 旧版本此处有过一份重复定义（描述的是过时的 X-Session-Token 头方案），
+  # YAML 重复键只会保留后一份 —— 已删除，避免规范与实现各说各话。
 
   /playback/{video_id}/log:
     post:
@@ -513,6 +464,7 @@ paths:
     post:
       tags: [documents]
       summary: 上传文档
+      x-required-permission: document:upload
       description: 触发 RabbitMQ 异步任务（频域盲水印 + 格式转换）
       requestBody:
         required: true
@@ -561,6 +513,7 @@ paths:
     delete:
       tags: [documents]
       summary: 删除文档
+      x-required-permission: document:delete
       responses:
         '204':
           description: 删除成功
@@ -570,6 +523,7 @@ paths:
     get:
       tags: [preview]
       summary: 文档预览（含 Canvas 动态明水印）
+      x-required-permission: document:read
       parameters:
         - in: path
           name: doc_id
@@ -617,33 +571,9 @@ paths:
             L2-L4 默认禁止"）—— L2 文档是"能预览但不能下载"。
 
   # ===== 权限管理 =====
-  /rbac/permissions:
-    get:
-      tags: [permissions]
-      summary: 权限列表
-      responses:
-        '200':
-          description: 权限列表
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Permission'
-
-  /rbac/roles:
-    get:
-      tags: [permissions]
-      summary: 角色列表
-      responses:
-        '200':
-          description: 角色列表
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Role'
+  # 注意：/rbac/permissions 与 /rbac/roles 的完整定义在下方「角色与权限管理」
+  # 小节（含 POST/PUT/DELETE 与 security 声明）；此处原有的一份重复定义只覆盖
+  # GET 且引用的 schema 名与实际 DTO 不符，已删除。
 
   /rbac/users/{user_id}/permissions:
     parameters:
@@ -669,6 +599,7 @@ paths:
     get:
       tags: [distribution]
       summary: 外发审批列表
+      x-required-permission: distribution:read
       parameters:
         - in: query
           name: status
@@ -689,6 +620,7 @@ paths:
     post:
       tags: [distribution]
       summary: 发起外发审批
+      x-required-permission: distribution:read
       requestBody:
         required: true
         content:
@@ -712,6 +644,7 @@ paths:
     get:
       tags: [distribution]
       summary: 审批详情
+      x-required-permission: distribution:read
       responses:
         '200':
           description: 成功
@@ -724,6 +657,7 @@ paths:
     post:
       tags: [distribution]
       summary: 审批决策
+      x-required-permission: distribution:approve
       requestBody:
         required: true
         content:
@@ -745,6 +679,7 @@ paths:
     post:
       tags: [distribution]
       summary: 撤销已审批的外发（紧急情况）
+      x-required-permission: distribution:approve
       responses:
         '204':
           description: 撤销成功
@@ -754,6 +689,7 @@ paths:
     post:
       tags: [watermarks]
       summary: 提取水印/指纹
+      x-required-permission: watermark:read
       description: |
         上传疑似泄露文件，提取水印或帧指纹，定位泄密者。
         - 图片/PDF：频域盲水印提取
@@ -808,6 +744,7 @@ paths:
     delete:
       tags: [watermarks]
       summary: 清除水印缓存（资源权限变更时）
+      x-required-permission: watermark:manage
       parameters:
         - in: path
           name: cache_id
@@ -845,6 +782,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuditLogListResponse'
 
+  /audit/logs/operation-types:
+    get:
+      tags: [audit]
+      summary: 可查询的操作类型枚举
+      description: |
+        返回 `operation_log.operation_type` 的全部规范值（含历史别名归并后的结果）。
+
+        前端「操作类型」下拉框优先取本接口，取不到再退回本地常量 ——
+        后端加新的操作类型时，前端不用跟着改代码。
+      responses:
+        '200':
+          description: 操作类型列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /audit/logs/resource-types:
+    get:
+      tags: [audit]
+      summary: 可查询的资源类型枚举
+      description: |
+        返回 `operation_log.resource_type` 的全部取值（video / document / system …）。
+      responses:
+        '200':
+          description: 资源类型列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
   /audit/logs/{log_id}:
     get:
       tags: [audit]
@@ -866,6 +836,7 @@ paths:
     post:
       tags: [audit]
       summary: 导出日志
+      x-required-permission: audit:audit_export
       description: 异步生成日志导出文件，签名 URL 下载
       requestBody:
         required: true
@@ -1022,6 +993,7 @@ paths:
     post:
       tags: [videos]
       summary: 批量删除视频
+      x-required-permission: video:delete
       description: 管理员批量删除视频（最多 100 个），异步触发清理任务
       requestBody:
         required: true
@@ -1053,6 +1025,7 @@ paths:
     post:
       tags: [videos]
       summary: 批量授权
+      x-required-permission: video:share
       description: |
         给多个用户批量授权视频访问权限（落库到 video_permission）。
 
@@ -1106,6 +1079,7 @@ paths:
     delete:
       tags: [videos]
       summary: 批量撤销授权
+      x-required-permission: video:share
       description: |
         撤销（删除 video_permission 里对应的行）⇒ 对方回到"没有显式授权"。
         权限要求与授权相同：能再分享才能撤销。
@@ -1137,6 +1111,7 @@ paths:
     get:
       tags: [videos]
       summary: 查询视频的授权列表
+      x-required-permission: video:share
       description: 列出该视频当前所有授权（含过期未清理的，expire_at 为空表示永不过期）
       parameters:
         - name: video_id
@@ -1169,6 +1144,7 @@ paths:
     post:
       tags: [documents]
       summary: 批量删除文档
+      x-required-permission: document:delete
       requestBody:
         required: true
         content:
@@ -1191,6 +1167,7 @@ paths:
     post:
       tags: [documents]
       summary: 批量授权
+      x-required-permission: document:share
       description: |
         给多个用户批量授权文档访问权限（落库到 doc_permission）。
 
@@ -1244,6 +1221,7 @@ paths:
     delete:
       tags: [documents]
       summary: 批量撤销授权
+      x-required-permission: document:share
       description: 撤销（删除 doc_permission 里对应的行）⇒ 对方回到"没有显式授权"
       requestBody:
         required: true
@@ -1273,6 +1251,7 @@ paths:
     get:
       tags: [documents]
       summary: 查询文档的授权列表
+      x-required-permission: document:share
       parameters:
         - name: doc_id
           in: query
@@ -1401,6 +1380,7 @@ paths:
     post:
       tags: [tags]
       summary: 创建标签
+      x-required-permission: tag:manage
       requestBody:
         required: true
         content:
@@ -1434,6 +1414,7 @@ paths:
     delete:
       tags: [tags]
       summary: 删除标签
+      x-required-permission: tag:manage
       responses:
         '204':
           description: 删除成功
@@ -1447,6 +1428,7 @@ paths:
     post:
       tags: [tags]
       summary: 给视频添加标签
+      x-required-permission: video:edit
       requestBody:
         content:
           application/json:
@@ -1462,6 +1444,7 @@ paths:
     delete:
       tags: [tags]
       summary: 从视频移除标签
+      x-required-permission: video:edit
       responses:
         '204':
           description: 成功
@@ -1547,6 +1530,7 @@ paths:
     get:
       tags: [webhooks]
       summary: 当前用户注册的回调列表
+      x-required-permission: webhook:read
       responses:
         '200':
           description: 回调列表
@@ -1558,6 +1542,7 @@ paths:
     post:
       tags: [webhooks]
       summary: 注册回调
+      x-required-permission: webhook:manage
       description: |
         注册外部系统回调 URL，事件触发时推送。
         回调 URL 必须支持 HTTPS；签名机制：HMAC-SHA256(secret, body)
@@ -1582,6 +1567,7 @@ paths:
     delete:
       tags: [webhooks]
       summary: 注销回调
+      x-required-permission: webhook:manage
       responses:
         '204':
           description: 成功
@@ -1595,6 +1581,7 @@ paths:
     get:
       tags: [webhooks]
       summary: 回调投递历史
+      x-required-permission: webhook:read
       parameters:
         - $ref: '#/components/parameters/PageParam'
       responses:
@@ -1622,6 +1609,7 @@ paths:
     post:
       tags: [admin]
       summary: 触发备份
+      x-required-permission: admin:backup
       description: 异步触发全量或增量备份；高危操作需多因素认证
       requestBody:
         content:
@@ -1658,6 +1646,7 @@ paths:
     post:
       tags: [admin]
       summary: 从备份恢复（高危）
+      x-required-permission: admin:restore
       description: |
         **高危操作**：将从备份恢复数据，会覆盖当前数据。
         需要多因素认证 + 二级审批（主管确认）。
@@ -1767,10 +1756,186 @@ paths:
         '400':
           description: 登录码无效或已使用
 
+  # ===== WebAuthn / FIDO2（无密码登录）=====
+  /auth/webauthn/register/begin:
+    post:
+      tags: [webauthn]
+      summary: 开始注册（生成 challenge 与注册选项）
+      description: |
+        步骤 1/2。返回 challenge（服务端保存、后续一次性消费）、RP 信息、
+        可接受的算法列表、已注册凭据（避免重复注册）与认证器选择策略。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: 凭据显示名（可选）
+      responses:
+        '200':
+          description: 注册选项
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnRegistrationOptions'
+        '404':
+          description: 用户不存在
+
+  /auth/webauthn/register/complete:
+    post:
+      tags: [webauthn]
+      summary: 完成注册（校验 attestation 并存储凭据）
+      description: |
+        步骤 2/2。校验 challenge（一次性）与 attestation，解析公钥后落库。
+        凭据以 `webauthn_credential` 表保存，支持多设备。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, credentialId, clientDataJSON]
+              properties:
+                challenge: { type: string }
+                credentialId:
+                  type: string
+                  description: base64url 编码的 credential id
+                attestation:
+                  type: string
+                  description: 客户端返回的 attestation 对象（CBOR → JSON）
+                clientDataJSON: { type: string }
+                name: { type: string }
+      responses:
+        '200':
+          description: 注册结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  credentialId: { type: string, nullable: true }
+        '400':
+          description: challenge 过期或 attestation 校验失败
+
+  /auth/webauthn/login/begin:
+    post:
+      tags: [webauthn]
+      summary: 开始无密码登录（生成 challenge）
+      description: |
+        返回 challenge 与该工号已注册的凭据列表（allowCredentials）。
+        未注册过凭据时列表为空，客户端应提示改用密码登录。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeNo]
+              properties:
+                employeeNo: { type: string }
+      responses:
+        '200':
+          description: 登录选项
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnLoginOptions'
+
+  /auth/webauthn/login/complete:
+    post:
+      tags: [webauthn]
+      summary: 完成无密码登录（校验 assertion 并签发 token）
+      description: |
+        校验 challenge 与 assertion，签发 access_token + refresh_token。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeNo, challenge, credentialId, clientDataJSON, signature]
+              properties:
+                employeeNo: { type: string }
+                challenge: { type: string }
+                credentialId: { type: string }
+                authenticatorData:
+                  type: string
+                  description: CBOR 编码的 authenticatorData
+                clientDataJSON: { type: string }
+                signature: { type: string }
+      responses:
+        '200':
+          description: 登录结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  access_token: { type: string, nullable: true }
+                  refresh_token: { type: string, nullable: true }
+        '400':
+          description: challenge 过期或 assertion 校验失败
+
+  /auth/webauthn/credentials:
+    get:
+      tags: [webauthn]
+      summary: 列出当前用户的 WebAuthn 凭据
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 凭据列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    credentialId: { type: string }
+                    name: { type: string, nullable: true }
+                    credentialType: { type: string }
+                    userVerification: { type: string, nullable: true }
+                    lastUsedAt: { type: string, format: date-time, nullable: true }
+                    createdAt: { type: string, format: date-time }
+
+  /auth/webauthn/credentials/{credentialId}:
+    delete:
+      tags: [webauthn]
+      summary: 撤销一个 WebAuthn 凭据
+      description: |
+        只能撤销**自己的**凭据 —— 凭据不属于当前用户时返回 404（不泄露凭据是否存在）。
+        撤销是软删除（写入 revoked_at），审计日志保留痕迹。
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: credentialId
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: 撤销成功
+        '404':
+          description: 凭据不存在或不属于当前用户
+
   /rbac/permissions:
     get:
       tags: [permissions]
       summary: 权限目录列表
+      x-required-permission: role:read or user:read
       security:
         - bearerAuth: []
       responses:
@@ -1787,6 +1952,7 @@ paths:
     get:
       tags: [permissions]
       summary: 角色列表
+      x-required-permission: role:read
       security:
         - bearerAuth: []
       responses:
@@ -1801,6 +1967,7 @@ paths:
     post:
       tags: [permissions]
       summary: 创建角色
+      x-required-permission: role:manage
       security:
         - bearerAuth: []
       requestBody:
@@ -1821,6 +1988,7 @@ paths:
     put:
       tags: [permissions]
       summary: 更新角色
+      x-required-permission: role:manage
       security:
         - bearerAuth: []
       parameters:
@@ -1844,6 +2012,7 @@ paths:
     delete:
       tags: [permissions]
       summary: 删除角色
+      x-required-permission: role:manage
       security:
         - bearerAuth: []
       parameters:
@@ -1866,6 +2035,7 @@ paths:
     post:
       tags: [permissions]
       summary: 给角色分配权限
+      x-required-permission: role:manage
       security:
         - bearerAuth: []
       parameters:
@@ -1899,6 +2069,7 @@ paths:
     get:
       tags: [permissions]
       summary: 查用户的角色
+      x-required-permission: user:read or role:read
       security:
         - bearerAuth: []
       parameters:
@@ -1914,10 +2085,11 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/UserRole'
+                  $ref: '#/components/schemas/Role'
     post:
       tags: [permissions]
       summary: 给用户分配角色
+      x-required-permission: user:manage
       security:
         - bearerAuth: []
       parameters:
@@ -1951,6 +2123,7 @@ paths:
     put:
       tags: [users]
       summary: 管理员重置用户密码
+      x-required-permission: user:manage
       description: 返回一次性临时密码，用户首次登录时必须修改
       security:
         - bearerAuth: []
@@ -2025,6 +2198,7 @@ paths:
     post:
       tags: [playback]
       summary: 签发播放 token
+      x-required-permission: video:read
       security:
         - bearerAuth: []
       parameters:
@@ -2145,6 +2319,7 @@ paths:
     get:
       tags: [documents]
       summary: 文档预览（带动态明水印）
+      x-required-permission: document:read
       description: |
         按**可见性**校验（见 /documents/batch-permission 的授权模型）：
         需要 view 位或该密级的默认可见范围，否则 403。
@@ -2419,6 +2594,64 @@ components:
         total: { type: integer }
         total_pages: { type: integer }
 
+    # ===== 资源 =====
+    # 对应后端 model/VideoResource.java，字段名为 snake_case
+    # （类上挂了 @JsonNaming(SnakeCaseStrategy)，否则前端拿到的全是 undefined）。
+    VideoResource:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        file_hash: { type: string }
+        minio_path: { type: string }
+        duration_sec: { type: integer, description: 时长（秒），来自 ffprobe }
+        size_bytes: { type: integer, format: int64 }
+        mime_type: { type: string }
+        classification_lv:
+          type: integer
+          description: 密级 1=L1 公开 2=L2 内部 3=L3 机密 4=L4 绝密
+        uploader_id: { type: integer }
+        upload_time: { type: string, format: date-time }
+        hls_status:
+          type: integer
+          description: 0=pending 1=processing 2=ready 3=failed
+        hls_path: { type: string, nullable: true }
+        fingerprint_status: { type: integer }
+        fingerprint_path: { type: string, nullable: true }
+        key_id: { type: integer, nullable: true }
+        view_count: { type: integer }
+        updated_at: { type: string, format: date-time, nullable: true }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    # 对应后端 model/DocResource.java
+    DocResource:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        file_type:
+          type: string
+          enum: [docx, pdf, xlsx, pptx, image]
+        file_hash: { type: string }
+        minio_path: { type: string }
+        preview_path: { type: string, nullable: true }
+        size_bytes: { type: integer, format: int64 }
+        mime_type: { type: string }
+        classification_lv: { type: integer }
+        uploader_id: { type: integer }
+        upload_time: { type: string, format: date-time }
+        watermark_status:
+          type: integer
+          description: 0=pending 1=processing 2=ready 3=failed 4=skipped
+        preview_status:
+          type: integer
+          description: 0=pending 1=processing 2=ready 3=failed
+        encrypted: { type: integer, description: 1=已加密存储 }
+        key_id: { type: integer, nullable: true }
+        view_count: { type: integer }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
     # ===== 鉴权 =====
     LoginRequest:
       type: object
@@ -2612,16 +2845,67 @@ components:
           items: { $ref: '#/components/schemas/Document' }
         pagination: { $ref: '#/components/schemas/Pagination' }
 
+    # ===== WebAuthn =====
+    WebAuthnRegistrationOptions:
+      type: object
+      properties:
+        challenge: { type: string }
+        rpId: { type: string }
+        rpName: { type: string }
+        userId: { type: string, description: base64url 编码的工号 }
+        userName: { type: string }
+        userDisplayName: { type: string }
+        timeout: { type: integer, format: int64 }
+        pubKeyCredParams:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, example: 'public-key' }
+              alg: { type: integer }
+        excludeCredentials:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, example: 'public-key' }
+              id: { type: string }
+        authenticatorSelection:
+          type: object
+          properties:
+            residentKey: { type: string }
+            userVerification: { type: string }
+            authenticatorAttachment: { type: string, nullable: true }
+        attestation: { type: string }
+        userVerification: { type: string }
+
+    WebAuthnLoginOptions:
+      type: object
+      properties:
+        challenge: { type: string }
+        rpId: { type: string }
+        timeout: { type: integer, format: int64 }
+        allowCredentials:
+          type: array
+          items: { type: string }
+        userVerification: { type: string }
+
     # ===== 权限 =====
-    Permission:
+
+    # action 与 description 是权限目录的关键字段 —— 普通员工的只读白名单
+    # 就是按 action='read' 划定的（见 EmployeePermissions.READ_ONLY）。
+    PermissionDTO:
       type: object
       properties:
         id: { type: integer }
         code: { type: string, example: 'video:read' }
         name: { type: string }
-        resource_type:
+        resource_type: { type: string, example: 'video' }
+        action:
           type: string
-          enum: [video, document, system]
+          description: 动作类型
+          enum: [read, upload, edit, delete, download, print, share, approve, manage, audit_export]
+        description: { type: string, nullable: true }
 
     Role:
       type: object

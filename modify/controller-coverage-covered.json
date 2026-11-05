@@ -99,20 +99,6 @@
   },
   {
     "method": "POST",
-    "path": "/playback/{video_id}/token",
-    "tag": "playback",
-    "summary": "签发播放 token",
-    "impl": "PlaybackController"
-  },
-  {
-    "method": "GET",
-    "path": "/playback/{video_id}/key",
-    "tag": "playback",
-    "summary": "HLS AES-128 密钥",
-    "impl": "PlaybackController"
-  },
-  {
-    "method": "POST",
     "path": "/playback/{video_id}/log",
     "tag": "playback",
     "summary": "上报播放日志",
@@ -159,27 +145,6 @@
     "tag": "preview",
     "summary": "下载已加密文档",
     "impl": "PreviewController"
-  },
-  {
-    "method": "GET",
-    "path": "/rbac/permissions",
-    "tag": "permissions",
-    "summary": "权限目录列表",
-    "impl": "RbacController"
-  },
-  {
-    "method": "GET",
-    "path": "/rbac/roles",
-    "tag": "permissions",
-    "summary": "角色列表",
-    "impl": "RbacController"
-  },
-  {
-    "method": "POST",
-    "path": "/rbac/roles",
-    "tag": "permissions",
-    "summary": "创建角色",
-    "impl": "RbacController"
   },
   {
     "method": "GET",
@@ -253,6 +218,20 @@
   },
   {
     "method": "GET",
+    "path": "/audit/logs/operation-types",
+    "tag": "audit",
+    "summary": "可查询的操作类型枚举",
+    "impl": "AuditController"
+  },
+  {
+    "method": "GET",
+    "path": "/audit/logs/resource-types",
+    "tag": "audit",
+    "summary": "可查询的资源类型枚举",
+    "impl": "AuditController"
+  },
+  {
+    "method": "GET",
     "path": "/audit/logs/{log_id}",
     "tag": "audit",
     "summary": "日志详情",
@@ -308,6 +287,13 @@
     "impl": "VideoController"
   },
   {
+    "method": "GET",
+    "path": "/videos/batch-permission",
+    "tag": "videos",
+    "summary": "查询视频的授权列表",
+    "impl": "VideoController"
+  },
+  {
     "method": "POST",
     "path": "/videos/batch-permission",
     "tag": "videos",
@@ -315,10 +301,38 @@
     "impl": "VideoController"
   },
   {
+    "method": "DELETE",
+    "path": "/videos/batch-permission",
+    "tag": "videos",
+    "summary": "批量撤销授权",
+    "impl": "VideoController"
+  },
+  {
     "method": "POST",
     "path": "/documents/batch-delete",
     "tag": "documents",
     "summary": "批量删除文档",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "GET",
+    "path": "/documents/batch-permission",
+    "tag": "documents",
+    "summary": "查询文档的授权列表",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "POST",
+    "path": "/documents/batch-permission",
+    "tag": "documents",
+    "summary": "批量授权",
+    "impl": "DocumentController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/documents/batch-permission",
+    "tag": "documents",
+    "summary": "批量撤销授权",
     "impl": "DocumentController"
   },
   {
@@ -483,6 +497,69 @@
     "impl": "AuthController"
   },
   {
+    "method": "POST",
+    "path": "/auth/webauthn/register/begin",
+    "tag": "webauthn",
+    "summary": "开始注册（生成 challenge 与注册选项）",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/webauthn/register/complete",
+    "tag": "webauthn",
+    "summary": "完成注册（校验 attestation 并存储凭据）",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/webauthn/login/begin",
+    "tag": "webauthn",
+    "summary": "开始无密码登录（生成 challenge）",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/webauthn/login/complete",
+    "tag": "webauthn",
+    "summary": "完成无密码登录（校验 assertion 并签发 token）",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "GET",
+    "path": "/auth/webauthn/credentials",
+    "tag": "webauthn",
+    "summary": "列出当前用户的 WebAuthn 凭据",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "DELETE",
+    "path": "/auth/webauthn/credentials/{credentialId}",
+    "tag": "webauthn",
+    "summary": "撤销一个 WebAuthn 凭据",
+    "impl": "WebAuthnController"
+  },
+  {
+    "method": "GET",
+    "path": "/rbac/permissions",
+    "tag": "permissions",
+    "summary": "权限目录列表",
+    "impl": "RbacController"
+  },
+  {
+    "method": "GET",
+    "path": "/rbac/roles",
+    "tag": "permissions",
+    "summary": "角色列表",
+    "impl": "RbacController"
+  },
+  {
+    "method": "POST",
+    "path": "/rbac/roles",
+    "tag": "permissions",
+    "summary": "创建角色",
+    "impl": "RbacController"
+  },
+  {
     "method": "PUT",
     "path": "/rbac/roles/{role_id}",
     "tag": "permissions",
@@ -532,6 +609,13 @@
     "impl": "VideoController"
   },
   {
+    "method": "POST",
+    "path": "/playback/{video_id}/token",
+    "tag": "playback",
+    "summary": "签发播放 token",
+    "impl": "PlaybackController"
+  },
+  {
     "method": "GET",
     "path": "/playback/{video_id}/playlist.m3u8",
     "tag": "playback",
@@ -543,6 +627,13 @@
     "path": "/playback/{video_id}/segment/{filename}",
     "tag": "playback",
     "summary": "HLS 加密分片",
+    "impl": "PlaybackController"
+  },
+  {
+    "method": "GET",
+    "path": "/playback/{video_id}/key",
+    "tag": "playback",
+    "summary": "HLS AES-128 密钥",
     "impl": "PlaybackController"
   },
   {
