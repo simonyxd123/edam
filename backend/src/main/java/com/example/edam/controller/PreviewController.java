@@ -40,6 +40,7 @@ public class PreviewController {
      */
     @GetMapping("/{doc_id}")
     @Operation(summary = "文档预览（含 Canvas 动态明水印）")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:read')")
     @AuditOp(op = AuditOpType.PREVIEW, resourceType = "document", resourceId = "#docId",
         detail = "format=#format, watermark=on")
     public ResponseEntity<?> preview(

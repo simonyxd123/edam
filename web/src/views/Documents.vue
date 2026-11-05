@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
   <div class="documents-page">
     <div class="page-header">
       <h2>文档管理</h2>
-      <el-button type="primary" @click="openUploadDialog">+ 上传文档</el-button>
+      <el-button v-permission="'document:upload'" type="primary" @click="openUploadDialog">+ 上传文档</el-button>
     </div>
 
     <el-card>
@@ -383,14 +383,14 @@ onBeforeUnmount(() => {
         <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handlePreview(row as Document)">预览</el-button>
-            <el-button link type="primary" @click="handleDistribute(row as Document)">外发</el-button>
+            <el-button v-permission="'distribution:read'" link type="primary" @click="handleDistribute(row as Document)">外发</el-button>
             <el-button
               v-permission="'document:share'"
               link
               type="warning"
               @click="handleShare(row as Document)"
             >分享</el-button>
-            <el-button link type="danger" @click="handleDelete(row as Document)">删除</el-button>
+            <el-button v-permission="'document:delete'" link type="danger" @click="handleDelete(row as Document)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>

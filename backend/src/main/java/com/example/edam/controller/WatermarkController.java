@@ -30,6 +30,7 @@ public class WatermarkController {
      * 提取水印/指纹
      */
     @PostMapping("/extract")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('watermark:read')")
     @AuditOp(op = AuditOpType.CONFIG_CHANGE, resourceType = "watermark",
         detail = "action=extract, type=#type")
     public ResponseEntity<Map<String, Object>> extract(
@@ -76,6 +77,7 @@ public class WatermarkController {
      * 清除水印缓存
      */
     @DeleteMapping("/cache/{cache_id}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('watermark:manage')")
     @AuditOp(op = AuditOpType.DELETE, resourceType = "watermark_cache", resourceId = "#cacheId")
     public ResponseEntity<Void> deleteCache(@PathVariable("cache_id") Long cacheId) {
         // 实际生产：从 Redis 删除

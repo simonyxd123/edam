@@ -183,6 +183,7 @@ public class DocumentController {
      * 生产建议：加 Range 支持 / ETag / Cache-Control: private
      */
     @GetMapping("/{doc_id}/preview")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('document:read')")
     @AuditOp(op = AuditOpType.PREVIEW, resourceType = "document", resourceId = "#docId",
         detail = "watermark=on")
     public void preview(

@@ -71,6 +71,7 @@ public class PlaybackController {
      * 获取播放 Token
      */
     @PostMapping("/{video_id}/token")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:read')")
     @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
         detail = "event=start, classification_lv=#result?.body?.get('classification_lv')")
     public ResponseEntity<Map<String, Object>> getToken(

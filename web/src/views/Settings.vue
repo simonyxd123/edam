@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useUserStore } from '@/stores/user';
 // 用项目的 api 客户端：自动注入 JWT + 统一 401/错误处理。
 // 原来用裸 axios（没有 Authorization 头）→ /auth/me 必然 401
@@ -10,6 +10,23 @@ import { api } from '@/api/client';
 const userStore = useUserStore();
 
 const activeTab = ref('profile');
+
+/**
+ * 「系统配置」Tab 只对有 system:read 的人开放。
+ *
+ * <p>整页对所有登录用户开放（普通员工也要能改自己的密码），
+ * 但系统配置是管理动作 —— 用 v-if 而不是 v-permission 指令：
+ * 指令是隐藏 DOM 节点，而 el-tabs 的 Tab 标题是 el-tabs 自己渲染的，
+ * 隐藏面板不会把标题也藏掉。
+ */
+const canManageSystem = computed(() => userStore.hasPermission('system:read'));
+
+// 权限没了却停在系统配置 Tab 上 ⇒ 弹回个人信息（否则看到一个空 Tab）
+watch(canManageSystem, (allowed) => {
+  if (!allowed && activeTab.value === 'system') {
+    activeTab.value = 'profile';
+  }
+});
 
 const profile = ref({
   username: '',
@@ -149,7 +166,7 @@ function saveSystemConfig() {
         </el-form>
       </el-tab-pane>
 
-      <el-tab-pane label="系统配置" name="system">
+      <el-tab-pane v-if="canManageSystem" label="系统配置" name="system">
         <el-form label-width="180px" style="max-width:560px">
           <el-form-item label="启用动态水印">
             <el-switch v-model="systemConfig.watermark_enabled" />

@@ -70,7 +70,10 @@ const routes: RouteRecordRaw[] = [
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/Settings.vue'),
-        meta: { permission: 'system:read' },
+        // 「设置」页对**所有登录用户**开放：里面只有「个人信息 / 修改密码」
+        // 两个 Tab，普通员工也需要改自己的密码（doc/普通员工使用手册 §8.2）。
+        // 原来这里挂着 system:read ⇒ 普通员工根本进不去，菜单也不显示，
+        // 只能找管理员改密码。系统配置 Tab 由组件内部按 system:read 单独收口。
       },
     ],
   },

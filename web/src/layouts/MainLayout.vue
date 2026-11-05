@@ -25,7 +25,7 @@ const allMenuItems: MenuItem[] = [
   { path: '/watermark',    icon: 'Brush',      label: '水印溯源', permission: 'watermark:read' },
   { path: '/audit',        icon: 'Tickets',    label: '审计日志', permission: 'audit:read' },
   { path: '/rbac',         icon: 'UserFilled', label: '角色权限', isAdminOnly: true },
-  { path: '/settings',     icon: 'Setting',    label: '设置',    permission: 'system:read' },
+  { path: '/settings',     icon: 'Setting',    label: '设置' },  // 所有登录用户可见（改密码 / 个人信息）
 ];
 
 const menuItems = computed(() => allMenuItems.filter(item => {

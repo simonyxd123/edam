@@ -6,7 +6,11 @@ import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.dto.ResourceEnums;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.model.DistributionApproval;
+import com.example.edam.model.DocResource;
 import com.example.edam.repository.DistributionApprovalRepository;
+import com.example.edam.service.DocPermissionService;
+import com.example.edam.service.DocumentService;
+import com.example.edam.security.CurrentUser;
 import com.example.edam.security.CurrentUserId;
 import lombok.Data;
 import com.example.edam.audit.AuditOp;
@@ -15,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -33,22 +38,47 @@ import java.util.Map;
 public class DistributionController {
 
     private final DistributionApprovalRepository approvalRepository;
+    private final DocumentService documentService;
+    private final DocPermissionService docPermissionService;
+
+    /**
+     * 当前用户能不能看到**全部**外发申请。
+     *
+     * <p>有审批权（{@code distribution:approve}）或管理员 ⇒ 全量；
+     * 否则只能看自己提交的申请。
+     *
+     * <p>用 {@link CurrentUser#hasAuthority} 而不是查库 ——
+     * 权限码已经签进 JWT claims，不必为了一次列表查询再打一次 DB。
+     */
+    private boolean canSeeAllApprovals() {
+        return CurrentUser.isAdmin()
+            || CurrentUser.hasAuthority("distribution:approve");
+    }
 
     @GetMapping
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:read')")
     @AuditOp(op = AuditOpType.LIST, resourceType = "distribution_approval")
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int page_size,
         @RequestParam(required = false) String status,
         @RequestParam(required = false) Long applicant_id,
-        @RequestParam(required = false) Long approver_id
+        @RequestParam(required = false) Long approver_id,
+        @CurrentUserId Long currentUserId
     ) {
         LambdaQueryWrapper<DistributionApproval> wrapper = new LambdaQueryWrapper<>();
         if (status != null) {
             wrapper.eq(DistributionApproval::getStatus, parseStatus(status));
         }
-        if (applicant_id != null) {
-            wrapper.eq(DistributionApproval::getApplicantId, applicant_id);
+        // 可见范围：**没有审批权的人只能看自己提交的申请**。
+        // 原先端点对所有登录用户敞开且不按申请人过滤 —— 等于把全公司
+        // 的外发申请（外部接收人邮箱、有效期、理由）暴露给任何普通员工。
+        if (canSeeAllApprovals()) {
+            if (applicant_id != null) {
+                wrapper.eq(DistributionApproval::getApplicantId, applicant_id);
+            }
+        } else {
+            wrapper.eq(DistributionApproval::getApplicantId, currentUserId);
         }
         wrapper.orderByDesc(DistributionApproval::getCreatedAt);
         Page<DistributionApproval> result = approvalRepository.selectPage(new Page<>(page, page_size), wrapper);
@@ -57,12 +87,29 @@ public class DistributionController {
 
     @PostMapping
     @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:read')")
     @AuditOp(op = AuditOpType.CREATE, resourceType = "distribution_approval",
         detail = "doc_id=#request.docId, recipient_org=#request.externalRecipient?.org")
     public ResponseEntity<Map<String, Object>> create(
         @RequestBody CreateApprovalRequest request,
         @CurrentUserId Long applicantId
     ) {
+        // 外发申请必须针对**自己看得见的文档**。
+        // 原先端点不校验 doc_id 的归属：任何登录用户都能对任意 doc_id
+        // 提交外发申请（包括 L4 绝密），审批人再从申请单里看到外部接收人。
+        if (request.getDocId() == null) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "detail", "doc_id 不能为空"));
+        }
+        DocResource doc = documentService.getById(request.getDocId());
+        if (!docPermissionService.canView(doc, applicantId)) {
+            log.warn("distribution_apply_denied, doc_id={}, applicant_id={}, classification_lv={}",
+                request.getDocId(), applicantId, doc.getClassificationLv());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "forbidden",
+                    "detail", "没有该文档的查看权限，不能申请外发"));
+        }
+
         DistributionApproval approval = new DistributionApproval();
         approval.setDocId(request.getDocId());
         approval.setApplicantId(applicantId);
@@ -85,12 +132,21 @@ public class DistributionController {
     }
 
     @GetMapping("/{approval_id}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('distribution:read')")
     @AuditOp(op = AuditOpType.DETAIL, resourceType = "distribution_approval",
         resourceId = "#approvalId")
-    public Map<String, Object> getById(@PathVariable("approval_id") Long approvalId) {
+    public Map<String, Object> getById(@PathVariable("approval_id") Long approvalId,
+                                       @CurrentUserId Long currentUserId) {
         DistributionApproval approval = approvalRepository.selectById(approvalId);
         if (approval == null) {
             throw new ResourceNotFoundException("审批不存在: " + approvalId);
+        }
+        // 只有申请人本人（或有审批权的人）能看这条申请
+        if (!canSeeAllApprovals()
+            && !currentUserId.equals(approval.getApplicantId())) {
+            log.warn("distribution_detail_denied, approval_id={}, user_id={}",
+                approvalId, currentUserId);
+            throw new AccessDeniedException("无权查看他人的外发申请: " + approvalId);
         }
         return toResponse(approval);
     }

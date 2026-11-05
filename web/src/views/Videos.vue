@@ -238,7 +238,7 @@ onBeforeUnmount(() => {
   <div class="videos-page">
     <div class="page-header">
       <h2>视频管理</h2>
-      <el-button type="primary" @click="openUploadDialog">+ 上传视频</el-button>
+      <el-button v-permission="'video:upload'" type="primary" @click="openUploadDialog">+ 上传视频</el-button>
     </div>
 
     <el-card>
@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
               type="warning"
               @click="handleShare(row as Video)"
             >分享</el-button>
-            <el-button link type="danger" @click="handleDelete(row as Video)">删除</el-button>
+            <el-button v-permission="'video:delete'" link type="danger" @click="handleDelete(row as Video)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
