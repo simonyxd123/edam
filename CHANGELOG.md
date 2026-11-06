@@ -13,6 +13,64 @@
 
 ---
 
+## [3.4.1] - 2026-11-06
+
+> 本版本修掉 v3.4.0 盘点出的**真问题** —— 不是文档，是代码里真实存在的洞。
+> 主题：把「权限从哪来」「密级谁说了算」这两件事钉死。
+
+### 修复
+
+#### WebAuthn / SSO 登录绕过 RBAC（最要紧）
+
+- 此前 `WebAuthnController` 与 `SsoUserProvisioning` 签发 JWT 时**写死**了
+  角色 `ROLE_EMPLOYEE` 与三条固定权限码（`dashboard:read` / `video:read` /
+  `document:read`）。JWT 里的 `permissions` 就是 `@PreAuthorize` 的唯一判据 ——
+  写死等于这两条登录路径**完全绕过了 RBAC**：
+  - 管理员用 WebAuthn 登录 → 退化成只有 3 条读权限的普通员工
+  - 反过来，一个在 RBAC 里没有任何权限的用户反倒拿到了那 3 条
+- 新增 `TokenIssuanceService`：四个签发点（密码登录 / 刷新 / WebAuthn / SSO）
+  统一走它，角色与权限码一律读 `sys_user_role` → `sys_role` →
+  `sys_role_permission` → `sys_permission`
+- 账号状态检查（锁定 / 禁用）抽到 `LoginAttemptService`，三条登录路径共用 ——
+  此前 WebAuthn / SSO 完全没查状态，离职账号照样能换到有效 JWT
+- WebAuthn 登录补 MFA 校验、补 `refresh_token` 落 Redis（此前只生成不存，
+  `/auth/refresh` 必然失败）、补登录限流（端点匿名，不限流就能枚举工号）
+- SSO 新开通用户在 RBAC 表里真的给一个角色（此前一个角色都没有）
+- `SecurityConfig` 放开 `/auth/webauthn/login/**`，与 openapi 契约对齐
+
+#### 密级由客户端单方面声明
+
+- 此前上传时 `classification_lv` **一个字节都没校验**，非法值还会被
+  `default -> 1` 静默降级成 **L1 公开** —— 任何人都能把自己的资产声明成公开
+- 服务端裁决已接线：最终密级 = **max(服务端基线, 客户端声明)** ——
+  客户端可以往严里选，不能往松里选
+  - 基线 = 文件名关键词 / 文件大小 / 上传者部门（新增 `SysDept` 实体 ——
+    Java 侧此前**没有**部门模型，"按部门定密级"这条规则等于从未生效）
+  - 自动识别**封顶 L3**：L4 绝密只能由人显式声明或事后人工调整，
+    否则一个 6GB 培训视频会变成谁也看不见的资产
+- 非法密级直接 400（Controller 入口 + Service 双重校验），不再静默降级
+- 部门规则改**包含匹配** —— 原先是全等匹配（`"法务"`），
+  而 `sys_dept` 里叫「法务部」，一条都命中不了
+- 新增 `PATCH /classification/{videos|documents}/{id}` 人工调整密级
+  （门 `classification:manage`，此前该权限码 Java 侧零引用）；
+  调整原因必填，全程写 `data_classification_audit`
+- 上传响应回传**实际落库**的密级，前端在服务端抬高时如实提示用户
+  （不能让用户以为声明的 L1 生效了）
+
+### 变更
+
+- 权限码是**登录那一刻**的快照 —— 改了角色必须重新登录才生效（管理员手册已提醒）
+- 端点数 95 → **97**（新增 2 个密级调整端点）
+
+### 验证
+
+- 后端 161 → **183** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+  需要真实 MySQL，与本次无关）
+- 前端 58 用例全绿；`npm run build` 内置 vue-tsc 类型检查通过
+- 端点对账 95 ↔ 95 → **97 ↔ 97 / 100%**
+
+---
+
 ## [3.4.0] - 2026-11-05
 
 > 本版本是 v3.3（2026-08-28）之后的**第一个完整发版**。

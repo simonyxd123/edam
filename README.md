@@ -1,6 +1,6 @@
 # EDAM - 企业全格式数字资产防泄密系统
 
-[![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.4.1-blue.svg)](CHANGELOG.md)
 [![Release Status](https://img.shields.io/badge/status-v3.4%E5%B7%B2%E5%8F%91%E5%B8%83-brightgreen.svg)](modify/2026-10-03-v3.4短期W1-W4收官总结.md)
 [![API Coverage](https://img.shields.io/badge/API_Coverage-100%25-success.svg)](scripts/check_controller_coverage.py)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
@@ -138,7 +138,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 │ 前端展示层（Vue3 + Canvas 动态明水印）      │
 ├─────────────────────────────────────────────┤
 │ 业务后端层（Spring Boot 3.3 + JWT + RBAC）   │
-│   19 个 Controller / 95 个 REST 端点          │
+│   20 个 Controller / 97 个 REST 端点          │
 ├─────────────────────────────────────────────┤
 │ 异步处理流水线（RabbitMQ + Python Worker）   │
 │   3 条队列：video/document preprocess + watermark │
@@ -156,7 +156,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 | 组件 | 技术 | 规模 |
 |---|---|---|
-| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 19 Controller / 95 端点 / 23 个测试类 |
+| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 97 端点 / 26 个测试类 |
 | Worker | Python 3.10 + FastAPI + aio-pika | 3 条队列 / 6 个测试文件 |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
 | 数据库 | MySQL 8.0 + Flyway | 14 个迁移 / **35 张表** |
@@ -219,7 +219,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 ### 权限门在哪
 
-- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 95 个端点里 **46 个**有角色门。
+- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 97 个端点里 **48 个**有角色门。
   哪些端点有门、门码是什么，见 [`doc/openapi.yaml`](doc/openapi.yaml) 的
   `x-required-permission` 扩展。
 - **前端**：`v-permission` 指令按权限**隐藏**按钮（`display:none` + `data-permission-denied` 标记）。
@@ -235,10 +235,10 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 edam/
 ├── doc/                          # 方案与 API 规范
 │   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书（权威基准）
-│   ├── openapi.yaml              # OpenAPI 3.0 规范（74 paths / 95 端点 / 17 tag / 40 schema）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（76 paths / 97 端点 / 18 tag / 40 schema）
 │   ├── database_schema.md        # 数据表详细定义（35 张表）
-│   ├── 2026-09-03-普通员工使用手册.pdf    # 员工手册
-│   ├── 2026-09-03-管理员使用手册.pdf      # 管理员手册
+│   ├── 2026-11-05-普通员工使用手册.pdf    # 员工手册
+│   ├── 2026-11-05-管理员使用手册.pdf      # 管理员手册
 │   ├── 图1-图4 PNG + drawio     # 架构/时序/ER/数据流
 │   └── ER图.drawio / 架构图.drawio / ...  # 可编辑源文件
 │
@@ -248,7 +248,7 @@ edam/
 │   ├── pom.xml
 │   └── src/main/
 │       ├── java/com/example/edam/
-│       │   ├── controller/       # 18 个 Controller（+ security/webauthn/ 1 个）
+│       │   ├── controller/       # 19 个 Controller（+ security/webauthn/ 1 个）
 │       │   ├── service/          # 13 个业务 Service
 │       │   ├── security/         # JWT + Spring Security + RBAC + 密级 + SSO
 │       │   ├── audit/            # @AuditOp 注解 + AOP 切面
@@ -281,7 +281,7 @@ edam/
 │   ├── cdc/                      # Debezium + ES CDC（独立进程）
 │   ├── elk/ monitoring/ waf/ mock/
 │
-├── helm/edam/                    # K8s Helm Chart（version 1.1.0 / appVersion 3.4.0）
+├── helm/edam/                    # K8s Helm Chart（version 1.1.0 / appVersion 3.4.1）
 ├── docker/                       # backend / worker / web Dockerfile
 ├── gitops/                       # ArgoCD：argocd/ + overlays/{dev,staging,prod}
 ├── e2e/                          # Playwright + Cypress
@@ -301,7 +301,7 @@ edam/
 
 ## 核心 API
 
-完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**74 paths / 95 端点 / 17 tag / 40 schema**）。
+完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**76 paths / 97 端点 / 18 tag / 40 schema**）。
 
 | Tag | 端点数 | 说明 |
 |---|---|---|
@@ -325,7 +325,7 @@ edam/
 | dashboard | 1 | 仪表板统计 |
 
 > 端点数与实现的对账由 `scripts/check_controller_coverage.py` 自动跑，
-> 当前 **95 ↔ 95，100% 覆盖**。
+> 当前 **97 ↔ 97，100% 覆盖**。
 
 ---
 
@@ -368,7 +368,7 @@ cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查�
 
 | 项目 | 命令 | 规模 |
 |---|---|---|
-| 后端 | `cd backend && mvn test` | 23 个测试类 / **161 用例** |
+| 后端 | `cd backend && mvn test` | 26 个测试类 / **183 用例** |
 | 前端 | `cd web && npx vitest run` | 7 个文件 / **58 用例** |
 | Worker | `cd worker && pytest` | 6 个文件 / **68 用例**（2 个需 ffmpeg / PyPDF2，跳过） |
 | E2E | `cd e2e && npx playwright test` | Playwright + Cypress |
@@ -384,7 +384,7 @@ cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查�
 # API 规范校验（YAML 语法 + 必需字段 + $ref 可解析）
 ./scripts/validate-openapi.sh
 
-# Controller ↔ OpenAPI 对账（应输出 95 ↔ 95 / 100%）
+# Controller ↔ OpenAPI 对账（应输出 97 ↔ 97 / 100%）
 python scripts/check_controller_coverage.py
 ```
 
@@ -475,8 +475,8 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | 能力 | 现状 |
 |---|---|
 | 盲水印 | Python Worker 侧可用（DCT / 隐写 / LSB）；**Java 后端无盲水印实现**，`POST /watermarks/extract` 目前返回 mock |
-| 密级自动识别 | `DataClassificationService` / `ClassificationEnforcement` **未被任何 Controller 调用** —— 现阶段密级由客户端传入的 `classification_lv` 决定 |
-| 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.0")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
+| 密级自动识别 | **服务端裁决已接线**（v3.4.1）：最终密级 = max(服务端基线, 客户端声明)，客户端只能往严里选。但基线只是**启发式**（文件名关键词 / 文件大小 / 上传者部门）—— 文件名和大小都是客户端可控的，真正的内容级识别需要文档分析引擎，**尚未实现** |
+| 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.1")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
 | 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |
 | `q.watermark` 队列 | 已声明并绑定，但**后端没有生产者** —— 只有 Worker 消费端 |
 | 文档处理回调 | `DocumentProcessor` **不回写后端状态** —— 文档的 `watermark_status` / `preview_status` 没有自动闭环 |

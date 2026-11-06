@@ -18,7 +18,7 @@ Worker、部署编排与测试代码**均已落地**，不是只有方案文档�
 edam/
 ├── doc/                          # 方案与 API 规范
 │   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 设计基准（v3.0 终稿）
-│   ├── openapi.yaml              # OpenAPI 3.0 规范（74 paths / 95 端点 / 17 tag）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（76 paths / 97 端点 / 18 tag）
 │   ├── database_schema.md        # 数据表详细定义（35 张表）
 │   ├── 2026-11-05-普通员工使用手册.pdf / 管理员使用手册.pdf
 │   └── 图1-图4 PNG + drawio     # 架构/时序/ER/数据流
@@ -29,7 +29,7 @@ edam/
 ├── backend/                      # Spring Boot 后端（Java 17 / Boot 3.3.0）
 │   └── src/main/
 │       ├── java/com/example/edam/
-│       │   ├── controller/       # 18 个 Controller（+ security/webauthn/ 1 个）
+│       │   ├── controller/       # 19 个 Controller（+ security/webauthn/ 1 个）
 │       │   ├── service/          # 13 个业务 Service
 │       │   ├── security/         # JWT / Spring Security / RBAC / 密级 / SSO
 │       │   ├── audit/            # @AuditOp + AOP 切面
@@ -63,7 +63,7 @@ cd web && npm run build           # 内置 vue-tsc 类型检查
 cd worker && pytest               # 68 用例
 
 # 规范对账（改完端点就跑）
-python scripts/check_controller_coverage.py    # 应为 95 ↔ 95 / 100%
+python scripts/check_controller_coverage.py    # 应为 97 ↔ 97 / 100%
 ./scripts/validate-openapi.sh
 
 # 使用手册 PDF（改完手册 Markdown 后重新导出）
@@ -98,9 +98,13 @@ python scripts/build_manual_pdf.py
 → 管理层（全量操作审计 + 密钥生命周期）
 
 > ⚠️ **驱动层在本仓库没有实现** —— 只有协议与设计文档。
-> 同样未接线的还有：密级自动识别（`ClassificationEnforcement` 无调用方）、
-> 国密链路（`AlgorithmRouter` / `SmJwtTokenProvider` 无调用方）、
+> 同样未接线的还有：国密链路（`AlgorithmRouter` / `SmJwtTokenProvider` 无调用方）、
 > Java 侧盲水印。详见 README 的「已知限制」。
+>
+> **密级服务端裁决已接线**（v3.4.1）：最终密级 = max(服务端基线, 客户端声明），
+> 客户端只能往严里选。改动上传链路时**不要**把 `classification_lv` 直接透传落库 ——
+> 走 `ClassificationEnforcement.resolveUploadLevel`。
+> 注意基线只是启发式（文件名 / 大小 / 部门），内容级识别仍未实现。
 
 ### 核心数据表
 

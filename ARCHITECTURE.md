@@ -29,7 +29,7 @@
 ┌──────────────────────────────┴───────────────────────────────────┐
 │                       业务后端层（Application）                  │
 │  Spring Boot 3.x + Spring Security + MyBatis-Plus + JJWT         │
-│  - REST API（95 端点） + WebSocket（实时通知）                     │
+│  - REST API（97 端点） + WebSocket（实时通知）                     │
 │  - 鉴权 / 权限 / 业务编排 / 事务管理                              │
 │  - 集成点：API 网关（限流/熔断）+ Vault（密钥）                  │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -341,7 +341,7 @@ Vault 集群 × 3        4 vCPU / 8 GB / 50 GB         ¥ 60,000
 | 文档 | 路径 | 说明 |
 | --- | --- | --- |
 | 主方案书 | [`doc/企业全格式数字资产防泄密系统技术方案书.docx`](doc/) | v3.0 完整方案 |
-| OpenAPI 规范 | [`doc/openapi.yaml`](doc/openapi.yaml) | 95 端点 / 40 schema |
+| OpenAPI 规范 | [`doc/openapi.yaml`](doc/openapi.yaml) | 97 端点 / 40 schema |
 | ER 文档 | [`doc/database_schema.md`](doc/database_schema.md) | 22 表详细定义 |
 | 架构决策 | [`docs/adr/`](docs/adr/) | 7 篇关键决策 |
 | 评审报告 | [`modify/`](modify/) | 3 份评审记录 |

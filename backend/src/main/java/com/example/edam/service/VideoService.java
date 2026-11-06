@@ -7,6 +7,8 @@ import com.example.edam.model.VideoResource;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.VideoResourceRepository;
+import com.example.edam.security.classification.ClassificationEnforcement;
+import com.example.edam.security.classification.ClassificationLevel;
 import com.example.edam.util.FileHashUtils;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
@@ -41,6 +43,7 @@ public class VideoService {
     private final VideoPermissionService videoPermissionService;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
+    private final ClassificationEnforcement classificationEnforcement;
     /** 用于在方法内部精确划定事务边界（见 upload 的三段式说明） */
     private final PlatformTransactionManager txManager;
 
@@ -68,8 +71,9 @@ public class VideoService {
     public Page<VideoResource> list(int page, int pageSize, String classificationLv,
                                     Long uploaderId, String keyword) {
         LambdaQueryWrapper<VideoResource> wrapper = new LambdaQueryWrapper<>();
-        if (classificationLv != null) {
-            wrapper.eq(VideoResource::getClassificationLv, parseClassification(classificationLv));
+        Integer lvFilter = parseClassification(classificationLv);
+        if (lvFilter != null) {
+            wrapper.eq(VideoResource::getClassificationLv, lvFilter);
         }
         if (uploaderId != null) {
             wrapper.eq(VideoResource::getUploaderId, uploaderId);
@@ -106,8 +110,9 @@ public class VideoService {
             // 倒序分页：id < cursor.id
             wrapper.lt(VideoResource::getId, parts.id());
         }
-        if (classificationLv != null) {
-            wrapper.eq(VideoResource::getClassificationLv, parseClassification(classificationLv));
+        Integer lvFilter = parseClassification(classificationLv);
+        if (lvFilter != null) {
+            wrapper.eq(VideoResource::getClassificationLv, lvFilter);
         }
         if (uploaderId != null) {
             wrapper.eq(VideoResource::getUploaderId, uploaderId);
@@ -175,12 +180,20 @@ public class VideoService {
                 employeeNo = "U" + uploaderId;  // 查不到时降级
             }
 
-            // 5. 落库 + 触发异步处理（短事务，毫秒级）
-            VideoResource video = persistAndPublish(classificationLv, title, uploaderId, fileHash, minioPath, employeeNo, file);
+            // 5. 密级裁决（服务端）—— 客户端只能往严里选，不能往松里选
+            ClassificationEnforcement.ClassificationDecision classification =
+                classificationEnforcement.resolveUploadLevel(
+                    file.getOriginalFilename(), file.getSize(), uploaderId, classificationLv);
+
+            // 6. 落库 + 触发异步处理（短事务，毫秒级）
+            VideoResource video = persistAndPublish(classification, title, uploaderId, fileHash, minioPath, employeeNo, file);
 
             log.info("video_uploaded, video_id={}, size={}, minio={}",
                 video.getId(), file.getSize(), minioPath);
             return video;
+        } catch (IllegalArgumentException e) {
+            // 参数非法（如密级取值非法）→ 400，不要包成 500
+            throw e;
         } catch (Exception e) {
             log.error("video_upload_failed", e);
             throw new RuntimeException("视频上传失败: " + e.getMessage(), e);
@@ -251,7 +264,8 @@ public class VideoService {
      * 在这里执行几乎不耗时，因此可以和 INSERT 放在同一事务里 ——
      * MQ 投递失败则整笔回滚，避免留下「有记录但永远不会被转码」的视频。
      */
-    private VideoResource persistAndPublish(String classificationLv, String title, Long uploaderId,
+    private VideoResource persistAndPublish(ClassificationEnforcement.ClassificationDecision classification,
+                                            String title, Long uploaderId,
                                             String fileHash, String minioPath, String employeeNo,
                                             MultipartFile file) {
         TransactionTemplate tx = new TransactionTemplate(txManager);
@@ -262,7 +276,8 @@ public class VideoService {
             video.setMinioPath(minioPath);
             video.setSizeBytes(file.getSize());
             video.setMimeType(file.getContentType());
-            video.setClassificationLv(parseClassification(classificationLv));
+            // 落库用的是**裁决后**的密级，不是客户端声明的那个
+            video.setClassificationLv(classification.getFinalLevel().getLevel());
             video.setUploaderId(uploaderId);
             video.setHlsStatus(0);  // pending
             video.setFingerprintStatus(0);
@@ -280,10 +295,16 @@ public class VideoService {
             rabbitTemplate.convertAndSend(exchange, videoRouting, java.util.Map.of(
                 "video_id", video.getId(),
                 "input_path", minioPath,
-                "classification_lv", classificationLv,
+                // MQ 里也带裁决后的密级 —— Worker 按密级选加密算法
+                "classification_lv", classification.getFinalLevel().getCode(),
                 "uploader_id", uploaderId,
                 "employee_no", employeeNo
             ));
+
+            // 密级裁决留痕（data_classification_audit）
+            classificationEnforcement.recordUploadDecision(
+                "video", video.getId(), classification, uploaderId);
+
             return video;
         });
     }
@@ -365,15 +386,23 @@ public class VideoService {
         log.info("video_deleted, video_id={}, operator_id={}", id, currentUserId);
     }
 
+    /**
+     * 解析密级过滤值。
+     *
+     * <p><b>非法值不再静默降级成 L1</b> —— 原实现 {@code default -> 1} 意味着
+     * 过滤条件传 {@code "L9"} 会变成"只看公开资产"，传空串也一样。
+     * 现在：空 = 不过滤；非法 = 400。
+     *
+     * @return 密级数字（1-4）；null 表示不过滤
+     */
     private Integer parseClassification(String lv) {
-        if (lv == null) return 1;
-        return switch (lv.toUpperCase()) {
-            case "L1" -> 1;
-            case "L2" -> 2;
-            case "L3" -> 3;
-            case "L4" -> 4;
-            default -> 1;
-        };
+        if (lv == null || lv.isBlank()) return null;
+        ClassificationLevel level = ClassificationLevel.fromCodeOrNull(lv);
+        if (level == null) {
+            throw new IllegalArgumentException(
+                "密级取值非法: '" + lv + "'，合法取值为 L1 / L2 / L3 / L4");
+        }
+        return level.getLevel();
     }
 
     /**

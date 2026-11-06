@@ -8,5 +8,5 @@ EDAM Worker - 异步处理流水线
 4. 失败重试 + 死信队列
 """
 
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 __author__ = "EDAM Team"

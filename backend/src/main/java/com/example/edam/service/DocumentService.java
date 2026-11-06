@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.DocResource;
 import com.example.edam.repository.DocResourceRepository;
+import com.example.edam.security.classification.ClassificationEnforcement;
+import com.example.edam.security.classification.ClassificationLevel;
 import com.example.edam.util.FileHashUtils;
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
@@ -37,6 +39,7 @@ public class DocumentService {
     private final DocPermissionService docPermissionService;
     private final RabbitTemplate rabbitTemplate;
     private final MinioClient minioClient;
+    private final ClassificationEnforcement classificationEnforcement;
     /** 用于在方法内部精确划定事务边界（见 upload 的说明） */
     private final PlatformTransactionManager txManager;
 
@@ -72,8 +75,9 @@ public class DocumentService {
         }
         // 密级过滤：原来收了 classification_lv 参数却**完全不用** ——
         // 前端「密级」下拉框选了等于没选
-        if (classificationLv != null) {
-            wrapper.eq(DocResource::getClassificationLv, parseClassification(classificationLv));
+        Integer lvFilter = parseClassification(classificationLv);
+        if (lvFilter != null) {
+            wrapper.eq(DocResource::getClassificationLv, lvFilter);
         }
         wrapper.orderByDesc(DocResource::getUploadTime);
         // 可见性过滤（密级 + 显式授权）—— 与 DocPermissionService.canView 同源，
@@ -111,14 +115,22 @@ public class DocumentService {
             ensureBucketExists(documentsBucket);
             uploadToMinio(documentsBucket, minioPath, file);
 
-            // 4. 落库 + 触发异步处理（短事务，毫秒级）
-            DocResource doc = persistAndPublish(classificationLv, title, uploaderId,
+            // 4. 密级裁决（服务端）—— 客户端只能往严里选，不能往松里选
+            ClassificationEnforcement.ClassificationDecision classification =
+                classificationEnforcement.resolveUploadLevel(
+                    originalName, file.getSize(), uploaderId, classificationLv);
+
+            // 5. 落库 + 触发异步处理（短事务，毫秒级）
+            DocResource doc = persistAndPublish(classification, title, uploaderId,
                     fileHash, minioPath, fileType, originalName, enableWatermark, file);
 
             log.info("doc_uploaded, doc_id={}, file_type={}, size={}, minio={}",
                 doc.getId(), fileType, file.getSize(), minioPath);
             return doc;
 
+        } catch (IllegalArgumentException e) {
+            // 参数非法（如密级取值非法）→ 400，不要包成 500
+            throw e;
         } catch (Exception e) {
             log.error("doc_upload_failed", e);
             throw new RuntimeException("文档上传失败: " + e.getMessage(), e);
@@ -138,7 +150,8 @@ public class DocumentService {
      * 落库 + 发 MQ：短事务。
      * MQ 投递失败会连同 INSERT 一起回滚，避免留下永远不会被处理的记录。
      */
-    private DocResource persistAndPublish(String classificationLv, String title, Long uploaderId,
+    private DocResource persistAndPublish(ClassificationEnforcement.ClassificationDecision classification,
+                                          String title, Long uploaderId,
                                           String fileHash, String minioPath, String fileType,
                                           String originalName, boolean enableWatermark,
                                           MultipartFile file) {
@@ -152,7 +165,8 @@ public class DocumentService {
             doc.setPreviewPath(null);
             doc.setSizeBytes(file.getSize());
             doc.setMimeType(file.getContentType());
-            doc.setClassificationLv(parseClassification(classificationLv));
+            // 落库用的是**裁决后**的密级，不是客户端声明的那个
+            doc.setClassificationLv(classification.getFinalLevel().getLevel());
             doc.setUploaderId(uploaderId);
             doc.setWatermarkStatus(enableWatermark ? 0 : 4);  // 0=pending 4=skipped
             doc.setPreviewStatus(0);
@@ -172,10 +186,16 @@ public class DocumentService {
                 "doc_id", doc.getId(),
                 "input_path", minioPath,
                 "file_type", fileType,
-                "classification_lv", classificationLv,
+                // MQ 里也带裁决后的密级
+                "classification_lv", classification.getFinalLevel().getCode(),
                 "uploader_id", uploaderId,
                 "enable_watermark", enableWatermark
             ));
+
+            // 密级裁决留痕（data_classification_audit）
+            classificationEnforcement.recordUploadDecision(
+                "document", doc.getId(), classification, uploaderId);
+
             return doc;
         });
     }
@@ -252,14 +272,22 @@ public class DocumentService {
         return "docx";
     }
 
+    /**
+     * 解析密级过滤值。
+     *
+     * <p><b>非法值不再静默降级成 L1</b> —— 原实现 {@code default -> 1} 意味着
+     * 过滤条件传 {@code "L9"} 会变成"只看公开资产"，传空串也一样。
+     * 现在：空 = 不过滤；非法 = 400。
+     *
+     * @return 密级数字（1-4）；null 表示不过滤
+     */
     private Integer parseClassification(String lv) {
-        if (lv == null) return 1;
-        return switch (lv.toUpperCase()) {
-            case "L1" -> 1;
-            case "L2" -> 2;
-            case "L3" -> 3;
-            case "L4" -> 4;
-            default -> 1;
-        };
+        if (lv == null || lv.isBlank()) return null;
+        ClassificationLevel level = ClassificationLevel.fromCodeOrNull(lv);
+        if (level == null) {
+            throw new IllegalArgumentException(
+                "密级取值非法: '" + lv + "'，合法取值为 L1 / L2 / L3 / L4");
+        }
+        return level.getLevel();
     }
 }

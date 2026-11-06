@@ -168,7 +168,7 @@ async function submitUpload() {
     }
 
     // 走项目 api 客户端（自动注入 Authorization JWT + X-User-Id + onUploadProgress）
-    const result = await api.upload<{ video_id: number; file_hash: string }>(
+    const result = await api.upload<{ video_id: number; file_hash: string; classification_lv?: string }>(
       '/videos', fd,
       (loaded, total) => {
         uploadProgress.value = Math.round((loaded / total) * 100);
@@ -178,6 +178,17 @@ async function submitUpload() {
     ElMessage.success(
       `上传成功，video_id=${result.video_id}，正在后台转 HLS…`
     );
+
+    // 服务端会对密级做裁决（客户端只能往严里选，不能往松里选）。
+    // 如果实际密级比用户声明的更严，必须如实告知 —— 否则用户会以为
+    // 自己声明的 L1 生效了，实际上这条视频只有本部门能看到。
+    const actualLv = result.classification_lv;
+    if (actualLv && actualLv !== uploadForm.value.classification_lv) {
+      ElMessage.warning(
+        `密级已由服务端调整为 ${actualLv}（你声明的是 ${uploadForm.value.classification_lv}）。` +
+        `按文件名 / 大小 / 部门自动识别，客户端只能往严里选。`
+      );
+    }
     uploadDialogVisible.value = false;
     loadData();
     // 启动 HLS 后台轮询，转码完成 / 失败再弹一条提示

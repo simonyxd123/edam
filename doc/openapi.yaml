@@ -28,7 +28,7 @@ info:
     - 写接口（POST/PUT/DELETE）：每用户 30 req/min
     - 登录接口：每 IP 5 req/min、每工号 3 req/min（详见 /auth/login）
 
-  version: 3.4.0
+  version: 3.4.1
   contact:
     name: 安全团队
     email: security@example.com
@@ -79,6 +79,8 @@ tags:
     description: 回调注册
   - name: admin
     description: 管理员接口（备份/恢复）
+  - name: classification
+    description: 密级管理（人工调整）
 
 security:
   - bearerAuth: []
@@ -321,6 +323,12 @@ paths:
       description: |
         上传视频文件，触发 RabbitMQ 异步处理（HLS 切片 + 帧指纹提取）。
         请求体为 multipart/form-data。
+
+        **密级由服务端裁决**：客户端声明的 classification_lv 只是"申请值"，
+        服务端会算出一条基线（文件名关键词 / 文件大小 / 上传者部门），
+        最终落库的是两者中**更高**的那个 —— 客户端可以往严里选，不能往松里选。
+        非法取值直接 400（不会静默降级成 L1）。响应里的 classification_lv
+        是**实际落库**的值，可能高于声明值。
       requestBody:
         required: true
         content:
@@ -336,6 +344,7 @@ paths:
                 classification_lv:
                   type: string
                   enum: [L1, L2, L3, L4]
+                  description: 申请的密级；服务端裁决后可能更高
                 title:
                   type: string
                 description:
@@ -465,7 +474,14 @@ paths:
       tags: [documents]
       summary: 上传文档
       x-required-permission: document:upload
-      description: 触发 RabbitMQ 异步任务（频域盲水印 + 格式转换）
+      description: |
+        触发 RabbitMQ 异步任务（频域盲水印 + 格式转换）
+
+        **密级由服务端裁决**：客户端声明的 classification_lv 只是"申请值"，
+        服务端会算出一条基线（文件名关键词 / 文件大小 / 上传者部门），
+        最终落库的是两者中**更高**的那个 —— 客户端可以往严里选，不能往松里选。
+        非法取值直接 400（不会静默降级成 L1）。响应里的 classification_lv
+        是**实际落库**的值，可能高于声明值。
       requestBody:
         required: true
         content:
@@ -480,6 +496,7 @@ paths:
                 classification_lv:
                   type: string
                   enum: [L1, L2, L3, L4]
+                  description: 申请的密级；服务端裁决后可能更高
                 title: { type: string }
                 enable_watermark:
                   type: boolean
@@ -2194,6 +2211,101 @@ paths:
         '401':
           description: Worker token 无效
 
+  /classification/videos/{video_id}:
+    patch:
+      tags: [classification]
+      summary: 调整视频密级
+      description: |
+        人工调整密级 —— 上传时服务端裁决只允许"往严里选"，
+        这里是唯一能把密级往低调的入口。
+        需要 classification:manage 权限（权限目录里已有，此前 Java 侧零引用）。
+        每次调整都写 data_classification_audit（谁 / 何时 / 从什么改成什么 / 为什么），
+        reason 必填。
+      x-required-permission: classification:manage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [classification_lv, reason]
+              properties:
+                classification_lv:
+                  type: string
+                  enum: [L1, L2, L3, L4]
+                reason:
+                  type: string
+                  description: 变更原因（必填，进审计）
+      responses:
+        '200':
+          description: 调整结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource_type: { type: string }
+                  resource_id: { type: integer, format: int64 }
+                  classification_lv: { type: string }
+        '400':
+          description: 密级取值非法或未填 reason
+        '403':
+          description: 无 classification:manage 权限
+
+  /classification/documents/{doc_id}:
+    patch:
+      tags: [classification]
+      summary: 调整文档密级
+      description: |
+        人工调整密级 —— 上传时服务端裁决只允许"往严里选"，
+        这里是唯一能把密级往低调的入口。
+        需要 classification:manage 权限。
+        每次调整都写 data_classification_audit，reason 必填。
+      x-required-permission: classification:manage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [classification_lv, reason]
+              properties:
+                classification_lv:
+                  type: string
+                  enum: [L1, L2, L3, L4]
+                reason:
+                  type: string
+                  description: 变更原因（必填，进审计）
+      responses:
+        '200':
+          description: 调整结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource_type: { type: string }
+                  resource_id: { type: integer, format: int64 }
+                  classification_lv: { type: string }
+        '400':
+          description: 密级取值非法或未填 reason
+        '403':
+          description: 无 classification:manage 权限
+
   /playback/{video_id}/token:
     post:
       tags: [playback]
@@ -2774,6 +2886,12 @@ components:
       properties:
         video_id: { type: integer }
         file_hash: { type: string }
+        classification_lv:
+          type: string
+          enum: [L1, L2, L3, L4]
+          description: |
+            **实际落库**的密级。服务端会做裁决（客户端只能往严里选，
+            不能往松里选），所以它可能高于请求里声明的值 —— 前端要据此提示用户。
         hls_status: { type: string, example: pending }
         fingerprint_status: { type: string, example: pending }
         estimated_processing_sec: { type: integer }
@@ -2834,6 +2952,12 @@ components:
       properties:
         doc_id: { type: integer }
         file_hash: { type: string }
+        classification_lv:
+          type: string
+          enum: [L1, L2, L3, L4]
+          description: |
+            **实际落库**的密级。服务端会做裁决（客户端只能往严里选，
+            不能往松里选），所以它可能高于请求里声明的值 —— 前端要据此提示用户。
         watermark_status: { type: string }
         preview_status: { type: string }
 

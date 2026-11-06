@@ -609,6 +609,20 @@
     "impl": "VideoController"
   },
   {
+    "method": "PATCH",
+    "path": "/classification/videos/{video_id}",
+    "tag": "classification",
+    "summary": "调整视频密级",
+    "impl": "ClassificationController"
+  },
+  {
+    "method": "PATCH",
+    "path": "/classification/documents/{doc_id}",
+    "tag": "classification",
+    "summary": "调整文档密级",
+    "impl": "ClassificationController"
+  },
+  {
     "method": "POST",
     "path": "/playback/{video_id}/token",
     "tag": "playback",

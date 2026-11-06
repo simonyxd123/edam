@@ -113,7 +113,7 @@ async function submitUpload() {
     fd.append('enable_watermark', String(uploadForm.value.enable_watermark));
 
     // 用项目 api 客户端（自动注入 JWT + X-User-Id + 真实进度）
-    const result = await api.upload<{ doc_id: number; file_hash: string }>(
+    const result = await api.upload<{ doc_id: number; file_hash: string; classification_lv?: string }>(
       '/documents', fd,
       (loaded, total) => {
         uploadProgress.value = Math.round((loaded / total) * 100);
@@ -123,6 +123,16 @@ async function submitUpload() {
     ElMessage.success(
       `上传成功，doc_id=${result.doc_id}，正在后台处理水印 + 预览…`
     );
+
+    // 服务端会对密级做裁决（客户端只能往严里选，不能往松里选）。
+    // 实际密级比用户声明的更严时必须如实告知。
+    const actualLv = result.classification_lv;
+    if (actualLv && actualLv !== uploadForm.value.classification_lv) {
+      ElMessage.warning(
+        `密级已由服务端调整为 ${actualLv}（你声明的是 ${uploadForm.value.classification_lv}）。` +
+        `按文件名 / 大小 / 部门自动识别，客户端只能往严里选。`
+      );
+    }
     uploadDialogVisible.value = false;
     loadData();
   } catch (e: any) {

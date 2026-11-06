@@ -15,6 +15,7 @@ import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.service.WatermarkService;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.security.classification.ClassificationLevel;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import jakarta.servlet.http.HttpServletResponse;
@@ -103,10 +104,18 @@ public class DocumentController {
             throw new DocumentExceptionException("文档不能超过 50 MB");
         }
 
+        // 密级取值必须合法 —— 在**文件还没开始传**的时候就拒掉。
+        // 服务端还会再校验一次（防绕过 Controller 直接调 Service），
+        // 并且最终密级由服务端裁决器定，客户端只能往严里选。
+        ClassificationLevel.parseStrict(classificationLv);
+
         DocResource doc = documentService.upload(file, classificationLv, title, enableWatermark, uploaderId);
         Map<String, Object> response = new HashMap<>();
         response.put("doc_id", doc.getId());
         response.put("file_hash", doc.getFileHash());
+        // 回传**实际落库**的密级 —— 服务端可能把客户端声明的密级抬高了，
+        // 前端要据此提示用户，不能让用户以为自己声明的密级生效了
+        response.put("classification_lv", "L" + doc.getClassificationLv());
         response.put("watermark_status", ResourceEnums.processStatus(doc.getWatermarkStatus()));
         response.put("preview_status", ResourceEnums.processStatus(doc.getPreviewStatus()));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);

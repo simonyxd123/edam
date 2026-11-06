@@ -12,6 +12,7 @@ import com.example.edam.model.VideoResource;
 import com.example.edam.service.VideoPermissionService;
 import com.example.edam.service.VideoService;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.security.classification.ClassificationLevel;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -80,10 +81,18 @@ public class VideoController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件为空");
         }
 
+        // 密级取值必须合法 —— 在**文件还没开始传**的时候就拒掉。
+        // 服务端还会再校验一次（防绕过 Controller 直接调 Service），
+        // 并且最终密级由服务端裁决器定，客户端只能往严里选。
+        ClassificationLevel.parseStrict(classificationLv);
+
         VideoResource video = videoService.upload(file, classificationLv, title, uploaderId);
         Map<String, Object> response = new HashMap<>();
         response.put("video_id", video.getId());
         response.put("file_hash", video.getFileHash());
+        // 回传**实际落库**的密级 —— 服务端可能把客户端声明的密级抬高了，
+        // 前端要据此提示用户，不能让用户以为自己声明的密级生效了
+        response.put("classification_lv", "L" + video.getClassificationLv());
         response.put("hls_status", ResourceEnums.hlsStatus(video.getHlsStatus()));
         response.put("fingerprint_status", ResourceEnums.hlsStatus(video.getFingerprintStatus()));
         response.put("estimated_processing_sec", 60);

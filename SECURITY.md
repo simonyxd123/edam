@@ -217,17 +217,20 @@ metadata:
 4. **未集成 Widevine / FairPlay DRM**（高敏感场景需评估）
 5. **JWT 不携带 PII**（但前端单独 `/auth/me` 接口仍可能泄露）
 6. **本项目未进行第三方安全审计**（建议商业部署前完成）
-7. **密级由客户端传入**（v3.4）—— 服务端的密级自动识别
-   （`DataClassificationService` / `ClassificationEnforcement`）**尚未接线**，
-   客户端可以自行声明 `classification_lv`。生产部署前应补上服务端裁决。
+7. **密级自动识别只是启发式，不是内容分析**（v3.4.1）—— 服务端裁决**已接线**：
+   最终密级 = max(服务端基线, 客户端声明)，客户端只能往严里选，非法取值直接 400。
+   但基线来自**文件名关键词 / 文件大小 / 上传者部门** —— 前两者由客户端可控，
+   把敏感文件改名成「季度汇报」即可绕开关键词。真正的内容级识别需要文档分析引擎，
+   **尚未实现**。部门是当前唯一不可伪造的基线信号。
 8. **国密链路未接线**（v3.4）—— `AlgorithmRouter` 与 `SmJwtTokenProvider`
    均未被引用，现役 JWT 仍是 HMAC-SHA256。声称「国密合规」前必须先接线。
 9. **Java 后端无盲水印实现**（v3.4）—— 盲水印只在 Python Worker 侧，
    `POST /watermarks/extract` 目前返回 mock，溯源能力尚未闭环。
-10. **WebAuthn 登录绕过 RBAC**（v3.4）—— `POST /auth/webauthn/login/complete`
-    签发 JWT 时**硬编码**角色 `ROLE_EMPLOYEE` 与三条固定权限码，
-    没有走 `PermissionService`。用 WebAuthn 登录的用户拿不到自己的真实角色权限。
-    该端点当前默认未对外开放，但代码路径存在，建议修复后再启用。
+10. **WebAuthn assertion 签名验证未实现**（v3.4.1）—— 登录链路已修好：
+    权限从 RBAC 表读、账号状态与 MFA 都校验、登录限流已加。
+    但 `WebAuthnAuthenticationService.verifyAssertionSignature` 仍然是
+    `UnsupportedOperationException`（fail-closed，拒绝一切登录）——
+    接入 webauthn4j 之前，WebAuthn 登录**根本走不通**，这是刻意为之。
 
 ## 第三方组件安全
 

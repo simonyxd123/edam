@@ -13,7 +13,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>edam-backend</artifactId>
-    <version>3.4.0</version>
+    <version>3.4.1</version>
     <name>edam-backend</name>
     <description>企业全格式数字资产防泄密系统 - 后端服务</description>
 

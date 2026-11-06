@@ -1,6 +1,6 @@
 # ============================================================================
 # ArgoCD Application: EDAM 生产环境
-# 仅通过 tag 触发（如 v3.4.0）
+# 仅通过 tag 触发（如 v3.4.1）
 # 需 SRE 手动同步 + 多级审批
 # ============================================================================
 
@@ -28,7 +28,7 @@ spec:
 
   source:
     repoURL: 'https://github.com/example/edam.git'
-    targetRevision: v3.4.0  # 固定 tag
+    targetRevision: v3.4.1  # 固定 tag
     path: .
     chart: helm/edam
     helm:
@@ -39,9 +39,9 @@ spec:
         - name: global.imageRegistry
           value: ghcr.io/example/edam
         - name: backend.image.tag
-          value: v3.4.0
+          value: v3.4.1
         - name: worker.image.tag
-          value: v3.4.0
+          value: v3.4.1
 
   destination:
     server: 'https://kubernetes.default.svc'
