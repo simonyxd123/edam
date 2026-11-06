@@ -138,7 +138,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 │ 前端展示层（Vue3 + Canvas 动态明水印）      │
 ├─────────────────────────────────────────────┤
 │ 业务后端层（Spring Boot 3.3 + JWT + RBAC）   │
-│   20 个 Controller / 97 个 REST 端点          │
+│   20 个 Controller / 98 个 REST 端点          │
 ├─────────────────────────────────────────────┤
 │ 异步处理流水线（RabbitMQ + Python Worker）   │
 │   3 条队列：video/document preprocess + watermark │
@@ -156,10 +156,10 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 | 组件 | 技术 | 规模 |
 |---|---|---|
-| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 97 端点 / 26 个测试类 |
+| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 98 端点 / 27 个测试类 |
 | Worker | Python 3.10 + FastAPI + aio-pika | 3 条队列 / 6 个测试文件 |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
-| 数据库 | MySQL 8.0 + Flyway | 14 个迁移 / **35 张表** |
+| 数据库 | MySQL 8.0 + Flyway | 15 个迁移 / **35 张表** |
 | 移动 SDK | Swift + Kotlin | v3.2.0 |
 
 ---
@@ -219,7 +219,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 ### 权限门在哪
 
-- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 97 个端点里 **48 个**有角色门。
+- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 98 个端点里 **48 个**有角色门。
   哪些端点有门、门码是什么，见 [`doc/openapi.yaml`](doc/openapi.yaml) 的
   `x-required-permission` 扩展。
 - **前端**：`v-permission` 指令按权限**隐藏**按钮（`display:none` + `data-permission-denied` 标记）。
@@ -235,7 +235,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 edam/
 ├── doc/                          # 方案与 API 规范
 │   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书（权威基准）
-│   ├── openapi.yaml              # OpenAPI 3.0 规范（76 paths / 97 端点 / 18 tag / 40 schema）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（77 paths / 98 端点 / 18 tag / 40 schema）
 │   ├── database_schema.md        # 数据表详细定义（35 张表）
 │   ├── 2026-11-05-普通员工使用手册.pdf    # 员工手册
 │   ├── 2026-11-05-管理员使用手册.pdf      # 管理员手册
@@ -254,7 +254,7 @@ edam/
 │       │   ├── audit/            # @AuditOp 注解 + AOP 切面
 │       │   ├── model/ repository/ mapper/
 │       │   └── exception/        # GlobalExceptionHandler（Problem Details）
-│       └── resources/db/migration/   # ★ Flyway 迁移的唯一权威来源（14 个 / 35 表）
+│       └── resources/db/migration/   # ★ Flyway 迁移的唯一权威来源（15 个 / 35 表）
 │
 ├── worker/                       # Python Worker（异步处理）
 │   ├── requirements.txt
@@ -301,7 +301,7 @@ edam/
 
 ## 核心 API
 
-完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**76 paths / 97 端点 / 18 tag / 40 schema**）。
+完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**77 paths / 98 端点 / 18 tag / 40 schema**）。
 
 | Tag | 端点数 | 说明 |
 |---|---|---|
@@ -325,7 +325,7 @@ edam/
 | dashboard | 1 | 仪表板统计 |
 
 > 端点数与实现的对账由 `scripts/check_controller_coverage.py` 自动跑，
-> 当前 **97 ↔ 97，100% 覆盖**。
+> 当前 **98 ↔ 98，100% 覆盖**。
 
 ---
 
@@ -384,7 +384,7 @@ cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查�
 # API 规范校验（YAML 语法 + 必需字段 + $ref 可解析）
 ./scripts/validate-openapi.sh
 
-# Controller ↔ OpenAPI 对账（应输出 97 ↔ 97 / 100%）
+# Controller ↔ OpenAPI 对账（应输出 98 ↔ 98 / 100%）
 python scripts/check_controller_coverage.py
 ```
 
@@ -479,7 +479,7 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.1")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
 | 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |
 | `q.watermark` 队列 | 已声明并绑定，但**后端没有生产者** —— 只有 Worker 消费端 |
-| 文档处理回调 | `DocumentProcessor` **不回写后端状态** —— 文档的 `watermark_status` / `preview_status` 没有自动闭环 |
+| 文档处理回调 | **已闭环**（v3.4.1）：Worker 处理完文档会回调 `PATCH /documents/{id}/status`，水印与预览两个状态分开报，`preview_path` / `watermark_path` 一并回写 |
 | ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
 | `fingerprint/` 下三个 Service | pHash / DCT / 泄露检测，**零引用**（与 `processors/` 下实现算法不一致，未接线） |
 | SSO | 默认 `edam.sso.enabled: false` |

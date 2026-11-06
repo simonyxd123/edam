@@ -2306,6 +2306,52 @@ paths:
         '403':
           description: 无 classification:manage 权限
 
+  /documents/{doc_id}/status:
+    patch:
+      tags: [documents]
+      summary: Worker 回调更新处理状态
+      description: |
+        仅供内部 Worker 调用，需带 X-Worker-Token 头。
+        未配置该 token 时一律拒绝（fail-closed）。
+
+        水印与预览两个状态**分开**报 —— "水印成功但预览失败"是常见情况，
+        一刀切报一个状态会把已经做完的那半也标成失败。
+
+        状态码：0=pending 1=processing 2=ready 3=failed 4=skipped
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: X-Worker-Token
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                watermark_status: { type: integer }
+                preview_status: { type: integer }
+                watermark_path: { type: string }
+                preview_path: { type: string }
+      responses:
+        '200':
+          description: 更新后的状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doc_id: { type: integer, format: int64 }
+                  watermark_status: { type: string }
+                  preview_status: { type: string }
+        '401':
+          description: Worker token 无效
+
   /playback/{video_id}/token:
     post:
       tags: [playback]

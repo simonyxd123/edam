@@ -623,6 +623,13 @@
     "impl": "ClassificationController"
   },
   {
+    "method": "PATCH",
+    "path": "/documents/{doc_id}/status",
+    "tag": "documents",
+    "summary": "Worker 回调更新处理状态",
+    "impl": "DocumentController"
+  },
+  {
     "method": "POST",
     "path": "/playback/{video_id}/token",
     "tag": "playback",

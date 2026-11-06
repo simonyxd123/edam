@@ -57,17 +57,38 @@
 - 上传响应回传**实际落库**的密级，前端在服务端抬高时如实提示用户
   （不能让用户以为声明的 L1 生效了）
 
+#### 文档处理状态不回写 / 回调 URL 拼错
+
+- **回调 URL 拼成了 `/api/v1/api/v1`** —— `BACKEND_BASE_URL` 在 helm / ops 的
+  env 里带了 context-path，代码又习惯性地拼一次 `/api/v1` ⇒ 404 ⇒
+  被当成"其它 4xx" ⇒ `PermanentWorkerError` ⇒ **视频状态永远不回写**，
+  转码明明完成了，`hls_status` 却一直停在 pending，用户点播放还是 404。
+  新增 `config.backend_api_url()` 统一收口，两种写法都对
+- **文档处理根本没有回调端点** —— Worker 处理完不回写，
+  `watermark_status` / `preview_status` 永远停在 pending，
+  前端的状态标签恒为 pending。新增 `PATCH /documents/{doc_id}/status`
+- 水印与预览两个状态**分开**报 —— "水印成功但预览失败"是常见情况，
+  一刀切报一个状态会把已经做完的那半也标成失败
+- 状态与路径**必须在上传成功之后**才置 ready —— 否则会把一个没传上去的
+  产物报成"已就绪"
+- Worker 回调令牌校验抽成 `WorkerTokenVerifier` —— 视频侧与文档侧共用，
+  这类安全关键代码不能复制两份（改了一处忘了另一处就是静默敞开的后门）
+- 新增迁移 `V20261106_1000__doc_watermark_path.sql`：
+  `doc_resource` 补 `watermark_path` 列 —— 水印产物的位置此前无处可记
+
 ### 变更
 
 - 权限码是**登录那一刻**的快照 —— 改了角色必须重新登录才生效（管理员手册已提醒）
-- 端点数 95 → **97**（新增 2 个密级调整端点）
+- 端点数 95 → **98**（新增 2 个密级调整端点 + 1 个文档状态回调端点）
+- 数据库迁移 14 → **15**（新增 `V20261106_1000__doc_watermark_path.sql`）
 
 ### 验证
 
-- 后端 161 → **183** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+- 后端 161 → **189** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
 - 前端 58 用例全绿；`npm run build` 内置 vue-tsc 类型检查通过
-- 端点对账 95 ↔ 95 → **97 ↔ 97 / 100%**
+- Worker 68 → **81** 用例（79 通过 / 2 跳过，缺 ffmpeg 与 PyPDF2）
+- 端点对账 95 ↔ 95 → **98 ↔ 98 / 100%**
 
 ---
 

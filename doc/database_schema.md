@@ -15,7 +15,7 @@
 backend/src/main/resources/db/migration/   ← Flyway 在这里读（classpath:db/migration）
 ```
 
-共 **14 个迁移 / 35 张表**。本文件是对其中核心表的**详细说明**，
+共 **15 个迁移 / 35 张表**。本文件是对其中核心表的**详细说明**，
 不保证逐字段覆盖全部 35 张表 —— 有疑问时以迁移脚本为准。
 
 > ⚠️ **`dev/db/migration/` 已废弃**。那里曾经存在第二套 `V2026*` 迁移，
@@ -296,6 +296,7 @@ sso:manage, mfa:manage
 | file_hash | CHAR(64) | NOT NULL | | SHA-256 |
 | minio_path | VARCHAR(512) | NOT NULL | | |
 | preview_path | VARCHAR(512) | | NULL | 转换后预览文件路径（如 PDF 预览） |
+| watermark_path | VARCHAR(512) | | NULL | 嵌入水印后的原文在 MinIO 中的对象名（v3.4.1 新增列，`V20261106_1000__doc_watermark_path.sql`） |
 | size_bytes | BIGINT UNSIGNED | NOT NULL | | |
 | mime_type | VARCHAR(64) | NOT NULL | | |
 | classification_lv | TINYINT | NOT NULL | 1 | |

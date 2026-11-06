@@ -18,7 +18,7 @@ Worker、部署编排与测试代码**均已落地**，不是只有方案文档�
 edam/
 ├── doc/                          # 方案与 API 规范
 │   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 设计基准（v3.0 终稿）
-│   ├── openapi.yaml              # OpenAPI 3.0 规范（76 paths / 97 端点 / 18 tag）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（77 paths / 98 端点 / 18 tag）
 │   ├── database_schema.md        # 数据表详细定义（35 张表）
 │   ├── 2026-11-05-普通员工使用手册.pdf / 管理员使用手册.pdf
 │   └── 图1-图4 PNG + drawio     # 架构/时序/ER/数据流
@@ -34,7 +34,7 @@ edam/
 │       │   ├── security/         # JWT / Spring Security / RBAC / 密级 / SSO
 │       │   ├── audit/            # @AuditOp + AOP 切面
 │       │   └── model/ repository/ dto/ exception/
-│       └── resources/db/migration/   # ★ Flyway 迁移唯一权威来源（14 个 / 35 表）
+│       └── resources/db/migration/   # ★ Flyway 迁移唯一权威来源（15 个 / 35 表）
 │
 ├── worker/                       # Python Worker（FastAPI + aio-pika）
 ├── web/                          # Vue 3 前端（Vite + Pinia + Element Plus）
@@ -63,7 +63,7 @@ cd web && npm run build           # 内置 vue-tsc 类型检查
 cd worker && pytest               # 68 用例
 
 # 规范对账（改完端点就跑）
-python scripts/check_controller_coverage.py    # 应为 97 ↔ 97 / 100%
+python scripts/check_controller_coverage.py    # 应为 98 ↔ 98 / 100%
 ./scripts/validate-openapi.sh
 
 # 使用手册 PDF（改完手册 Markdown 后重新导出）

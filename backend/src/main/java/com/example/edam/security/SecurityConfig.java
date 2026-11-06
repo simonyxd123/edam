@@ -75,6 +75,9 @@ public class SecurityConfig {
                 // Worker 内部回调：Worker → Backend 更新视频状态
                 // 生产应加静态 service token 鉴权（X-Worker-Token）
                 .requestMatchers(HttpMethod.PATCH, "/videos/*/status").permitAll()
+                // Worker 内部回调：Worker → Backend 更新文档状态
+                // 鉴权同样在 Controller 方法内（X-Worker-Token，fail-closed）
+                .requestMatchers(HttpMethod.PATCH, "/documents/*/status").permitAll()
                 // HLS 播放：Hls.js 不能带 JWT，token 走 query string
                 // 方法内部 validateToken() 校验（短期 JWT，10 分钟过期）
                 // 生产应换 presigned MinIO URL

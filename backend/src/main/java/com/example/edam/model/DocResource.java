@@ -24,6 +24,8 @@ public class DocResource {
     private String fileHash;
     private String minioPath;
     private String previewPath;
+    /** 嵌入水印后的原文在 MinIO 里的对象名（v3.4.1 新增列） */
+    private String watermarkPath;
     private Long sizeBytes;
     private String mimeType;
 

@@ -15,6 +15,7 @@ import com.example.edam.service.DocumentPreviewService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.service.WatermarkService;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.security.WorkerTokenVerifier;
 import com.example.edam.security.classification.ClassificationLevel;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
@@ -60,6 +61,7 @@ public class DocumentController {
     private final com.example.edam.service.DocumentPreviewService previewService;
     private final com.example.edam.service.DocPermissionService docPermissionService;
     private final SysUserRepository sysUserRepository;
+    private final WorkerTokenVerifier workerTokenVerifier;
 
     @Value("${minio.bucket.documents}")
     private String documentsBucket;
@@ -119,6 +121,50 @@ public class DocumentController {
         response.put("watermark_status", ResourceEnums.processStatus(doc.getWatermarkStatus()));
         response.put("preview_status", ResourceEnums.processStatus(doc.getPreviewStatus()));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    /**
+     * Worker 回调更新文档处理状态。
+     *
+     * <p><b>鉴权</b>：与视频侧 {@code PATCH /videos/{id}/status} 完全一致 ——
+     * 要求带 {@code X-Worker-Token} 头，常量时间比较，后端没配 token 时
+     * 一律拒绝（fail-closed）。校验逻辑抽在
+     * {@link com.example.edam.security.WorkerTokenVerifier} 里 ——
+     * 这类安全关键代码不能复制两份。
+     *
+     * <p>此前**根本没有这个端点**，Worker 处理完文档也不回调 ——
+     * 于是 {@code watermark_status} / {@code preview_status} 永远停在
+     * {@code pending}，前端的状态标签恒为 pending，用户永远等不到结果。
+     */
+    @PatchMapping("/{doc_id}/status")
+    @AuditOp(op = AuditOpType.UPDATE, resourceType = "document", resourceId = "#docId",
+        detail = "watermark_status=#request.watermarkStatus, preview_status=#request.previewStatus")
+    public ResponseEntity<Map<String, Object>> updateStatus(
+        @PathVariable("doc_id") Long docId,
+        @RequestBody DocStatusUpdateRequest request,
+        // 参数名不能叫 workerToken —— 会遮蔽同名字段，鉴权就永远拿配置值比
+        @RequestHeader(value = "X-Worker-Token", required = false) String providedWorkerToken
+    ) {
+        if (!workerTokenVerifier.isValid(providedWorkerToken)) {
+            log.warn("doc_status_update_unauthorized, doc_id={}, reason={}",
+                docId, workerTokenVerifier.rejectReason(providedWorkerToken));
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("doc_status_update_callback, doc_id={}, watermark_status={}, preview_status={}",
+            docId, request.getWatermarkStatus(), request.getPreviewStatus());
+
+        documentService.updateProcessingStatus(
+            docId,
+            request.getWatermarkStatus(), request.getPreviewStatus(),
+            request.getWatermarkPath(), request.getPreviewPath()
+        );
+
+        DocResource updated = documentService.getById(docId);
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("doc_id", updated.getId());
+        resp.put("watermark_status", ResourceEnums.processStatus(updated.getWatermarkStatus()));
+        resp.put("preview_status", ResourceEnums.processStatus(updated.getPreviewStatus()));
+        return ResponseEntity.ok(resp);
     }
 
     private boolean isAllowedDocumentType(String contentType, String filename) {
@@ -420,6 +466,18 @@ public class DocumentController {
     public static class BatchDeleteRequest {
         private List<Long> docIds;
         private String reason;
+    }
+
+    @Data
+    public static class DocStatusUpdateRequest {
+        /** 水印状态：0=pending 1=processing 2=ready 3=failed 4=skipped */
+        private Integer watermarkStatus;
+        /** 预览状态：0=pending 1=processing 2=ready 3=failed 4=skipped */
+        private Integer previewStatus;
+        /** 水印产物在 MinIO 里的对象名 */
+        private String watermarkPath;
+        /** 预览产物在 MinIO 里的对象名 */
+        private String previewPath;
     }
 
     @Data

@@ -17,7 +17,7 @@ import structlog
 from minio import Minio
 from PIL import Image
 
-from ..config import settings
+from ..config import backend_api_url, settings
 from ..errors import PermanentWorkerError
 from ..fonts import FONT_CANDIDATES, find_font
 from ..hls_keyinfo import (
@@ -189,7 +189,7 @@ class VideoProcessor:
         - **瞬时故障**（连不上 / 5xx）：先在回调层便宜地重试几次，
           仍不行才把整个任务交给外层重试。
         """
-        url = f"{settings.BACKEND_BASE_URL}/api/v1/videos/{video_id}/status"
+        url = backend_api_url(f"videos/{video_id}/status")
         payload: Dict[str, Any] = {}
         if hls_status is not None:
             payload["hls_status"] = hls_status

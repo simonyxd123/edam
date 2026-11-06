@@ -100,3 +100,38 @@ class Settings:
 
 
 settings = Settings()
+
+
+# 后端的 context-path（server.servlet.context-path）
+_API_PREFIX = "/api/v1"
+
+
+def backend_api_url(path: str) -> str:
+    """拼后端 API 的完整 URL —— **兼容 BACKEND_BASE_URL 带不带 context-path**。
+
+    为什么需要这个函数：
+
+    `BACKEND_BASE_URL` 这个环境变量在仓库里一直有两种写法 ——
+
+    - `worker/src/edam_worker/config.py` 的默认值：`http://localhost:8092`（不带）
+    - `helm/edam/values.yaml` 与 `ops/worker/edam-worker.env.example`：
+      `http://edam-backend:8092/api/v1`（**带**）
+
+    而回调代码又习惯性地拼上 `/api/v1/...`，于是 Helm 部署下拼出来的是
+
+        http://edam-backend:8092/api/v1/api/v1/videos/1/status
+
+    → 404 → 被当成"其它 4xx" → `PermanentWorkerError` → **视频状态永远不回写**，
+    转码明明完成了，`hls_status` 却一直停在 pending，用户点播放还是 404。
+
+    这个坑在 `main.py` 的健康探测里已经用"两个候选都试"绕过去了，
+    但回调处没跟上。这里统一收口：去掉 base 末尾的 `/api/v1`（如果有），
+    再统一拼一次 —— 两种写法都对。
+
+    :param path: 相对 API 路径，如 `videos/1/status`
+    :return: 完整 URL
+    """
+    base = settings.BACKEND_BASE_URL.rstrip("/")
+    if base.endswith(_API_PREFIX):
+        base = base[: -len(_API_PREFIX)]
+    return f"{base}{_API_PREFIX}/{path.lstrip('/')}"

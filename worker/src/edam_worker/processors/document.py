@@ -8,10 +8,12 @@ import os
 import tempfile
 from typing import Any, Dict, Optional
 
+import requests
 import structlog
 from minio import Minio
 
-from ..config import settings
+from ..config import backend_api_url, settings
+from ..errors import PermanentWorkerError
 from .watermark import WatermarkProcessor
 
 log = structlog.get_logger()
@@ -47,6 +49,16 @@ class DocumentProcessor:
         local_path: Optional[str] = None
         work_dir: Optional[str] = None
 
+        # 水印 / 预览两个状态分开报 —— "水印成功但预览失败"是常见情况，
+        # 一刀切报一个状态会把已经做完的那半也标成失败
+        # 状态码与 ResourceEnums.processStatus 对齐：
+        #   0=pending  1=processing  2=ready  3=failed  4=skipped
+        watermark_status = 0
+        preview_status = 0
+        watermark_path: Optional[str] = None
+        preview_path: Optional[str] = None
+        failed = False
+
         try:
             # 1. 下载到工作目录
             work_dir = tempfile.mkdtemp(prefix=f"edam-doc-{doc_id}-")
@@ -63,21 +75,124 @@ class DocumentProcessor:
                 watermarked_path = local_path
 
             # 3. 格式转换（如 Word → PDF 预览）
-            preview_path = await self._convert_to_preview(watermarked_path, doc_id, file_type)
+            converted = await self._convert_to_preview(watermarked_path, doc_id, file_type)
 
             # 4. 上传
+            #    状态与路径**必须在上传成功之后**才置 ready ——
+            #    否则会把一个没传上去的产物报成"已就绪"。
             await self._upload(watermarked_path, doc_id, "watermarked", file_type)
-            await self._upload(preview_path, doc_id, "preview", self._preview_ext(file_type))
+            if enable_watermark:
+                watermark_path = f"documents/{doc_id}/watermarked{file_type}"
+                watermark_status = 2      # ready
+            else:
+                watermark_status = 4      # skipped
+
+            await self._upload(converted, doc_id, "preview", self._preview_ext(file_type))
+            preview_path = f"documents/{doc_id}/preview{self._preview_ext(file_type)}"
+            preview_status = 2          # ready
 
             log.info("document_processing_complete", doc_id=doc_id)
 
         except Exception as e:
+            failed = True
+            # 失败时把还停在 pending 的那半标成 failed（3=failed）
+            if watermark_status == 0:
+                watermark_status = 3
+            if preview_status == 0:
+                preview_status = 3
             log.error("document_processing_failed", doc_id=doc_id, error=str(e))
             raise
         finally:
+            # 回调后端 —— **成功和失败都要报**。
+            # 否则 watermark_status / preview_status 会永远停在 pending，
+            # 前端的状态标签恒为 pending，用户永远等不到结果。
+            try:
+                await self._notify_backend_status(
+                    doc_id, watermark_status, preview_status,
+                    watermark_path, preview_path,
+                )
+            except Exception as cb_error:
+                # 回调失败不能顶替掉原始异常 —— 但必须让任务被记成失败，
+                # 否则后端永远等不到状态
+                log.error("document_status_callback_failed", doc_id=doc_id,
+                          error=str(cb_error))
+                if not failed:
+                    raise
             # 清理整个工作目录 —— 原来只删了 local_path，
             # .wm / .pdf 中间产物全部泄漏在磁盘上
             self._cleanup(work_dir)
+
+    async def _notify_backend_status(
+        self,
+        doc_id: int,
+        watermark_status: int,
+        preview_status: int,
+        watermark_path: Optional[str],
+        preview_path: Optional[str],
+    ) -> None:
+        """回调后端更新文档处理状态。
+
+        与视频侧（processors/video.py）同一套约定：
+        - 带 X-Worker-Token（后端 fail-closed，不配就一律 401）
+        - 401/403 → PermanentWorkerError（配置问题，重试无意义）
+        - 其它 4xx → PermanentWorkerError（请求本身有问题）
+        - 5xx / 网络异常 → 指数退避重试，耗尽后抛普通异常让外层重跑任务
+        """
+        url = backend_api_url(f"documents/{doc_id}/status")
+        payload: Dict[str, Any] = {
+            "watermark_status": watermark_status,
+            "preview_status": preview_status,
+        }
+        if watermark_path:
+            payload["watermark_path"] = watermark_path
+        if preview_path:
+            payload["preview_path"] = preview_path
+
+        headers = {}
+        if settings.WORKER_TOKEN:
+            headers["X-Worker-Token"] = settings.WORKER_TOKEN
+        else:
+            log.warning(
+                "worker_token_not_configured",
+                doc_id=doc_id,
+                hint=("后端要求 X-Worker-Token（fail-closed）。不配的话回调一律 401，"
+                      "文档处理完成了 watermark_status 也不会变 —— 前端永远显示 pending"),
+            )
+
+        max_attempts = max(1, settings.WORKER_CALLBACK_MAX_ATTEMPTS)
+        backoff = max(0.0, settings.WORKER_CALLBACK_RETRY_BACKOFF_SEC)
+        last_error = "unknown"
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await asyncio.to_thread(
+                    requests.patch, url, json=payload, headers=headers, timeout=10
+                )
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                log.warning("notify_backend_exception", doc_id=doc_id,
+                            attempt=attempt, max_attempts=max_attempts, error=last_error)
+            else:
+                if resp.status_code < 400:
+                    log.info("notify_backend_ok", doc_id=doc_id, status=resp.status_code)
+                    return
+                if resp.status_code in (401, 403):
+                    raise PermanentWorkerError(
+                        f"后端拒绝了回调（HTTP {resp.status_code}）：worker 的 WORKER_TOKEN "
+                        f"与后端的 edam.worker.token 不一致，或有一边没配。"
+                        f"（后端日志会写明具体是哪种）")
+                if resp.status_code < 500:
+                    raise PermanentWorkerError(
+                        f"后端拒绝了回调（HTTP {resp.status_code}）：{resp.text[:200]}")
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                log.warning("notify_backend_failed", doc_id=doc_id,
+                            attempt=attempt, max_attempts=max_attempts,
+                            status=resp.status_code, body=resp.text[:300])
+
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff * (2 ** (attempt - 1)))
+
+        raise RuntimeError(f"回调后端失败（已重试 {max_attempts} 次）：{last_error}")
 
     async def _download(self, bucket: str, object_name: str, work_dir: str) -> str:
         # 不用 tempfile.mktemp —— 它返回"尚不存在"的路径，

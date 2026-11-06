@@ -273,6 +273,39 @@ public class DocumentService {
     }
 
     /**
+     * Worker 回调：更新文档处理状态。
+     *
+     * <p>此前**没有任何方法能做这件事** —— Worker 处理完文档不回写，
+     * 于是 {@code watermark_status} / {@code preview_status} 永远停在
+     * {@code pending}，前端的状态标签恒为 pending。
+     *
+     * <p>只推进状态、只补路径；不传（null）的字段保持原值 ——
+     * Worker 可能只报一半（水印成功了但预览失败）。
+     *
+     * @param docId          文档 ID
+     * @param watermarkStatus 水印状态（0=pending 1=processing 2=ready 3=failed 4=skipped）
+     * @param previewStatus   预览状态（同上）
+     * @param watermarkPath   水印产物对象名
+     * @param previewPath     预览产物对象名
+     */
+    @Transactional
+    public void updateProcessingStatus(Long docId,
+                                       Integer watermarkStatus, Integer previewStatus,
+                                       String watermarkPath, String previewPath) {
+        DocResource doc = docRepository.selectById(docId);
+        if (doc == null) {
+            throw new ResourceNotFoundException("文档不存在: " + docId);
+        }
+        if (watermarkStatus != null) doc.setWatermarkStatus(watermarkStatus);
+        if (previewStatus != null) doc.setPreviewStatus(previewStatus);
+        if (watermarkPath != null) doc.setWatermarkPath(watermarkPath);
+        if (previewPath != null) doc.setPreviewPath(previewPath);
+        docRepository.updateById(doc);
+        log.info("doc_processing_status_updated, doc_id={}, watermark={}, preview={}",
+            docId, watermarkStatus, previewStatus);
+    }
+
+    /**
      * 解析密级过滤值。
      *
      * <p><b>非法值不再静默降级成 L1</b> —— 原实现 {@code default -> 1} 意味着

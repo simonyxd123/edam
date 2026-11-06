@@ -57,7 +57,9 @@ class VideoPermissionControllerTest {
     void setUp() {
         videoService = mock(VideoService.class);
         videoPermissionService = mock(VideoPermissionService.class);
-        VideoController controller = new VideoController(videoService, videoPermissionService);
+        VideoController controller = new VideoController(
+            videoService, videoPermissionService,
+            mock(com.example.edam.security.WorkerTokenVerifier.class));
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .setCustomArgumentResolvers(new CurrentUserArgumentResolver())
