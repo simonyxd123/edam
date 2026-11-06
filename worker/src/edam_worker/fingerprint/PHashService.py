@@ -3,19 +3,27 @@ pHash 帧指纹计算服务（v3.3 W-6.1）
 
 按视频 POC 决策：每视频 30+ 帧指纹，多帧投票容错
 
-⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力，不是死代码：
-   - processors/video.py 里另有一份用 imagehash 库实现的指纹提取，
-     算法与本模块**不同**（手写 DCT + 中位数阈值 vs imagehash 的
-     DCT + 缩放 + 高通滤波）→ 两边算出的指纹对不上，泄露检测无法工作
-   - 接线方式：把 processors/video.py 的 _extract_fingerprints 改用
-     PHashService，或反过来让本模块改用 imagehash
-   - 统一之前，videos/{id}/fingerprint.json 是**无人能消费**的数据
+**v3.4.1：算法已与 `processors/video.py` 统一。**
+
+此前本模块自己手写 DCT（**没有高通滤波**，中位数取法也不同），
+而 `processors/video.py` 用 imagehash 库 —— 两边算出的 bit 串对不上，
+汉明距离比较毫无意义，匹配率 ≈ 0，而且**不报任何错**。
+现在两边都调 `fingerprint/phash.py`（唯一实现），产出**逐位相同**的 8 字节。
+
+本模块提供的是**面向泄露检测的封装**（带 user_id / session_id 的帧指纹列表），
+底层算法在 `phash.py`。
+
+接线状态：算子能力已可用（`POST /ops/leak-detect`），
+但"按观看用户入库指纹 + 自动触发比对 + 告警回后端"三段链路尚未接线 ——
+详见 README 的「已知限制」。
 """
 import cv2
 import numpy as np
 import logging
 from typing import List
 from dataclasses import dataclass
+
+from . import phash as _phash
 
 logger = logging.getLogger(__name__)
 
@@ -33,47 +41,18 @@ class PHashService:
     """
     pHash 计算与存储
 
-    算法（Zauner 2010）：
-    1. 帧缩放至 32x32
-    2. 计算 DCT
-    3. 取左上 8x8 低频子带
-    4. 计算中位数（排除第一个 DC 分量）
-    5. 大于中位数 → 1，否则 → 0
-    6. 8x8 = 64 bit hash
+    委托给 `fingerprint/phash.py` —— 全仓库唯一的 pHash 实现，
+    与 `processors/video.py` 写进 `fingerprint.json` 的指纹**逐位相同**。
 
     抗压缩、亮度、几何变换、小幅旋转鲁棒
     """
 
-    HASH_SIZE = 8
+    HASH_SIZE = _phash.HASH_SIZE
     FRAME_SAMPLE_COUNT = 30  # 每视频采样帧数
 
     def compute_frame_phash(self, frame: np.ndarray) -> bytes:
         """计算单帧 pHash（64 bit）"""
-        if frame is None or frame.size == 0:
-            raise ValueError("Empty frame")
-
-        # 转灰度
-        if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame
-
-        # 缩放至 32x32
-        resized = cv2.resize(gray, (32, 32))
-
-        # DCT
-        dct = cv2.dct(np.float32(resized))
-
-        # 取左上 8x8（低频）
-        dct_low = dct[:self.HASH_SIZE, :self.HASH_SIZE]
-
-        # 中位数（排除 DC）
-        dct_no_dc = dct_low.flatten()[1:]
-        median = np.median(dct_no_dc)
-
-        # 大于中位数 → 1
-        hash_bits = (dct_low > median).flatten().astype(np.uint8)
-        return hash_bits.tobytes()
+        return _phash.compute_frame_phash(frame)
 
     def compute_video_fingerprints(
         self,
@@ -137,9 +116,7 @@ class PHashService:
 
     def hamming_distance(self, hash1: bytes, hash2: bytes) -> int:
         """计算两个 pHash 的汉明距离"""
-        if len(hash1) != len(hash2):
-            raise ValueError("Hash length mismatch")
-        return sum(bin(b1 ^ b2).count('1') for b1, b2 in zip(hash1, hash2))
+        return _phash.hamming_distance(hash1, hash2)
 
     def is_similar(self, hash1: bytes, hash2: bytes, threshold: int = 10) -> bool:
         """判断两个 pHash 是否相似（汉明距离 ≤ 阈值）"""
@@ -147,8 +124,7 @@ class PHashService:
 
     def similarity_score(self, hash1: bytes, hash2: bytes) -> float:
         """计算相似度（0-1，1 = 完全一致）"""
-        distance = self.hamming_distance(hash1, hash2)
-        return 1.0 - (distance / (self.HASH_SIZE * self.HASH_SIZE))
+        return _phash.similarity_score(hash1, hash2)
 
 # 单例（供其他模块使用）
 phash_service = PHashService()

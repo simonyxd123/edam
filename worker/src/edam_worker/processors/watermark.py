@@ -4,89 +4,30 @@
 - PDF：双轨（增量更新 + word spacing）
 - Office：隐写
 """
-import asyncio
 import os
-import tempfile
-from typing import Any, Dict, Optional
 
 import structlog
 import numpy as np
-from minio import Minio
 from PIL import Image
-
-from ..config import settings
 
 log = structlog.get_logger()
 
 
 class WatermarkProcessor:
-    """频域盲水印 / 隐写算法集合"""
+    """频域盲水印 / 隐写算法集合。
 
-    def __init__(self) -> None:
-        self.minio = Minio(
-            settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_ENDPOINT.startswith("https://"),
-        )
+    <p>纯算法类：只处理**本地路径**，不碰 MinIO —— 上传下载由调用方
+    （{@code processors/document.py} 的 {@code DocumentProcessor}）负责。
+    """
 
-    async def process(self, payload: Dict[str, Any]) -> None:
-        """
-        水印任务处理器（q.watermark 队列消费者入口）。
-
-        以前这个类**没有** process() 方法，而 main.py 的 handle_watermark
-        直接取 `self.watermark_processor.process` 作为实参 —— 取属性时
-        就抛 AttributeError，且发生在 try 之外，于是每一条 watermark
-        消息都会打崩消费者回调，成为毒丸消息。
-
-        :param payload: {file_id, input_path, file_type, watermark_text, employee_no}
-        """
-        file_id = payload.get("file_id")
-        input_path = payload.get("input_path")
-        file_type = payload.get("file_type", "image")
-        watermark_text = payload.get("watermark_text") or (
-            f"{payload.get('employee_no', 'UNKNOWN')}|{file_id}"
-        )
-
-        if not input_path:
-            raise ValueError("watermark payload 缺少 input_path")
-
-        log.info("watermark_processing_start", file_id=file_id, file_type=file_type)
-
-        work_dir: Optional[str] = tempfile.mkdtemp(prefix=f"edam-wm-{file_id}-")
-        local_path = os.path.join(work_dir, os.path.basename(input_path))
-        base, ext = os.path.splitext(local_path)
-        output_path = base + ".wm" + ext
-
-        try:
-            await asyncio.to_thread(
-                self.minio.fget_object,
-                settings.MINIO_BUCKET_DOCS,
-                input_path,
-                local_path,
-            )
-
-            if file_type == "image":
-                await asyncio.to_thread(self.embed_image, local_path, output_path, watermark_text)
-            elif file_type == "pdf":
-                await asyncio.to_thread(self.embed_pdf, local_path, output_path, watermark_text)
-            elif file_type in ("docx", "xlsx"):
-                await asyncio.to_thread(self.embed_office, local_path, output_path, watermark_text, file_type)
-            else:
-                output_path = local_path
-
-            object_name = f"watermarks/{file_id}/watermarked{ext}"
-            await asyncio.to_thread(
-                self.minio.fput_object,
-                settings.MINIO_BUCKET_WATERMARKS,
-                object_name,
-                output_path,
-            )
-            log.info("watermark_processing_complete", file_id=file_id, object_name=object_name)
-        finally:
-            import shutil
-            if work_dir and os.path.isdir(work_dir):
-                shutil.rmtree(work_dir, ignore_errors=True)
+    # 注：v3.4.1 删掉了原先的 `process()` 与 MinIO 客户端 —— 它是 q.watermark
+    # 队列的唯一入口，而那条队列**从来没有生产者**（后端从不往 "watermark"
+    # 路由发消息）。真实的盲水印嵌入走的是 q.document.preprocess
+    # （processors/document.py 的 DocumentProcessor._watermark → 下面的 embed_*），
+    # 产物落在 documents/{doc_id}/watermarked*，并由文档状态回调回写路径。
+    #
+    # 保留一条"已声明、已绑定、已被消费、已被监控、但永远是空"的队列，
+    # 会让运维从监控上误以为这条链路是活的 —— 所以整条支线一起删掉。
 
     def embed_image(self, input_path: str, output_path: str, text: str) -> None:
         """

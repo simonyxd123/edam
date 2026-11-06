@@ -478,10 +478,11 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | 密级自动识别 | **服务端裁决已接线**（v3.4.1）：最终密级 = max(服务端基线, 客户端声明)，客户端只能往严里选。但基线只是**启发式**（文件名关键词 / 文件大小 / 上传者部门）—— 文件名和大小都是客户端可控的，真正的内容级识别需要文档分析引擎，**尚未实现** |
 | 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.1")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
 | 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |
-| `q.watermark` 队列 | 已声明并绑定，但**后端没有生产者** —— 只有 Worker 消费端 |
+| `q.watermark` 队列 | **已删除**（v3.4.1）—— 它从来没有生产者，真实的水印嵌入走 `q.document.preprocess`。留着一条"已声明、已绑定、已被监控、但永远是空"的队列，会让运维误以为这条链路是活的 |
+| 泄露检测（帧指纹比对） | 算法**已统一且可用**（`POST /ops/leak-detect`，受 `OPS_TOKEN` 保护）。但**三段链路尚未接线**：① 按观看用户入库指纹（`video_fingerprint` 表无写入方，现在比对的是上传时生成的 `fingerprint.json`，归属粒度是"视频"而非"用户"）② 自动触发比对（何时算"疑似泄露"是产品决策）③ 告警回后端（`leak_detection` 表与告警服务均无写入方） |
 | 文档处理回调 | **已闭环**（v3.4.1）：Worker 处理完文档会回调 `PATCH /documents/{id}/status`，水印与预览两个状态分开报，`preview_path` / `watermark_path` 一并回写 |
 | ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
-| `fingerprint/` 下三个 Service | pHash / DCT / 泄露检测，**零引用**（与 `processors/` 下实现算法不一致，未接线） |
+| `fingerprint/` 下三个 Service | **算法已统一**（v3.4.1）：pHash 与盲水印各只有一份实现，两边逐位相同（此前 imagehash 与手写 DCT 并存 ⇒ 指纹对不上、匹配率 ≈ 0 且不报错）。泄露比对已可通过 `POST /ops/leak-detect` 调用，但产品链路未闭环（见上一行） |
 | SSO | 默认 `edam.sso.enabled: false` |
 
 方案书里的**驱动层**（Windows minifilter / macOS Endpoint Security / Linux FUSE）

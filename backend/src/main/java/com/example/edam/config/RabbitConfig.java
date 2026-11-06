@@ -34,8 +34,6 @@ public class RabbitConfig {
     public static final String VIDEO_PREPROCESS_ROUTING = "video.preprocess";
     public static final String DOCUMENT_PREPROCESS_QUEUE = "q.document.preprocess";
     public static final String DOCUMENT_PREPROCESS_ROUTING = "document.preprocess";
-    public static final String WATERMARK_QUEUE = "q.watermark";
-    public static final String WATERMARK_ROUTING = "watermark";
     public static final String TASKS_EXCHANGE = "edam.tasks";
 
     /**
@@ -88,11 +86,6 @@ public class RabbitConfig {
     }
 
     @Bean
-    public Queue watermarkQueue() {
-        return QueueBuilder.durable(WATERMARK_QUEUE).build();
-    }
-
-    @Bean
     public Binding videoPreprocessBinding() {
         return BindingBuilder.bind(videoPreprocessQueue()).to(tasksExchange()).with(VIDEO_PREPROCESS_ROUTING);
     }
@@ -102,10 +95,13 @@ public class RabbitConfig {
         return BindingBuilder.bind(documentPreprocessQueue()).to(tasksExchange()).with(DOCUMENT_PREPROCESS_ROUTING);
     }
 
-    @Bean
-    public Binding watermarkBinding() {
-        return BindingBuilder.bind(watermarkQueue()).to(tasksExchange()).with(WATERMARK_ROUTING);
-    }
+    // 注：原先这里还有一条 q.watermark 队列（+ watermarkQueue / watermarkBinding）。
+    // 它**从来没有生产者** —— 后端从不往 edam.tasks 的 "watermark" 路由发消息，
+    // 而真实的盲水印嵌入走的是 q.document.preprocess（DocumentProcessor._watermark
+    // → WatermarkProcessor.embed_*）。也就是说 q.watermark 是一条
+    // "已声明、已绑定、已被 Worker 消费、已被 Prometheus 监控、但永远是空的"队列 ——
+    // 留着它，运维看监控会以为这条链路是活的。
+    // v3.4.1 删除。
 
     /**
      * Webhook 重试交换机（Direct）

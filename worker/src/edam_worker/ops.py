@@ -23,7 +23,9 @@ EDAM Worker 运维接口
 """
 
 import asyncio
+import os
 import secrets
+import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -32,6 +34,7 @@ from minio.error import S3Error
 from pydantic import BaseModel, Field, field_validator
 
 from .config import settings
+from .fingerprint.phash import hex_to_phash
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -183,6 +186,167 @@ async def ops_health() -> Dict[str, Any]:
         "minio_endpoint": settings.MINIO_ENDPOINT,
         "minio_bucket_videos": settings.MINIO_BUCKET_VIDEOS,
     }
+
+# ----------------------------------------------------------------
+# 泄露检测（帧指纹比对）
+# ----------------------------------------------------------------
+
+class LeakDetectRequest(BaseModel):
+    """POST /ops/leak-detect 请求体"""
+
+    suspected_object: str = Field(
+        ...,
+        min_length=1,
+        max_length=512,
+        description="疑似泄露文件在 MinIO 里的对象名（如 `uploads/3/abc.mp4`）",
+    )
+    reference_video_id: int = Field(
+        ...,
+        ge=1,
+        description="参考视频 ID —— 比对基准取自 MinIO 上 videos/{id}/fingerprint.json",
+    )
+    frame_sample_count: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        description="从疑似泄露文件里抽多少帧参与比对",
+    )
+
+    @field_validator("suspected_object")
+    @classmethod
+    def _no_path_traversal(cls, v: str) -> str:
+        if v.startswith("/") or v.startswith("\\"):
+            raise ValueError("suspected_object 不能以 / 或 \\ 开头")
+        if any(part == ".." for part in v.split("/")):
+            raise ValueError("suspected_object 不允许包含 ..")
+        return v
+
+
+def _load_reference_fingerprints(video_id: int) -> List[bytes]:
+    """从 MinIO 读 videos/{id}/fingerprint.json，还原成 8 字节 pHash 列表。
+
+    这份指纹是**上传时**算的（归属到视频，而不是观看用户）——
+    真正的"按观看用户入库"链路尚未接线，见 README 的「已知限制」。
+    """
+    import json
+
+    client = _make_minio_client()
+    bucket = settings.MINIO_BUCKET_VIDEOS
+    object_name = f"videos/{video_id}/fingerprint.json"
+
+    try:
+        resp = client.get_object(bucket, object_name)
+        try:
+            payload = json.loads(resp.read().decode("utf-8"))
+        finally:
+            resp.close()
+            resp.release_conn()
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"reference fingerprint not found: {object_name} ({e.code})",
+        )
+
+    hexes = payload.get("fingerprints") or []
+    out: List[bytes] = []
+    for h in hexes:
+        try:
+            out.append(hex_to_phash(h))
+        except ValueError:
+            # 单条脏数据不该让整次比对失败
+            continue
+    return out
+
+
+def _detect_leak(
+    suspected_object: str,
+    reference_video_id: int,
+    frame_sample_count: int,
+) -> Dict[str, Any]:
+    """疑似泄露文件 ↔ 参考视频指纹的比对（同步，跑在 to_thread 里）。"""
+    import tempfile
+
+    from ..fingerprint.LeakDetectionService import leak_detection_service
+    from ..fingerprint.PHashService import FrameFingerprint
+
+    client = _make_minio_client()
+    bucket = settings.MINIO_BUCKET_VIDEOS
+
+    reference = _load_reference_fingerprints(reference_video_id)
+    if not reference:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"reference video {reference_video_id} has no usable fingerprints",
+        )
+
+    work_dir = tempfile.mkdtemp(prefix="edam-leak-")
+    local_path = os.path.join(work_dir, os.path.basename(suspected_object))
+    try:
+        try:
+            client.fget_object(bucket, suspected_object, local_path)
+        except S3Error as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"suspected object not found: {suspected_object} ({e.code})",
+            )
+
+        # 指纹库按"参考视频"归属 —— user_id 未知，置 0
+        library = [
+            FrameFingerprint(
+                frame_index=i,
+                timestamp_sec=0.0,
+                phash=phash_bytes,
+                user_id=0,
+                video_id=reference_video_id,
+                session_id="",
+            )
+            for i, phash_bytes in enumerate(reference)
+        ]
+
+        result = leak_detection_service.detect_from_video(
+            local_path, library, frame_sample_count=frame_sample_count
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    return {
+        "suspected_object": suspected_object,
+        "reference_video_id": reference_video_id,
+        "matched": result.is_leaked,
+        "status": result.status,
+        "matched_frames": result.matched_frames,
+        "best_match_score": round(result.best_match_score, 4),
+        "reference_fingerprint_count": len(reference),
+        "compared_frames": result.total_frames,
+        "duration_ms": result.duration_ms,
+        "note": (
+            "指纹库取自上传时生成的 videos/{id}/fingerprint.json，"
+            "归属粒度是「视频」而非「观看用户」——"
+            "按用户入库的指纹库与告警回传链路尚未接线。"
+        ),
+    }
+
+
+@router.post("/leak-detect")
+async def ops_leak_detect(
+    body: LeakDetectRequest,
+    x_ops_token: str = Header(default=""),
+) -> Dict[str, Any]:
+    """疑似泄露视频 ↔ 参考视频指纹比对。
+
+    用法：拿到一个疑似外泄的视频文件后，放到 MinIO 的 videos 桶里，
+    再用本端点与某个已知视频的帧指纹比对，确认"是不是我们流出去的"。
+
+    帧指纹提取与汉明距离比较是 CPU 密集操作，放到线程池里跑，
+    不阻塞事件循环。
+    """
+    _check_ops_auth(x_ops_token)
+    return await asyncio.to_thread(
+        _detect_leak,
+        body.suspected_object,
+        body.reference_video_id,
+        body.frame_sample_count,
+    )
 
 @router.get("/videos/{video_id}/hls-status")
 async def ops_hls_status(

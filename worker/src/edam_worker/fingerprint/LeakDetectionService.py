@@ -7,9 +7,17 @@
 - 与指纹库匹配（多帧投票）
 - 命中阈值告警
 
-⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力。
-   前置条件：与 PHashService 的算法统一（见该模块的说明），
-   否则匹配命中率会接近 0。
+**v3.4.1：pHash 算法已与 `processors/video.py` 统一**（见 `fingerprint/phash.py`）——
+此前两边各算各的，指纹对不上，匹配率 ≈ 0 且不报任何错。
+
+可达性：已通过 `POST /ops/leak-detect` 暴露（受 OPS_TOKEN 保护）。
+
+仍未接线的三段链路（见 README 的「已知限制」）：
+1. **按观看用户入库指纹** —— `video_fingerprint` 表没有任何写入方，
+   现在比对的库来自 MinIO 上 `videos/{id}/fingerprint.json`
+   （上传时算的那一套，归属到"视频"而不是"观看用户"）
+2. **自动触发比对** —— 谁在什么时候发现了一个疑似泄露文件，需要产品决策
+3. **告警回后端** —— `leak_detection` 表与 `LeakDetectionAlertService` 均无写入方
 """
 import cv2
 import logging
@@ -164,7 +172,9 @@ class LeakDetectionService:
 
                 if result.is_leaked:
                     result.status = "confirmed"
-                    logger.warn(
+                    # 注意：logging 没有 warn 级别，写成 logger.warn 会打一条
+                    # "No such level" 警告，真正的检测日志反而被淹掉
+                    logger.warning(
                         "leak_detected detection_id=%s user_id=%d session=%s score=%.2f frames=%d",
                         detection_id, result.matched_user_id, result.matched_session_id,
                         result.best_match_score, result.matched_frames

@@ -47,11 +47,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Component
 public class TranscodeQueueMetrics {
 
-    /** 需要监控的业务队列（不含 webhook 重试队列 —— 那是另一条链路）。 */
+    /**
+     * 需要监控的业务队列（不含 webhook 重试队列 —— 那是另一条链路）。
+     *
+     * <p>v3.4.1 起只有两条：原先还有 {@code q.watermark}，但它从来没有
+     * 生产者（真实的水印嵌入走 {@code q.document.preprocess}），
+     * 监控一个永远为 0 的队列只会让人误以为那条链路是活的。
+     */
     private static final List<String> WATCHED_QUEUES = List.of(
         RabbitConfig.VIDEO_PREPROCESS_QUEUE,
-        RabbitConfig.DOCUMENT_PREPROCESS_QUEUE,
-        RabbitConfig.WATERMARK_QUEUE
+        RabbitConfig.DOCUMENT_PREPROCESS_QUEUE
     );
 
     private final RabbitAdmin rabbitAdmin;

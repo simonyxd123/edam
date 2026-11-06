@@ -3,15 +3,27 @@ DCT 文档水印嵌入服务（v3.3 W-6.2）
 
 替代 POC 阶段：使用 blind-watermark 库生产集成
 
-⚠️ **当前未被调用**（零引用）。这是"写好未接线"的产品能力。
-   processors/document.py 里走的是 processors/watermark.py 的
-   WatermarkProcessor（图片走 DCT、PDF 走增量更新、Office 走隐写），
-   两者职责有重叠。接线时需要先定哪套是权威实现。
+**v3.4.1：已统一到 `processors/watermark.py` 的 `WatermarkProcessor`。**
+
+此前本模块用 blind-watermark 的 `mode="bit"` 嵌入 + `mode="bit"` 提取，
+而 `processors/watermark.py` 用的是 `mode="bytes"` ——
+**两套编码互相读不出来**：bit 模式嵌进去的水印，bytes 模式提不出来；
+反过来也一样。而真实链路（`processors/document.py`）走的是后者，
+于是本模块就算被接上，产出的水印也**提不出来**。
+
+现在本模块只是 `WatermarkProcessor` 的一层薄封装（带结果对象 + 批量入口），
+嵌入与提取走同一套实现，**能互相读**。
+
+接线状态：算法已统一且可用；产品侧的溯源闭环
+（`POST /watermarks/extract` → Worker → 指纹库比对）见 README 的「已知限制」。
 """
 import os
 import logging
-from typing import Optional, Dict
+import time
+from typing import Optional, Dict, List
 from dataclasses import dataclass
+
+from ..processors.watermark import WatermarkProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +42,17 @@ class DocWatermarkService:
     """
     DCT 频域水印嵌入（图片文档）
 
-    算法：blind-watermark 库（DCT 中频系数嵌入）
+    委托给 `processors/watermark.py` 的 `WatermarkProcessor` ——
+    全仓库唯一的水印实现（图片走 blind-watermark 的 DCT，缺库时降级 LSB）。
+
     标准：参考 Zauner 2010 + blind-watermark README
     """
 
-    DEFAULT_STRENGTH = 0.10  # 默认嵌入强度（0-1）
+    DEFAULT_STRENGTH = 0.10  # 记录用；blind-watermark 的 embed() 不接受强度参数
     SUPPORTED_FORMATS = {"jpg", "jpeg", "png", "bmp", "tiff"}
 
     def __init__(self):
-        self._bwm = None
-
-    def _get_bwm(self):
-        """懒加载 blind-watermark"""
-        if self._bwm is None:
-            try:
-                from blind_watermark import WaterMark
-                self._bwm_class = WaterMark
-            except ImportError:
-                raise RuntimeError(
-                    "blind-watermark not installed. Run: pip install blind-watermark==0.4.1")
-        return self._bwm_class
+        self._processor = WatermarkProcessor()
 
     def embed_image_watermark(
         self,
@@ -65,10 +68,10 @@ class DocWatermarkService:
             input_path: 原图路径
             output_path: 输出路径
             watermark_text: 水印文本（如 "USER_SA0001_20260827"）
-            password_wm: 水印密码（默认 1）
-            password_img: 图像密码（默认 1）
+            password_wm: 水印密码（默认 1）—— 保留参数只为兼容旧调用；
+                底层 blind-watermark 的密码是固定的 1
+            password_img: 图像密码（默认 1）—— 同上
         """
-        import time
         start = time.time()
 
         try:
@@ -81,18 +84,13 @@ class DocWatermarkService:
                     error=f"Unsupported format: {ext}"
                 )
 
-            WaterMark = self._get_bwm()
-            bwm = WaterMark(password_wm=password_wm, password_img=password_img)
-            wm_bytes = watermark_text.encode("utf-8")
-
-            bwm.read_img(input_path)
-            bwm.read_wm(wm_bytes, mode="bit")
-            bwm.embed(output_path)
+            # 走权威实现 —— 与真实上传链路（processors/document.py）完全一致
+            self._processor.embed_image(input_path, output_path, watermark_text)
 
             duration_ms = int((time.time() - start) * 1000)
             logger.info(
                 "doc_watermark_embedded input=%s output=%s length=%d ms=%d",
-                input_path, output_path, len(wm_bytes), duration_ms
+                input_path, output_path, len(watermark_text), duration_ms
             )
             return WatermarkEmbedResult(
                 success=True,
@@ -119,25 +117,20 @@ class DocWatermarkService:
     ) -> Optional[str]:
         """提取水印文本
 
+        与嵌入走同一套实现（`mode="bytes"`）—— 此前本方法用 `mode="bit"`
+        提取，而真实链路用 `mode="bytes"` 嵌入，**提出来永远是空的**。
+
         Args:
             image_path: 待检测图片路径
-            password_wm/p_img: 同嵌入
-            expected_length: 期望水印长度（字节）
+            password_wm/p_img: 保留兼容；底层密码固定为 1
+            expected_length: 已废弃 —— bytes 模式长度自描述，不需要它
         """
         try:
-            WaterMark = self._get_bwm()
-            bwm = WaterMark(password_wm=password_wm, password_img=password_img)
-            wm_bits = bwm.extract(image_path, mode="bit", wm_shape=(expected_length * 8,) if expected_length else None)
-            bits = [1 if x else 0 for x in wm_bits]
-
-            text_bytes = bytearray()
-            for i in range(0, len(bits) - 7, 8):
-                byte_bits = bits[i:i+8]
-                if len(byte_bits) < 8:
-                    break
-                text_bytes.append(int("".join(str(b) for b in byte_bits), 2))
-
-            return text_bytes.decode("utf-8", errors="ignore")
+            text = self._processor.extract(image_path, "image")
+            if not text:
+                logger.info("doc_watermark_extract_empty path=%s", image_path)
+                return None
+            return text
         except Exception as e:
             logger.error("doc_watermark_extract_failed error=%s", e)
             return None
@@ -150,8 +143,8 @@ class DocWatermarkService:
     ) -> Dict[str, WatermarkEmbedResult]:
         """批量嵌入目录中所有图片"""
         os.makedirs(output_dir, exist_ok=True)
-        results = {}
-        for filename in os.listdir(input_dir):
+        results: Dict[str, WatermarkEmbedResult] = {}
+        for filename in sorted(os.listdir(input_dir)):
             ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
             if ext not in self.SUPPORTED_FORMATS:
                 continue

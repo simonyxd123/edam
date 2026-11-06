@@ -12,13 +12,12 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 import cv2
-import imagehash
 import structlog
 from minio import Minio
-from PIL import Image
 
 from ..config import backend_api_url, settings
 from ..errors import PermanentWorkerError
+from ..fingerprint.phash import compute_frame_phash, phash_to_hex
 from ..fonts import FONT_CANDIDATES, find_font
 from ..hls_keyinfo import (
     looks_like_key_info_layout_error,
@@ -500,12 +499,13 @@ class VideoProcessor:
                         break
                     if frame_idx % frame_interval == 0:
                         # 缩小到 32x32 用于 pHash
-                        small = cv2.resize(frame, (32, 32))
-                        rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                        # 正确：cv2 ndarray → PIL.Image → imagehash.phash
-                        pil_img = Image.fromarray(rgb_frame)
-                        h = imagehash.phash(pil_img, hash_size=8)
-                        fingerprints.append(str(h))
+                        # 走 fingerprint/phash.py —— 全仓库唯一实现，
+                        # 与泄露检测侧的 PHashService 逐位相同
+                        # （此前两边各算各的：imagehash 带高通滤波、
+                        #   手写 DCT 不带 ⇒ 指纹对不上，匹配率 ≈ 0 且不报错）
+                        fingerprints.append(
+                            phash_to_hex(compute_frame_phash(frame))
+                        )
                     frame_idx += 1
             finally:
                 # 必须放在 finally —— 中途异常会跳过 release，

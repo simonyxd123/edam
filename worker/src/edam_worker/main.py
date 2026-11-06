@@ -25,7 +25,6 @@ from .fonts import find_font
 from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
-from .processors.watermark import WatermarkProcessor
 from .ops import router as ops_router, register_publisher
 
 # 结构化日志
@@ -50,7 +49,6 @@ class WorkerApp:
     def __init__(self) -> None:
         self.video_processor = VideoProcessor()
         self.document_processor = DocumentProcessor()
-        self.watermark_processor = WatermarkProcessor()
         self.connection = None
         self.channel = None
         # 最近一次任务结果（task_type → {last_success_*, last_failure_*}）
@@ -282,10 +280,16 @@ class WorkerApp:
         )
 
         # 声明 + 绑定队列
+        #
+        # v3.4.1 起只有两条：原先还有 q.watermark，但它**从来没有生产者** ——
+        # 后端从不往 edam.tasks 的 "watermark" 路由发消息。
+        # 真实的盲水印嵌入走的是 q.document.preprocess
+        # （DocumentProcessor._watermark → WatermarkProcessor.embed_*），
+        # q.watermark 是一条平行的、无人使用的支线：留着它，运维看队列监控
+        # 会以为这条链路是活的。
         queues_config = [
             ("q.video.preprocess", "video.preprocess", self.handle_video),
             ("q.document.preprocess", "document.preprocess", self.handle_document),
-            ("q.watermark", "watermark", self.handle_watermark),
         ]
         for queue_name, routing_key, handler in queues_config:
             queue = await self.channel.declare_queue(queue_name, durable=True)
@@ -355,19 +359,6 @@ class WorkerApp:
                 return
             await self._process_with_retry(
                 "document", payload, self.document_processor.process
-            )
-
-    async def handle_watermark(self, message: AbstractIncomingMessage) -> None:
-        """处理水印/帧指纹任务（含内部重试）"""
-        async with message.process(requeue=False):
-            try:
-                payload = json.loads(message.body)
-            except Exception as e:
-                log.error("watermark_task_invalid_payload", error=str(e)[:200],
-                          body_preview=message.body[:200].decode(errors="replace"))
-                return
-            await self._process_with_retry(
-                "watermark", payload, self.watermark_processor.process
             )
 
 worker = WorkerApp()

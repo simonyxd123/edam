@@ -76,6 +76,33 @@
 - 新增迁移 `V20261106_1000__doc_watermark_path.sql`：
   `doc_resource` 补 `watermark_path` 列 —— 水印产物的位置此前无处可记
 
+#### 死代码与"两套不兼容实现"
+
+- **`q.watermark` 队列从来没有生产者** —— 已声明、已绑定、已被 Worker 消费、
+  已被 Prometheus 监控，但后端从不往 `edam.tasks` 的 `watermark` 路由发消息。
+  真实的盲水印嵌入走的是 `q.document.preprocess`
+  （`DocumentProcessor._watermark` → `WatermarkProcessor.embed_*`）。
+  留着它，运维看队列监控会以为这条链路是活的 ⇒ **整条支线删除**
+  （后端队列/绑定/监控项 + Worker 消费者 + `WatermarkProcessor.process()`）
+- **pHash 有两套互不兼容的实现** —— `processors/video.py` 用 imagehash
+  （DCT + 缩放 + **高通滤波**），`fingerprint/PHashService.py` 自己手写 DCT
+  （**没有高通滤波**，中位数取法也不同）。
+  两边算出的 bit 串对不上 ⇒ 汉明距离比较毫无意义，**匹配率 ≈ 0**，
+  而且**不报任何错** —— 看起来跑通了，只是永远匹配不上。
+  ⇒ 新增 `fingerprint/phash.py` 作为**唯一实现**，
+  `processors/video.py` 与 `PHashService` 都调它，产出**逐位相同**。
+  `fingerprint.json` 的存储格式（16 位小写 hex）**保持不变** ——
+  已落盘的数据靠它，改格式会让历史指纹全部失效
+- **盲水印也有两套互不兼容的实现** —— `DocWatermarkService` 用
+  blind-watermark 的 `mode="bit"`，`processors/watermark.py` 用 `mode="bytes"`：
+  **bit 模式嵌进去的水印，bytes 模式提不出来**（反过来也一样）。
+  而真实链路走的是后者 ⇒ `DocWatermarkService` 就算被接上，产出的水印也提不出来。
+  ⇒ `DocWatermarkService` 改为委托 `WatermarkProcessor`，嵌入与提取走同一套
+- **泄露比对此前零引用** —— 新增 `POST /ops/leak-detect`（受 `OPS_TOKEN` 保护）：
+  疑似泄露文件 ↔ 参考视频的帧指纹比对
+- 修 `LeakDetectionService` 里的 `logger.warn` —— logging 没有 `warn` 级别，
+  会打一条 "No such level" 警告，把真正的检测日志淹掉
+
 ### 变更
 
 - 权限码是**登录那一刻**的快照 —— 改了角色必须重新登录才生效（管理员手册已提醒）
@@ -87,7 +114,7 @@
 - 后端 161 → **189** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
 - 前端 58 用例全绿；`npm run build` 内置 vue-tsc 类型检查通过
-- Worker 68 → **81** 用例（79 通过 / 2 跳过，缺 ffmpeg 与 PyPDF2）
+- Worker 68 → **92** 用例（90 通过 / 2 跳过，缺 ffmpeg 与 PyPDF2）
 - 端点对账 95 ↔ 95 → **98 ↔ 98 / 100%**
 
 ---
