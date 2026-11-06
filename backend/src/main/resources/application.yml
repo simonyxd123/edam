@@ -116,6 +116,11 @@ edam:
   # Worker 侧用同名环境变量 WORKER_TOKEN 注入。留空则回调一律拒绝（fail-closed）。
   worker:
     token: ${WORKER_TOKEN:}
+    # Backend → Worker 的地址（盲水印提取走这条）。
+    # 留空 = 不调用 Worker —— POST /watermarks/extract 会明确报 503，
+    # 而不是假装"没查到泄露"。生产里 Worker 是独立 Deployment，
+    # 用服务名 + 端口：edam-worker:8001。
+    base-url: ${WORKER_BASE_URL:}
   # 启动自举：默认 admin 账号。
   # 原先硬编码 admin123 且无 profile 开关，production 也会建 —— 等保高危项。
   # 现在 admin-password 为空则不创建任何默认账号。

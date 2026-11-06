@@ -474,7 +474,7 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 
 | 能力 | 现状 |
 |---|---|
-| 盲水印 | Python Worker 侧可用（DCT / 隐写 / LSB）；**Java 后端无盲水印实现**，`POST /watermarks/extract` 目前返回 mock |
+| 盲水印提取 | **已接线**（v3.4.1）：`POST /watermarks/extract` 把文件转发给 Worker 的 `/internal/watermark/extract` 真提取，按水印文本反查文档与上传者。提取失败（Worker 不可达 / 算法缺失）返回 **503**，绝不伪装成"没查到泄露"。当前支持 `image` / `pdf`；`video` / `docx` / `xlsx` 明确报 400 |
 | 密级自动识别 | **服务端裁决已接线**（v3.4.1）：最终密级 = max(服务端基线, 客户端声明)，客户端只能往严里选。但基线只是**启发式**（文件名关键词 / 文件大小 / 上传者部门）—— 文件名和大小都是客户端可控的，真正的内容级识别需要文档分析引擎，**尚未实现** |
 | 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.1")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
 | 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |

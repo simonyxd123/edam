@@ -55,6 +55,10 @@ backend:
     MINIO_ENDPOINT: http://minio.edam.svc.cluster.local:9000
     RABBITMQ_HOST: rabbitmq.edam.svc.cluster.local
     RABBITMQ_PORT: "5672"
+    # Backend → Worker（盲水印提取走这条）。
+    # 留空 = 不调用 Worker —— POST /watermarks/extract 会明确报 503，
+    # 而不是假装"没查到泄露"。
+    WORKER_BASE_URL: http://edam-worker:8001
     # 初始管理员：production 不配 ADMIN_INITIAL_PASSWORD 就不建任何账号
     ADMIN_INITIAL_PASSWORD: ""
     CREATE_DEFAULT_ADMIN: "false"

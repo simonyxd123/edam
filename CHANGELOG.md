@@ -103,6 +103,26 @@
 - 修 `LeakDetectionService` 里的 `logger.warn` —— logging 没有 `warn` 级别，
   会打一条 "No such level" 警告，把真正的检测日志淹掉
 
+#### 盲水印提取：把"假没查到"换成真提取
+
+- 此前 `POST /watermarks/extract` 返回的是一个**假的**"没查到泄露"：
+  `confidence=0.0` + `matched_users=[]`，而且**什么都没扫过**。
+  那比不提供这个端点更危险 —— 运维看到"没有匹配用户"，
+  会得出"这个文件是干净的"这个**错误结论**。
+- 现在真的调 Worker 提取（盲水印算法在 Python 侧）：
+  - Worker 新增 `/internal/watermark/extract`（受 `WORKER_TOKEN` 保护，
+    fail-closed；请求体是文件原始字节，不用把溯源样本落进 MinIO）
+  - 后端新增 `WatermarkExtractClient`（新增配置项 `edam.worker.base-url`）
+  - 按水印文本 `{上传者ID}|{文档ID}|{时间戳}` 反查文档与上传者，
+    返回真实的 `matched_users`
+- 三态必须分清（有测试钉住）：
+  - 提取到水印 → `extracted.fingerprint` 有值 + 匹配用户
+  - 文件里没有水印 → `extracted=false`（**有效结论**）
+  - 提取过程失败（Worker 不可达 / 算法缺失 / 文件损坏）→ **503 + 明确原因**，
+    绝不伪装成"没查到泄露"
+- 当前支持 `image` / `pdf`；`video` / `docx` / `xlsx` 明确报 400
+  （帧指纹比对与 Office 隐写提取尚未接线）
+
 ### 变更
 
 - 权限码是**登录那一刻**的快照 —— 改了角色必须重新登录才生效（管理员手册已提醒）

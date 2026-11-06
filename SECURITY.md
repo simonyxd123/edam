@@ -224,8 +224,11 @@ metadata:
    **尚未实现**。部门是当前唯一不可伪造的基线信号。
 8. **国密链路未接线**（v3.4）—— `AlgorithmRouter` 与 `SmJwtTokenProvider`
    均未被引用，现役 JWT 仍是 HMAC-SHA256。声称「国密合规」前必须先接线。
-9. **Java 后端无盲水印实现**（v3.4）—— 盲水印只在 Python Worker 侧，
-   `POST /watermarks/extract` 目前返回 mock，溯源能力尚未闭环。
+9. **盲水印提取只覆盖 image / pdf**（v3.4.1）—— 提取已接线（后端转发给
+   Worker 的 `/internal/watermark/extract`），但当前只支持 `image` / `pdf`；
+   视频帧指纹比对与 Office 隐写提取尚未接线（对应端点会明确报 400）。
+   另外提取依赖 `blind-watermark` / `PyPDF2` 两个可选依赖 ——
+   缺库时提取会失败，此时端点返回 503（**不会**伪装成"文件是干净的"）。
 10. **WebAuthn assertion 签名验证未实现**（v3.4.1）—— 登录链路已修好：
     权限从 RBAC 表读、账号状态与 MFA 都校验、登录限流已加。
     但 `WebAuthnAuthenticationService.verifyAssertionSignature` 仍然是

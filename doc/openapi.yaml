@@ -709,9 +709,19 @@ paths:
       x-required-permission: watermark:read
       description: |
         上传疑似泄露文件，提取水印或帧指纹，定位泄密者。
-        - 图片/PDF：频域盲水印提取
-        - 视频：帧指纹比对
-        - Word/Excel：隐写提取
+
+        **提取由 Worker 执行**（盲水印算法在 Python 侧），
+        后端把文件字节转发给 Worker 的 `/internal/watermark/extract`。
+
+        三种结果必须分清：
+        - 提取到水印 → `extracted.fingerprint` 有值，`matched_users` 给出
+          匹配到的文档与上传者
+        - 文件里没有水印 → `extracted.extracted=false`（**这是有效结论**）
+        - 提取过程失败（Worker 不可达 / 算法缺失 / 文件损坏）→ **503**，
+          绝不伪装成"没查到泄露"
+
+        当前支持 `image` / `pdf`；`video` / `docx` / `xlsx` 会明确报 400
+        （帧指纹比对与 Office 隐写提取尚未接线）。
       requestBody:
         required: true
         content:
@@ -728,11 +738,15 @@ paths:
                   enum: [image, pdf, video, docx, xlsx]
       responses:
         '200':
-          description: 提取成功
+          description: 提取完成（是否提取到水印见 extracted 字段）
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/WatermarkExtractResult'
+        '400':
+          description: 文件为空，或类型不支持
+        '503':
+          description: Worker 不可用（未配置 WORKER_BASE_URL / 连不上 / 提取出错）
 
   /watermarks/cache:
     get:

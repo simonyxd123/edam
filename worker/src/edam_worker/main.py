@@ -26,6 +26,7 @@ from .metrics import TASK_ATTEMPTS, TASK_DURATION, TASKS_PROCESSED
 from .processors.video import VideoProcessor
 from .processors.document import DocumentProcessor
 from .ops import router as ops_router, register_publisher
+from .internal import router as internal_router
 
 # 结构化日志
 structlog.configure(
@@ -388,6 +389,9 @@ async def health_ready():
 
 # 运维接口（受 OPS_ENABLED / OPS_TOKEN 控制；fail-closed）
 app.include_router(ops_router)
+
+# 内网接口（Backend → Worker；受 WORKER_TOKEN 控制；fail-closed）
+app.include_router(internal_router)
 
 # ----------------------------------------------------------------
 # /health/worker：worker 自检（RabbitMQ / MinIO / Backend + 最近一次任务）
