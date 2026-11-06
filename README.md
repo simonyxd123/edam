@@ -477,7 +477,7 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | 盲水印提取 | **已接线**（v3.4.1）：`POST /watermarks/extract` 把文件转发给 Worker 的 `/internal/watermark/extract` 真提取，按水印文本反查文档与上传者。提取失败（Worker 不可达 / 算法缺失）返回 **503**，绝不伪装成"没查到泄露"。当前支持 `image` / `pdf`；`video` / `docx` / `xlsx` 明确报 400 |
 | 密级自动识别 | **服务端裁决已接线**（v3.4.1）：最终密级 = max(服务端基线, 客户端声明)，客户端只能往严里选。但基线只是**启发式**（文件名关键词 / 文件大小 / 上传者部门）—— 文件名和大小都是客户端可控的，真正的内容级识别需要文档分析引擎，**尚未实现** |
 | 国密链路 | `AlgorithmRouter`（标记 `@Deprecated(since="3.4.1")`）与 `SmJwtTokenProvider` **均未被引用** —— 现役 JWT 仍是 HMAC-SHA256 |
-| 通知 / Webhook 的 HTTP 端点 | `NotificationsController` 与 `WebhooksController` 返回 **mock 数据**；真正的投递逻辑在 `webhook/` 包（RabbitMQ 延迟队列 + 死信），通知实时通道是 STOMP `/ws` |
+| 通知 / Webhook | **注册与读侧已真接线**（v3.4.1）：回调注册真落库（secret 明文只返回一次，库里存哈希）、通知列表 / 标记已读 / 通知偏好都真读写数据库。但**投递链路仍未接线** —— 没有任何事件会触发回调（签名需要 secret 明文而表里只有哈希，且首次投递没有触发入口）；通知也**没有生产者**，所以列表暂时是空的 |
 | `q.watermark` 队列 | **已删除**（v3.4.1）—— 它从来没有生产者，真实的水印嵌入走 `q.document.preprocess`。留着一条"已声明、已绑定、已被监控、但永远是空"的队列，会让运维误以为这条链路是活的 |
 | 泄露检测（帧指纹比对） | 算法**已统一且可用**（`POST /ops/leak-detect`，受 `OPS_TOKEN` 保护）。但**三段链路尚未接线**：① 按观看用户入库指纹（`video_fingerprint` 表无写入方，现在比对的是上传时生成的 `fingerprint.json`，归属粒度是"视频"而非"用户"）② 自动触发比对（何时算"疑似泄露"是产品决策）③ 告警回后端（`leak_detection` 表与告警服务均无写入方） |
 | 文档处理回调 | **已闭环**（v3.4.1）：Worker 处理完文档会回调 `PATCH /documents/{id}/status`，水印与预览两个状态分开报，`preview_path` / `watermark_path` 一并回写 |

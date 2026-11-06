@@ -3,13 +3,21 @@ package com.example.edam.controller;
 import com.example.edam.security.CurrentUserId;
 import com.example.edam.audit.AuditOp;
 import com.example.edam.audit.AuditOpType;
+import com.example.edam.model.Webhook;
+import com.example.edam.model.WebhookDelivery;
+import com.example.edam.repository.WebhookDeliveryRepository;
+import com.example.edam.repository.WebhookRepository;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.*;
 
@@ -23,34 +31,57 @@ import java.util.*;
 @Tag(name = "webhooks", description = "回调注册")
 public class WebhooksController {
 
+    private final WebhookRepository webhookRepository;
+    private final WebhookDeliveryRepository webhookDeliveryRepository;
+
     @GetMapping("/webhooks")
     @Operation(summary = "当前用户注册的回调列表")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('webhook:read')")
     @AuditOp(op = AuditOpType.LIST, resourceType = "webhook")
     public List<Map<String, Object>> list(@CurrentUserId Long userId) {
-        log.info("webhook_list user_id={}", userId);
-        return List.of();
+        List<Map<String, Object>> items = webhookRepository.findByOwner(userId).stream()
+            .map(WebhooksController::toItem)
+            .toList();
+        log.info("webhook_list user_id={} count={}", userId, items.size());
+        return items;
     }
 
     @PostMapping("/webhooks")
     @Operation(summary = "注册回调")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('webhook:manage')")
     @AuditOp(op = AuditOpType.CREATE, resourceType = "webhook",
-        detail = "event=#request.event")
+        detail = "url=#request.url, events=#request.events")
     public ResponseEntity<Map<String, Object>> create(
         @RequestBody CreateWebhookRequest request,
         @CurrentUserId Long userId) {
 
+        if (request.url == null || request.url.isBlank()) {
+            throw new IllegalArgumentException("url 不能为空");
+        }
+        if (request.events == null || request.events.isEmpty()) {
+            throw new IllegalArgumentException("events 至少要订阅一个事件");
+        }
+        // SSRF 防护：回调地址会被服务端主动 POST，
+        // 不允许指向内网 / 回环地址
+        assertPublicUrl(request.url);
+
         log.info("webhook_create user_id={} url={}", userId, request.url);
-        // 生成 secret（仅创建时返回一次）
+
+        // 生成 secret（**明文只在创建时返回一次**，库里只存哈希）
         String secret = "whsec_" + UUID.randomUUID().toString().replace("-", "");
-        Map<String, Object> response = new HashMap<>();
-        response.put("id", System.currentTimeMillis());
-        response.put("url", request.url);
-        response.put("events", request.events);
-        response.put("secret", secret);
-        response.put("status", "active");
-        response.put("created_at", java.time.OffsetDateTime.now().toString());
+
+        Webhook webhook = new Webhook();
+        webhook.setOwnerId(userId);
+        webhook.setUrl(request.url.trim());
+        webhook.setEvents(String.join(",", request.events));
+        webhook.setSecretHash(sha256Hex(secret));
+        webhook.setStatus(1);   // active
+        webhook.setFailCount(0);
+        webhook.setCreatedAt(java.time.LocalDateTime.now());
+        webhookRepository.insert(webhook);
+
+        Map<String, Object> response = toItem(webhook);
+        response.put("secret", secret);   // 仅此一次
         return ResponseEntity.status(201).body(response);
     }
 
@@ -61,6 +92,13 @@ public class WebhooksController {
     public ResponseEntity<Void> delete(
         @PathVariable("webhook_id") Long webhookId,
         @CurrentUserId Long userId) {
+        // 带 owner 校验 —— 否则任何人都能注销别人的回调
+        Webhook webhook = webhookRepository.findByIdAndOwner(webhookId, userId);
+        if (webhook == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "回调不存在或不属于当前用户");
+        }
+        webhookRepository.deleteById(webhookId);
         log.info("webhook_delete user_id={} webhook_id={}", userId, webhookId);
         return ResponseEntity.noContent().build();
     }
@@ -74,8 +112,110 @@ public class WebhooksController {
         @PathVariable("webhook_id") Long webhookId,
         @CurrentUserId Long userId,
         @RequestParam(defaultValue = "1") int page) {
-        log.info("webhook_deliveries user_id={} webhook_id={}", userId, webhookId);
-        return List.of();
+        // 归属校验：不能读别人的投递历史
+        if (webhookRepository.findByIdAndOwner(webhookId, userId) == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "回调不存在或不属于当前用户");
+        }
+        LambdaQueryWrapper<WebhookDelivery> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(WebhookDelivery::getWebhookId, webhookId)
+               .orderByDesc(WebhookDelivery::getDeliveredAt);
+        int size = Math.min(100, Math.max(1, 20 * Math.max(1, page)));
+        List<Map<String, Object>> items = webhookDeliveryRepository
+            .selectPage(new Page<>(Math.max(1, page), size), wrapper)
+            .getRecords().stream()
+            .map(WebhooksController::toDeliveryItem)
+            .toList();
+        log.info("webhook_deliveries user_id={} webhook_id={} count={}",
+            userId, webhookId, items.size());
+        return items;
+    }
+
+    // ==================================================================
+    // 内部
+    // ==================================================================
+
+    private static Map<String, Object> toItem(Webhook w) {
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", w.getId());
+        item.put("url", w.getUrl());
+        item.put("events", w.getEvents() == null
+            ? List.of() : List.of(w.getEvents().split(",")));
+        item.put("status", statusName(w.getStatus()));
+        item.put("fail_count", w.getFailCount());
+        item.put("last_delivered_at", w.getLastDeliveredAt());
+        item.put("created_at", w.getCreatedAt());
+        return item;
+    }
+
+    private static Map<String, Object> toDeliveryItem(WebhookDelivery d) {
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", d.getId());
+        item.put("webhook_id", d.getWebhookId());
+        item.put("event", d.getEvent());
+        item.put("response_status", d.getResponseStatus());
+        item.put("response_body", d.getResponseBody());
+        item.put("delivered_at", d.getDeliveredAt());
+        return item;
+    }
+
+    private static String statusName(Integer status) {
+        if (status == null) return "unknown";
+        return switch (status) {
+            case 1 -> "active";
+            case 2 -> "paused";
+            case 3 -> "failed";
+            default -> "unknown";
+        };
+    }
+
+    private static String sha256Hex(String text) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            return java.util.HexFormat.of().formatHex(
+                digest.digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * 回调地址必须指向公网 —— 服务端会主动 POST 过去，
+     * 指向内网就是 **SSRF**（能扫内网、能打云厂商的元数据服务）。
+     */
+    private static void assertPublicUrl(String url) {
+        java.net.URI uri;
+        try {
+            uri = java.net.URI.create(url.trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("url 不是合法的 URI: " + url);
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !(scheme.equals("http") || scheme.equals("https"))) {
+            throw new IllegalArgumentException("url 只支持 http / https");
+        }
+        String host = uri.getHost();
+        if (host == null) {
+            throw new IllegalArgumentException("url 缺少主机名");
+        }
+        String h = host.toLowerCase();
+        if (h.equals("localhost") || h.equals("127.0.0.1") || h.equals("::1")
+                || h.equals("0.0.0.0") || h.endsWith(".localhost")
+                || h.startsWith("10.") || h.startsWith("192.168.")
+                || h.startsWith("169.254.") || h.startsWith("127.")) {
+            throw new IllegalArgumentException("url 不允许指向内网 / 回环地址: " + host);
+        }
+        // 172.16.0.0/12
+        if (h.startsWith("172.")) {
+            try {
+                int second = Integer.parseInt(h.split("\\.")[1]);
+                if (second >= 16 && second <= 31) {
+                    throw new IllegalArgumentException("url 不允许指向内网 / 回环地址: " + host);
+                }
+            } catch (NumberFormatException ignored) {
+                // 不是 IP，跳过
+            }
+        }
     }
 
     @Data

@@ -1,5 +1,6 @@
 package com.example.edam.webhook;
 
+import com.example.edam.config.RabbitConfig;
 import com.example.edam.model.WebhookDelivery;
 import com.example.edam.repository.WebhookDeliveryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -125,21 +126,30 @@ public class WebhookDeliveryService {
         log.warn("webhook_retry_scheduled webhook_id={} event={} attempt={} delay_ms={}",
             webhookId, event, attempt, backoffMs);
 
-        // 发送到 RabbitMQ 延迟队列（TTL = backoffMs）
-        rabbitTemplate.convertAndSend(retryExchange, retryQueue, Map.of(
-            "webhook_id", webhookId,
-            "event", event,
-            "url", url,
-            "secret", secret,
-            "payload", payload,
-            "attempt", attempt + 1,  // 下次重试的次数
-            "original_delivery_id", deliveryId,
-            "retry_at_ms", System.currentTimeMillis() + backoffMs
-        ));
+        // 发到**对应档位的延迟队列** —— 消息在那里等满 TTL，
+        // 由 broker 死信回 edam.webhook.retry 交换机（见 RabbitConfig）。
+        //
+        // 注意第二个参数是**路由键**，不是队列名。此前这里传的是队列名
+        // （"edam.webhook.retry.queue"），而绑定用的是 "edam.webhook.retry"
+        // —— 路由键对不上，消息被 broker 静默丢弃，重试**从未发生过**。
+        rabbitTemplate.convertAndSend(
+            retryExchange,
+            RabbitConfig.delayRoutingKey(attempt),
+            Map.of(
+                "webhook_id", webhookId,
+                "event", event,
+                "url", url,
+                "secret", secret,
+                "payload", payload,
+                "attempt", attempt + 1,  // 下次重试的次数
+                "original_delivery_id", deliveryId,
+                "retry_at_ms", System.currentTimeMillis() + backoffMs
+            ));
     }
 
     private void sendToDlq(Long webhookId, String event, String payload, int attempt, String reason) {
-        rabbitTemplate.convertAndSend(retryExchange, dlqQueue, Map.of(
+        // 同样是**路由键**（"dlq"），不是死信队列名 —— 见 RabbitConfig 的说明
+        rabbitTemplate.convertAndSend(retryExchange, RabbitConfig.WEBHOOK_RETRY_DLQ_ROUTING_KEY, Map.of(
             "webhook_id", webhookId,
             "event", event,
             "payload", payload,

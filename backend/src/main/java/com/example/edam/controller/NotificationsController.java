@@ -1,11 +1,18 @@
 package com.example.edam.controller;
 
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.model.Notification;
+import com.example.edam.model.NotificationPreference;
+import com.example.edam.repository.NotificationPreferenceRepository;
+import com.example.edam.repository.NotificationRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import com.example.edam.audit.AuditOp;
 import com.example.edam.audit.AuditOpType;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -13,7 +20,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -29,6 +38,10 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Tag(name = "notifications", description = "通知与消息")
 public class NotificationsController {
+
+    private final NotificationRepository notificationRepository;
+    private final NotificationPreferenceRepository preferenceRepository;
+    private final ObjectMapper objectMapper;
 
     /**
      * 旧的 WebSocket 占位端点。
@@ -64,12 +77,32 @@ public class NotificationsController {
         @CurrentUserId Long userId) {
 
         log.info("notifications_list user_id={} is_read={} type={}", userId, is_read, type);
+
+        LambdaQueryWrapper<Notification> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Notification::getUserId, userId);
+        if (is_read != null) {
+            wrapper.eq(Notification::getIsRead, is_read ? 1 : 0);
+        }
+        if (type != null && !type.isBlank()) {
+            wrapper.eq(Notification::getType, type.trim());
+        }
+        // 过期通知不再展示
+        wrapper.and(w -> w.isNull(Notification::getExpiresAt)
+                         .or().gt(Notification::getExpiresAt, LocalDateTime.now()));
+        wrapper.orderByDesc(Notification::getCreatedAt);
+
+        Page<Notification> result = notificationRepository.selectPage(
+            new Page<>(Math.max(1, page), Math.min(100, Math.max(1, page_size))), wrapper);
+
         Map<String, Object> response = new HashMap<>();
-        response.put("items", java.util.List.of());
+        response.put("items", result.getRecords().stream().map(this::toItem).toList());
         response.put("pagination", Map.of(
-            "page", page, "page_size", page_size, "total", 0, "total_pages", 0
+            "page", result.getCurrent(),
+            "page_size", result.getSize(),
+            "total", result.getTotal(),
+            "total_pages", result.getPages()
         ));
-        response.put("unread_count", 0);
+        response.put("unread_count", notificationRepository.countUnread(userId));
         return response;
     }
 
@@ -80,6 +113,13 @@ public class NotificationsController {
     public ResponseEntity<Void> markRead(
         @PathVariable("notif_id") Long notifId,
         @CurrentUserId Long userId) {
+        // 带 user_id 条件 —— 否则任何人都能把别人的通知标成已读
+        int updated = notificationRepository.markRead(notifId, userId);
+        if (updated == 0) {
+            // 别人的通知 / 不存在的通知 —— 404 而不是静默 204
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "通知不存在或不属于当前用户");
+        }
         log.info("notification_read notif_id={} user_id={}", notifId, userId);
         return ResponseEntity.noContent().build();
     }
@@ -89,19 +129,21 @@ public class NotificationsController {
     @AuditOp(op = AuditOpType.UPDATE, resourceType = "notification",
         detail = "action=mark_all_read")
     public Map<String, Object> markAllRead(@CurrentUserId Long userId) {
-        log.info("notifications_read_all user_id={}", userId);
-        return Map.of("updated_count", 0);
+        int updated = notificationRepository.markAllRead(userId);
+        log.info("notifications_read_all user_id={} updated={}", userId, updated);
+        return Map.of("updated_count", updated);
     }
 
     @GetMapping("/notifications/preferences")
     @Operation(summary = "获取通知偏好")
     @AuditOp(op = AuditOpType.DETAIL, resourceType = "notification_preference")
     public Map<String, Object> getPreferences(@CurrentUserId Long userId) {
-        return Map.of(
-            "channels", Map.of("email", true, "sms", false, "im_webhook", true, "in_app", true),
-            "types", Map.of("approval", true, "key_alert", true, "driver_alert", true, "compliance", true, "system", true),
-            "quiet_hours", Map.of("enabled", true, "start", "22:00", "end", "08:00")
-        );
+        NotificationPreference pref = preferenceRepository.findByUserId(userId);
+        if (pref == null) {
+            // 还没有偏好记录 → 返回默认偏好（**不落库**，等用户改）
+            return defaultPreferences();
+        }
+        return toPreferencesResponse(pref);
     }
 
     @PutMapping("/notifications/preferences")
@@ -110,7 +152,103 @@ public class NotificationsController {
     public Map<String, Object> updatePreferences(
         @RequestBody Map<String, Object> body,
         @CurrentUserId Long userId) {
-        log.info("notification_preferences_updated user_id={}", userId);
-        return body;
+
+        // 此前这里是**原样回显请求体** —— 用户以为设置保存了，
+        // 其实什么都没落库。现在真的写 notification_preferences 表。
+        NotificationPreference pref = preferenceRepository.findByUserId(userId);
+        boolean creating = pref == null;
+        if (creating) {
+            pref = new NotificationPreference();
+            pref.setUserId(userId);
+        }
+
+        if (body.containsKey("channels")) {
+            pref.setChannels(toJson(body.get("channels")));
+        }
+        if (body.containsKey("types")) {
+            pref.setTypes(toJson(body.get("types")));
+        }
+        if (body.containsKey("quiet_hours")) {
+            Object qh = body.get("quiet_hours");
+            Map<?, ?> quiet = qh instanceof Map ? (Map<?, ?>) qh : Map.of();
+            pref.setQuietHoursEnabled(Boolean.TRUE.equals(quiet.get("enabled")) ? 1 : 0);
+            Object start = quiet.get("start");
+            Object end = quiet.get("end");
+            pref.setQuietHoursStart(start == null ? null : String.valueOf(start));
+            pref.setQuietHoursEnd(end == null ? null : String.valueOf(end));
+        }
+
+        if (creating) {
+            preferenceRepository.insert(pref);
+        } else {
+            preferenceRepository.updateById(pref);
+        }
+        log.info("notification_preferences_updated user_id={} created={}", userId, creating);
+        return toPreferencesResponse(pref);
+    }
+
+    // ==================================================================
+    // 内部
+    // ==================================================================
+
+    /**
+     * 默认偏好（用户还没有偏好记录时）。
+     */
+    private Map<String, Object> defaultPreferences() {
+        return Map.of(
+            "channels", Map.of(
+                "email", true, "sms", false, "im_webhook", true, "in_app", true),
+            "types", Map.of(
+                "approval", true, "key_alert", true, "driver_alert", true,
+                "compliance", true, "system", true),
+            "quiet_hours", Map.of(
+                "enabled", false, "start", "22:00:00", "end", "08:00:00")
+        );
+    }
+
+    private Map<String, Object> toPreferencesResponse(NotificationPreference pref) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("channels", parseJson(pref.getChannels()));
+        response.put("types", parseJson(pref.getTypes()));
+        response.put("quiet_hours", Map.of(
+            "enabled", pref.getQuietHoursEnabled() != null && pref.getQuietHoursEnabled() == 1,
+            "start", pref.getQuietHoursStart() == null ? "22:00:00" : pref.getQuietHoursStart(),
+            "end", pref.getQuietHoursEnd() == null ? "08:00:00" : pref.getQuietHoursEnd()
+        ));
+        return response;
+    }
+
+    private Map<String, Object> toItem(Notification n) {
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", n.getId());
+        item.put("type", n.getType());
+        item.put("title", n.getTitle());
+        item.put("content", n.getContent());
+        item.put("related_resource_type", n.getRelatedResourceType());
+        item.put("related_resource_id", n.getRelatedResourceId());
+        item.put("is_read", n.getIsRead() != null && n.getIsRead() == 1);
+        item.put("created_at", n.getCreatedAt());
+        item.put("expires_at", n.getExpiresAt());
+        return item;
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("无法序列化为 JSON: " + e.getMessage());
+        }
+    }
+
+    private Object parseJson(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            log.warn("notification_preference_json_invalid: {}", e.getMessage());
+            return Map.of();
+        }
     }
 }

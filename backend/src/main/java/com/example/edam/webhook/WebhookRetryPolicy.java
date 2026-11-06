@@ -61,4 +61,11 @@ public class WebhookRetryPolicy {
     public boolean shouldRetry(int attempt) {
         return enabled && attempt < maxAttempts;
     }
+
+    /**
+     * 退避档位数量 —— 用于按档位声明延迟队列（见 {@code RabbitConfig}）。
+     */
+    public int getBackoffCount() {
+        return backoffMillis.length;
+    }
 }

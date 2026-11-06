@@ -1548,13 +1548,17 @@ paths:
     put:
       tags: [notifications]
       summary: 更新通知偏好
+      description: |
+        真的写入 `notification_preferences` 表（此前是**原样回显请求体** ——
+        用户以为设置保存了，其实什么都没落库）。
+        一个用户只有一条偏好记录，重复 PUT 是覆盖更新。
       requestBody:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/NotificationPreferences' }
       responses:
         '200':
-          description: 成功
+          description: 成功（返回的是**落库后**的值）
 
   # ===== Webhook 回调（v3.1 新增）=====
   /webhooks:
@@ -1577,6 +1581,14 @@ paths:
       description: |
         注册外部系统回调 URL，事件触发时推送。
         回调 URL 必须支持 HTTPS；签名机制：HMAC-SHA256(secret, body)
+
+        **注册是真的落库**（webhook 表），secret 明文只在创建响应里返回一次，
+        库里只存 SHA-256 哈希。
+
+        ⚠️ **投递（delivery）链路尚未接线** —— 目前**没有**任何事件会触发投递，
+        所以注册后不会收到回调。原因：签名需要 secret 明文，而表里只有哈希
+        （可签名的密钥存储方案待定），且首次投递没有触发入口。
+        详见 README 的「已知限制」。
       requestBody:
         content:
           application/json:
@@ -1588,6 +1600,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Webhook'
+        '400':
+          description: url 非法（为空 / 非 http(s) / 指向内网或回环地址）
 
   /webhooks/{webhook_id}:
     parameters:
