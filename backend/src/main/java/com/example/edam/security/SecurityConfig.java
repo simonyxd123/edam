@@ -64,6 +64,11 @@ public class SecurityConfig {
                 // SSO：登录跳转 / 回调 / 元数据 / 一次性登录码交换
                 // 都要匿名可达（回调发生在用户还没拿到 token 的时候）
                 .requestMatchers("/auth/sso/**").permitAll()
+                // WebAuthn 无密码登录：登录两步都要匿名可达
+                // （用户此刻还没有 token）。注册与凭据管理仍需已登录身份。
+                // 端点内部有登录限流（IP 5/min + 工号 3/min）。
+                .requestMatchers(HttpMethod.POST,
+                    "/auth/webauthn/login/begin", "/auth/webauthn/login/complete").permitAll()
                 .requestMatchers("/health", "/health/live", "/health/ready").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 .requestMatchers("/ws/**").permitAll()

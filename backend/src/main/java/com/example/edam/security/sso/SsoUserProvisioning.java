@@ -2,18 +2,16 @@ package com.example.edam.security.sso;
 
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
-import com.example.edam.security.JwtTokenProvider;
+import com.example.edam.security.LoginAttemptService;
+import com.example.edam.service.TokenIssuanceService;
+import com.example.edam.service.UserRoleService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.UUID;
 
 /**
  * SSO 用户自动开通（JIT Provisioning）（v3.3 W-4.4）
@@ -32,8 +30,9 @@ import java.util.UUID;
 public class SsoUserProvisioning {
 
     private final SysUserRepository userRepository;
-    private final StringRedisTemplate redisTemplate;
-    private final JwtTokenProvider jwtTokenProvider;
+    private final UserRoleService userRoleService;
+    private final LoginAttemptService loginAttemptService;
+    private final TokenIssuanceService tokenIssuanceService;
 
     @Value("${edam.sso.default-dept-code:external}")
     private String defaultDeptCode;
@@ -51,6 +50,9 @@ public class SsoUserProvisioning {
         if (existing == null) {
             // 新用户 → 自动开通
             SysUser newUser = createNewUser(userInfo);
+            // 必须在 RBAC 表里真的给一个角色，否则签发 JWT 时只能拿到兜底角色。
+            // 外部身份源的用户同样受 EDAM 权限目录约束。
+            userRoleService.grantRoleByCode(newUser.getId(), defaultRoleCode);
             userInfo.setNewlyProvisioned(true);
             log.info("sso_user_provisioned user_id={} employee_no={} provider={}",
                 newUser.getId(), newUser.getEmployeeNo(), userInfo.getProviderId());
@@ -77,27 +79,25 @@ public class SsoUserProvisioning {
             throw new IllegalArgumentException("User not provisioned: " + userInfo.getEmployeeNo());
         }
 
-        // 1. 创建 session_id
-        String sessionId = UUID.randomUUID().toString();
+        // 1. 账号状态检查（锁定 / 禁用）—— 与密码登录、WebAuthn 登录同一套判定。
+        //    SSO 用户被 IdP 标记离职后会被 disableUser() 置为 status=2，
+        //    这里必须挡住，否则离职账号照样能凭一张 SSO 登录票据换到有效 JWT。
+        loginAttemptService.assertLoginAllowed(user);
 
-        // 2. 创建 JWT Token（角色 + 最小权限列表，保证 SSO 登录后能用 /auth/me）
-        List<String> roles = userInfo.getRoles() != null ? userInfo.getRoles()
-            : List.of("ROLE_" + defaultRoleCode.toUpperCase());
-        String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, roles, List.of("dashboard:read", "video:read", "document:read"));
-        String refreshToken = jwtTokenProvider.createRefreshToken();
+        // 2. 签发 JWT —— 角色与权限码一律从 RBAC 表读。
+        //    此前这里写死了三条最小权限（dashboard:read / video:read / document:read），
+        //    等于 SSO 登录绕过 RBAC：管理员用 SSO 登录只能当普通员工。
+        //    IdP 传来的 roles 只是 IdP 侧的命名，与 EDAM 的权限目录不是一回事，
+        //    因此不直接写进 JWT —— EDAM 的授权只认 sys_role / sys_permission。
+        TokenIssuanceService.IssuedTokens tokens = tokenIssuanceService.issue(user);
 
-        // 3. 存储 session（Redis）
-        String redisKey = "refresh:" + refreshToken;
-        redisTemplate.opsForValue().set(redisKey,
-            String.valueOf(user.getId()),
-            Duration.ofDays(7));
+        loginAttemptService.recordSuccess(user);
 
         SsoLoginResult result = new SsoLoginResult();
-        result.setAccessToken(accessToken);
-        result.setRefreshToken(refreshToken);
+        result.setAccessToken(tokens.getAccessToken());
+        result.setRefreshToken(tokens.getRefreshToken());
         result.setUserId(user.getId());
-        result.setSessionId(sessionId);
+        result.setSessionId(tokens.getSessionId());
         return result;
     }
 

@@ -1,10 +1,8 @@
 package com.example.edam.service;
 
-import com.example.edam.exception.AccountLockedException;
 import com.example.edam.exception.ResourceNotFoundException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
-import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.security.LoginAttemptService;
 import com.example.edam.security.TotpUtil;
 import lombok.RequiredArgsConstructor;
@@ -16,13 +14,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
-import java.time.OffsetDateTime;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 鉴权服务
@@ -32,24 +25,24 @@ import java.util.UUID;
  * - 当前用户
  *
  * v3.2 V-1 RBAC：login/refresh 从 DB 读真实角色；getCurrentUser 返回 roles+permissions
+ * v3.4.1：token 签发收敛到 {@link TokenIssuanceService}，与 WebAuthn / SSO 共用
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
-    private static final int MAX_FAILED_ATTEMPTS = 5;
-    private static final int LOCK_DURATION_MINUTES = 30;
+    private static final int MAX_FAILED_ATTEMPTS = LoginAttemptService.MAX_FAILED_ATTEMPTS;
 
     private final SysUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-    private final JwtTokenProvider jwtTokenProvider;
     private final StringRedisTemplate redisTemplate;
     private final AuditService auditService;
     private final PermissionService permissionService;
     private final UserRoleService userRoleService;
     private final LoginAttemptService loginAttemptService;
     private final PasswordService passwordService;
+    private final TokenIssuanceService tokenIssuanceService;
 
     /**
      * 自助修改个人资料。
@@ -110,13 +103,8 @@ public class AuthService {
             throw new ResourceNotFoundException("工号或密码错误");
         }
 
-        // 2. 检查账号状态
-        if (user.getStatus() == 3) {
-            throw new AccountLockedException(LOCK_DURATION_MINUTES * 60L);
-        }
-        if (user.getStatus() == 2) {
-            throw new IllegalArgumentException("账号已禁用，请联系管理员");
-        }
+        // 2. 检查账号状态（锁定 / 禁用）—— 三条登录路径共用同一套判定
+        loginAttemptService.assertLoginAllowed(user);
 
         // 3. 密码校验
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
@@ -146,35 +134,21 @@ public class AuthService {
         loginAttemptService.recordSuccess(user);
 
         // 6. 签发 token（角色 + 权限码 都写进 claims，让 @PreAuthorize 能校验）
-        String sessionId = UUID.randomUUID().toString();
-        List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
-        if (roleCodes.isEmpty()) {
-            roleCodes.add("employee");  // 兜底
-        }
-        List<String> permissionCodes = new ArrayList<>(
-            permissionService.getUserPermissionCodes(user.getId()));
-        String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, roleCodes, permissionCodes);
-        String refreshToken = jwtTokenProvider.createRefreshToken();
-
-        // 7. 存储 refresh_token 到 Redis
-        redisTemplate.opsForValue().set(
-            "refresh:" + refreshToken,
-            String.valueOf(user.getId()),
-            Duration.ofDays(7)
-        );
+        //    统一走 TokenIssuanceService —— WebAuthn / SSO 登录也走同一条路径，
+        //    保证任何登录方式拿到的权限都来自 RBAC 表。
+        TokenIssuanceService.IssuedTokens tokens = tokenIssuanceService.issue(user);
 
         log.info("用户登录成功: employee_no={}, session_id={}, roles={}",
-            employeeNo, sessionId, roleCodes);
+            employeeNo, tokens.getSessionId(), tokens.getRoleCodes());
 
         // 审计日志由 Controller 层的 @AuditOp 注解 + 审计切面自动写
         // （成功/失败/拒绝三态齐全，且带真实 IP —— 手工 log 只能记到成功）
 
         Map<String, Object> response = new HashMap<>();
-        response.put("access_token", accessToken);
-        response.put("refresh_token", refreshToken);
+        response.put("access_token", tokens.getAccessToken());
+        response.put("refresh_token", tokens.getRefreshToken());
         response.put("token_type", "Bearer");
-        response.put("expires_in", 600);
+        response.put("expires_in", tokenIssuanceService.accessTokenTtlSeconds());
         response.put("user_id", user.getId());  // v3.2 V-1 RBAC：审计日志需要 user_id
         return response;
     }
@@ -193,19 +167,12 @@ public class AuthService {
         }
 
         // 从 DB 读真实角色 + 权限码，写进 token
-        List<String> roleCodes = new ArrayList<>(userRoleService.getRoleCodes(user.getId()));
-        if (roleCodes.isEmpty()) {
-            roleCodes.add("employee");
-        }
-        List<String> permissionCodes = new ArrayList<>(
-            permissionService.getUserPermissionCodes(user.getId()));
-        String newAccessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), UUID.randomUUID().toString(), roleCodes, permissionCodes);
+        TokenIssuanceService.IssuedTokens tokens = tokenIssuanceService.refresh(user);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("access_token", newAccessToken);
+        response.put("access_token", tokens.getAccessToken());
         response.put("token_type", "Bearer");
-        response.put("expires_in", 600);
+        response.put("expires_in", tokenIssuanceService.accessTokenTtlSeconds());
         return response;
     }
 

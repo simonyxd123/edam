@@ -2,13 +2,19 @@ package com.example.edam.security.webauthn;
 
 import com.example.edam.audit.AuditOp;
 import com.example.edam.audit.AuditOpType;
+import com.example.edam.exception.RateLimitExceededException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
-import com.example.edam.security.JwtTokenProvider;
+import com.example.edam.security.ClientIpResolver;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.security.LoginAttemptService;
+import com.example.edam.security.LoginRateLimiter;
+import com.example.edam.security.TotpUtil;
+import com.example.edam.service.TokenIssuanceService;
 import com.example.edam.util.TimeUtil;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,7 +44,10 @@ public class WebAuthnController {
     private final WebAuthnRegistrationService registrationService;
     private final WebAuthnAuthenticationService authenticationService;
     private final SysUserRepository userRepository;
-    private final JwtTokenProvider jwtTokenProvider;
+    private final LoginAttemptService loginAttemptService;
+    private final TokenIssuanceService tokenIssuanceService;
+    private final LoginRateLimiter loginRateLimiter;
+    private final ClientIpResolver clientIpResolver;
 
     // ========================================================================
     // W-5.2 注册流程
@@ -145,9 +154,16 @@ public class WebAuthnController {
     @AuditOp(op = AuditOpType.LOGIN, resourceType = "webauthn_credential",
       detail = "action=login_begin", hideParams = true)
     public ResponseEntity<LoginChallengeResponse> beginLogin(
-            @RequestBody BeginLoginRequest request) {
+            @RequestBody BeginLoginRequest request,
+            HttpServletRequest httpRequest) {
 
         String employeeNo = request.getEmployeeNo();
+
+        // 限流：与密码登录同一套策略（IP 5/min + 工号 3/min）。
+        // WebAuthn 登录是匿名的，不限流就能被用来枚举工号
+        // （allowCredentials 的有无会暴露"这个人注册过密钥没有"）。
+        enforceLoginRateLimit(employeeNo, httpRequest);
+
         String challenge = challengeStore.generateChallenge();
 
         // 1. 获取该用户的已注册凭据
@@ -182,9 +198,13 @@ public class WebAuthnController {
     @AuditOp(op = AuditOpType.LOGIN, resourceType = "webauthn_credential",
       detail = "action=login_complete", hideParams = true)
     public ResponseEntity<LoginCompleteResponse> completeLogin(
-            @RequestBody CompleteLoginRequest request) {
+            @RequestBody CompleteLoginRequest request,
+            HttpServletRequest httpRequest) {
 
         String employeeNo = request.getEmployeeNo();
+
+        // 0. 限流（与密码登录同一套策略）
+        enforceLoginRateLimit(employeeNo, httpRequest);
 
         // 1. 验证 challenge
         if (!challengeStore.consumeChallenge("login", employeeNo, request.getChallenge())) {
@@ -204,18 +224,46 @@ public class WebAuthnController {
                 .body(new LoginCompleteResponse(false, "Assertion 验证失败: " + e.getMessage(), null, null));
         }
 
-        // 3. 签发 JWT Token
-        String sessionId = UUID.randomUUID().toString();
-        String accessToken = jwtTokenProvider.createAccessToken(
-            user.getId(), sessionId, List.of("ROLE_EMPLOYEE"),
-                List.of("dashboard:read", "video:read", "document:read"));
-        String refreshToken = jwtTokenProvider.createRefreshToken();
+        // 3. 账号状态检查（锁定 / 禁用）—— 与密码登录同一套判定。
+        //    此前这条路径完全没查状态，已离职的账号照样能用安全密钥换到有效 JWT。
+        try {
+            loginAttemptService.assertLoginAllowed(user);
+        } catch (RuntimeException e) {
+            log.warn("webauthn_login_rejected employee_no={} reason={}",
+                employeeNo, e.getMessage());
+            return ResponseEntity.badRequest()
+                .body(new LoginCompleteResponse(false, e.getMessage(), null, null));
+        }
 
-        log.info("webauthn_login_success user_id={} employee_no={}",
-            user.getId(), employeeNo);
+        // 4. MFA 校验 —— 用户启用了 MFA 时仍需 TOTP。
+        //    WebAuthn 本身是"持有证明"，但它只证明"是这个认证器"，
+        //    不替代系统策略里已启用的第二因子。
+        if (user.getMfaEnabled() != null && user.getMfaEnabled() == 1) {
+            String mfaCode = request.getMfaCode();
+            if (mfaCode == null || mfaCode.isBlank()) {
+                return ResponseEntity.badRequest()
+                    .body(new LoginCompleteResponse(false, "MFA 验证码必填", null, null));
+            }
+            if (!TotpUtil.verify(user.getMfaSecret(), mfaCode)) {
+                loginAttemptService.recordFailure(user, LoginAttemptService.MAX_FAILED_ATTEMPTS);
+                return ResponseEntity.badRequest()
+                    .body(new LoginCompleteResponse(false, "MFA 验证码错误", null, null));
+            }
+        }
+
+        // 5. 签发 JWT —— 角色与权限码一律从 RBAC 表读。
+        //    此前这里写死了 ROLE_EMPLOYEE + 三条固定权限码，
+        //    等于 WebAuthn 登录完全绕过 RBAC（管理员会被降级成普通员工，
+        //    反过来没角色的用户反倒拿到了那三条权限）。
+        TokenIssuanceService.IssuedTokens tokens = tokenIssuanceService.issue(user);
+
+        loginAttemptService.recordSuccess(user);
+
+        log.info("webauthn_login_success user_id={} employee_no={} roles={}",
+            user.getId(), employeeNo, tokens.getRoleCodes());
 
         return ResponseEntity.ok(new LoginCompleteResponse(
-            true, "登录成功", accessToken, refreshToken));
+            true, "登录成功", tokens.getAccessToken(), tokens.getRefreshToken()));
     }
 
     // ========================================================================
@@ -269,6 +317,29 @@ public class WebAuthnController {
     // ========================================================================
     // DTO 类
     // ========================================================================
+
+    /**
+     * 登录限流 —— 与密码登录共用 {@link LoginRateLimiter}（IP 5/min + 工号 3/min）。
+     *
+     * <p>WebAuthn 登录端点是匿名的，不限流就能被用来：
+     * <ul>
+     *   <li>刷 challenge 撑大 Redis</li>
+     *   <li>枚举工号 —— {@code allowCredentials} 的有无会暴露"这个人注册过密钥没有"</li>
+     * </ul>
+     */
+    private void enforceLoginRateLimit(String employeeNo, HttpServletRequest httpRequest) {
+        String clientIp = clientIpResolver.resolve(httpRequest);
+        LoginRateLimiter.RateLimitResult result = loginRateLimiter.check(clientIp, employeeNo);
+        if (!result.isAllowed()) {
+            log.warn("webauthn_login_rate_limited employee_no={} client_ip={} dimension={}",
+                employeeNo, clientIp, result.getDeniedDimension());
+            throw new RateLimitExceededException(
+                result.getDeniedDimension(),
+                result.getRetryAfterSeconds(),
+                result.getRemainingTokens()
+            );
+        }
+    }
 
     @Data
     public static class BeginRegistrationRequest {
@@ -359,6 +430,8 @@ public class WebAuthnController {
         private String authenticatorData;  // CBOR 编码的 authenticatorData
         private String clientDataJSON;
         private String signature;
+        /** 启用了 MFA 的账号必须带上 TOTP 验证码 */
+        private String mfaCode;
     }
 
     @Data

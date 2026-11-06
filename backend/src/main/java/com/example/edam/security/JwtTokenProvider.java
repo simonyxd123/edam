@@ -128,6 +128,21 @@ public class JwtTokenProvider {
     }
 
     /**
+     * access_token 有效期（秒）—— 供响应体 {@code expires_in} 与
+     * refresh_token 落库 TTL 使用，避免各处硬编码 600 / 7 天。
+     */
+    public long getAccessTokenTtlSeconds() {
+        return accessTokenTtlSeconds;
+    }
+
+    /**
+     * refresh_token 有效期（秒）
+     */
+    public long getRefreshTokenTtlSeconds() {
+        return refreshTokenTtlSeconds;
+    }
+
+    /**
      * 签发 refresh_token（不透明字符串）
      */
     public String createRefreshToken() {

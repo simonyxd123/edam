@@ -1,5 +1,6 @@
 package com.example.edam.security;
 
+import com.example.edam.exception.AccountLockedException;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +28,38 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class LoginAttemptService {
 
+    /** 连续失败达到该次数即锁定账号 */
+    public static final int MAX_FAILED_ATTEMPTS = 5;
+
+    /** 账号锁定时长（分钟） */
+    public static final int LOCK_DURATION_MINUTES = 30;
+
     private final SysUserRepository userRepository;
+
+    /**
+     * 登录准入检查 —— 账号被锁定 / 禁用时拒绝登录。
+     *
+     * <p>此前这个检查只写在 {@code AuthService.login()}（密码登录）里，
+     * 于是 <b>WebAuthn 登录</b>与 <b>SSO 登录</b>两条路径完全绕过了它：
+     * 一个已锁定或已离职的账号，照样能用安全密钥换到一张有效的 JWT。
+     *
+     * <p>现在三条登录路径统一走这里。
+     *
+     * @throws AccountLockedException 账号锁定中
+     * @throws IllegalArgumentException 账号已禁用
+     */
+    public void assertLoginAllowed(SysUser user) {
+        if (user == null) {
+            throw new IllegalArgumentException("用户不存在");
+        }
+        Integer status = user.getStatus();
+        if (status != null && status == 3) {
+            throw new AccountLockedException(LOCK_DURATION_MINUTES * 60L);
+        }
+        if (status != null && status == 2) {
+            throw new IllegalArgumentException("账号已禁用，请联系管理员");
+        }
+    }
 
     /**
      * 记录一次登录失败（独立事务，不受外层回滚影响）。
