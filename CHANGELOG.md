@@ -188,10 +188,10 @@
 
 ### 验证
 
-- 后端 161 → **189** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+- 后端 161 → **219** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
 - 前端 58 用例全绿；`npm run build` 内置 vue-tsc 类型检查通过
-- Worker 68 → **92** 用例（90 通过 / 2 跳过，缺 ffmpeg 与 PyPDF2）
+- Worker 68 → **101** 用例（99 通过 / 2 跳过，缺 ffmpeg 与 PyPDF2）
 - 端点对账 95 ↔ 95 → **98 ↔ 98 / 100%**
 
 ---

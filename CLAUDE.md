@@ -85,7 +85,7 @@ python scripts/build_manual_pdf.py
 | --- | --- |
 | 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 |
 | 流媒体 | Nginx（secure_link）+ FFmpeg |
-| 异步队列 | RabbitMQ（3 条队列：video/document preprocess + watermark） |
+| 异步队列 | RabbitMQ（2 条队列：video / document preprocess） |
 | 盲水印 | Python 3.10 + OpenCV + blind-watermark |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus + hls.js |
 | 存储 | MySQL 8.0 + Redis + MinIO |
