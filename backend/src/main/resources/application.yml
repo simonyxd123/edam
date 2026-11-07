@@ -111,6 +111,16 @@ edam:
     secret: ${JWT_SECRET:dev-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256}
     access-token-ttl-seconds: 600
     refresh-token-ttl-seconds: 604800
+    # 签名算法：HS256（HMAC-SHA256，默认）或 GS256（国密 SM3-HMAC）。
+    # 切到 GS256 后**所有调用方无需改动** —— JwtTokenProvider 内部按这个值
+    # 择一签发，验签则按 token header 里的 alg 派发，所以切换过程中
+    # 新旧 token 都能用，不会把在线用户踢下线。
+    algorithm: ${JWT_ALGORITHM:HS256}
+  crypto:
+    # 国密总开关。true 时 selectSymmetric/selectHmac/selectDigest 优先选国密算法。
+    # 注意：目前只有 **JWT 签名**这一段真的接了国密；
+    # 存储层加密仍走统一的 AES-256-GCM，没有按 L3+ 强制切 SM4。
+    use-gmsm: ${USE_GMSM:false}
   # Worker → Backend 回调共享密钥。
   # PATCH /videos/{id}/status 用它鉴权（原先 permitAll，谁都能把没转码的视频标成 ready）。
   # Worker 侧用同名环境变量 WORKER_TOKEN 注入。留空则回调一律拒绝（fail-closed）。

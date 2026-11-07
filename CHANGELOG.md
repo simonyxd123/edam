@@ -152,6 +152,34 @@
 - 仍未接线（已写进 README 的「已知限制」）：投递触发入口（没有任何事件
   会触发回调 —— 签名需要 secret 明文而表里只有哈希）、通知的生产者
 
+#### 国密链路：接上了（JWT 签名）
+
+- 此前 `SmJwtTokenProvider` **完全不能用**，三个真 bug：
+  1. `parseSm3Token` 调 `Jwts.parser().parseSignedClaims(token)` ——
+     jjwt 不认识 `GS256`，**任何 GS256 token 都解析不出来**
+  2. claim 名对不上：写的是 `sid`，`JwtAuthenticationFilter` 读的是
+     `session_id`；而且**根本没有 permissions claim** ⇒
+     所有 `@PreAuthorize` 都会 403
+  3. payload 用 `String.format` 手工拼 JSON，角色码里的 `"` 与 `\`
+     没有转义 ⇒ 能拼出非法 JSON
+- 而且它**零调用** —— `AlgorithmRouter` 与 `SmJwtTokenProvider` 都标着
+  `@Deprecated(since="3.4.0")`，一段永远跑不到的代码怎么测都"绿"
+- 现在的接线方式：`edam.jwt.algorithm=GS256` 时，`JwtTokenProvider`
+  内部把签发与验签都交给国密 provider ——
+  **所有调用方一行都不用改**（签发、播放 token、WebSocket 握手全都不动）
+- 验签按 token header 里的 `alg` 派发，而不是按当前配置 ——
+  这样从 HS256 切到 GS256 的过程中，已签发的旧 token 仍可用，
+  不会把在线用户全踢下线
+- `JwtAuthenticationFilter` 原先**自己**解析了一遍 JWT（固定 HMAC-SHA256），
+  签发端切国密它也不认 ⇒ 现在收敛到 `JwtTokenProvider`，两边必然一致
+- payload 改用 Jackson 序列化（自动转义），签名算法经 `AlgorithmRouter` 选取
+- 补 `exp` 过期校验 —— 手工解析绕开了 jjwt 的过期检查，
+  不自己查就等于**永不过期的 token**
+- 配置项 `edam.jwt.algorithm` / `edam.crypto.use-gmsm` 此前**在 yml 里
+  根本不存在**（只有 `@Value` 的默认值兜底），现已显式声明
+- 仍未覆盖：存储层加密仍统一走 AES-256-GCM，没有按"密级 L3+ 强制国密"
+  切到 SM4；国密 JWT 用的是普通 SM3-HMAC，**不是商密合规的密码模块**
+
 ### 变更
 
 - 权限码是**登录那一刻**的快照 —— 改了角色必须重新登录才生效（管理员手册已提醒）

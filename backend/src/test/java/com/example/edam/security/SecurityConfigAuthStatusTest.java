@@ -64,7 +64,10 @@ class SecurityConfigAuthStatusTest {
         /** 只需要一个"什么都不做"的 JWT 过滤器：本测试关注的是链路的响应码。 */
         @Bean
         JwtAuthenticationFilter jwtAuthenticationFilter() {
-            return new JwtAuthenticationFilter() {
+            // 占位签名密钥 —— 只为满足最小长度校验，不是凭据
+            return new JwtAuthenticationFilter(
+                new JwtTokenProvider(
+                    "placeholder-signing-key-for-unit-tests-only-not-a-credential")) {
                 @Override
                 protected void doFilterInternal(HttpServletRequest request,
                                                 HttpServletResponse response,

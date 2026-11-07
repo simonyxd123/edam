@@ -27,6 +27,13 @@ import java.util.Map;
  * - Token 不携带 PII（如姓名、工号明文）
  * - 仅携带 user_id_hash（SHA-256）
  * - 使用 HMAC-SHA256 签名
+ *
+ * <p><b>v3.4.1：国密链路已接线</b>。{@code edam.jwt.algorithm=GS256} 时，
+ * 签发与验签都交给 {@link SmJwtTokenProvider}（SM3-HMAC 国密签名）。
+ * <b>所有调用方一行都不用改</b> —— 切换只发生在这个类内部。
+ *
+ * <p>验签时按 token header 里的 {@code alg} 派���（而不是按当前配置），
+ * 这样配置切换期间新旧 token 都能正常用，不会把用户全踢下线。
  */
 @Slf4j
 @Component
@@ -34,14 +41,38 @@ public class JwtTokenProvider {
 
     private final SecretKey signingKey;
 
+    /** 国密 provider；为空表示不启用国密（测试里手工 new 时为 null） */
+    private final SmJwtTokenProvider smProvider;
+
+    /** 签发时用的算法：HS256（默认）或 GS256（国密） */
+    private final String algorithm;
+
     @Value("${edam.jwt.access-token-ttl-seconds:600}")
     private long accessTokenTtlSeconds;
 
     @Value("${edam.jwt.refresh-token-ttl-seconds:604800}")
     private long refreshTokenTtlSeconds;
 
-    public JwtTokenProvider(@Value("${edam.jwt.secret}") String secret) {
+    /** 仅供测试 / 单测构造用 */
+    public JwtTokenProvider(String secret) {
+        this(secret, "HS256", null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public JwtTokenProvider(
+            @Value("${edam.jwt.secret}") String secret,
+            @Value("${edam.jwt.algorithm:HS256}") String algorithm,
+            SmJwtTokenProvider smProvider) {
         this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        this.algorithm = algorithm == null ? "HS256" : algorithm.toUpperCase();
+        this.smProvider = smProvider;
+    }
+
+    /**
+     * 当前是否用国密签名签发。
+     */
+    public boolean isGmsmEnabled() {
+        return SmJwtTokenProvider.ALG_GS256.equals(algorithm) && smProvider != null;
     }
 
     /**
@@ -51,6 +82,9 @@ public class JwtTokenProvider {
      */
     public String createAccessToken(Long userId, String sessionId,
                                    List<String> roles, List<String> permissions) {
+        if (isGmsmEnabled()) {
+            return smProvider.createAccessToken(userId, sessionId, roles, permissions);
+        }
         Date now = new Date();
         Date expiry = new Date(now.getTime() + accessTokenTtlSeconds * 1000);
 
@@ -88,6 +122,9 @@ public class JwtTokenProvider {
      * @param videoId 这个 token 只对这一个视频有效
      */
     public String createPlaybackToken(Long userId, Long videoId, String sessionId) {
+        if (isGmsmEnabled()) {
+            return smProvider.createPlaybackToken(userId, videoId, sessionId);
+        }
         Date now = new Date();
         Date expiry = new Date(now.getTime() + accessTokenTtlSeconds * 1000);
 
@@ -152,9 +189,20 @@ public class JwtTokenProvider {
     }
 
     /**
-     * 解析并验证 token
+     * 解析并验证 token。
+     *
+     * <p>按 token header 里的 {@code alg} 派发，而不是按当前配置 ——
+     * 这样把配置从 HS256 切到 GS256 的过程中，已签发的旧 token 仍然可用，
+     * 不会把在线用户全踢下线。
      */
     public Claims parseAndValidate(String token) {
+        if (SmJwtTokenProvider.isSm3Token(token)) {
+            if (smProvider == null) {
+                throw new IllegalArgumentException(
+                    "GS256 token，但未启用国密 provider（edam.jwt.algorithm 与 edam.worker.token 需一致）");
+            }
+            return smProvider.parseToken(token);
+        }
         return Jwts.parser()
                 .verifyWith(signingKey)
                 .build()

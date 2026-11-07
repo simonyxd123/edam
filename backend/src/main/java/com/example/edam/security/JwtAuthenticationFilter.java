@@ -1,15 +1,11 @@
 package com.example.edam.security;
 
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jws;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -18,17 +14,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import javax.crypto.SecretKey;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * JWT 鉴权过滤器
  * - 解析 Authorization Header
- * - 验证签名（HMAC-SHA256）
+ * - 验证签名（HS256 或 GS256，由 {@link JwtTokenProvider} 按 header 派发）
  * - 设置 Spring Security Context
  */
 @Slf4j
@@ -38,8 +31,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String AUTH_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
 
-    @Value("${edam.jwt.secret}")
-    private String jwtSecret;
+    /**
+     * 验签走 provider —— 它会按 token header 里的 alg 派发
+     * （HS256 / GS256 国密）。
+     *
+     * <p>此前过滤器**自己**解析了一遍（固定用 HMAC-SHA256），
+     * 于是即便签发端切到国密，验签端也不认 —— 两边必须一起改才行。
+     */
+    private final JwtTokenProvider jwtTokenProvider;
+
+    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+        this.jwtTokenProvider = jwtTokenProvider;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -49,13 +52,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (StringUtils.hasText(token)) {
             try {
-                SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
-                Jws<Claims> jws = Jwts.parser()
-                        .verifyWith(key)
-                        .build()
-                        .parseSignedClaims(token);
-
-                Claims claims = jws.getPayload();
+                Claims claims = jwtTokenProvider.parseAndValidate(token);
                 // principal 用 subject（= String.valueOf(userId)），便于后续
                 // SecurityContextHolder.getContext().getAuthentication().getName()
                 // 直接拿到 userId 字符串，配合 AuthService 的查询。

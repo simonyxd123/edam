@@ -25,19 +25,15 @@ import java.nio.charset.StandardCharsets;
  * | L2 | ✓ | - |
  * | L3 | ✓ | ✓ |
  * | L4 | ✓ | ✓ |
+ *
+ * <p><b>v3.4.1：已接线</b> —— {@link com.example.edam.security.SmJwtTokenProvider}
+ * 通过本类选取 HMAC 算法（SM3-HMAC），国密 JWT 链路不再是一段死代码。
+ *
+ * <p>仍待接线：<b>按密级</b>选择加密算法的那部分
+ * （存储层加密仍走统一的 AES-256-GCM，没有按 L3+ 强制切 SM4）。
  */
 @Slf4j
 @Component
-/**
- * @deprecated 当前**未被任何业务代码引用**。保留是因为它是方案书里
- * 已规划的能力（国密算法链路 / 自动密级打标），接线后即可移除这个注解。
- *
- * <p>参考：
- *   - {@code edam.crypto.use-gmsm=true} 时应切换到 {@link SmJwtTokenProvider}
- *   - 上传视频/文档时应调用 {@link ClassificationEnforcement} 做服务端密级裁决
- *     （目前密级完全由客户端传���的 classification_lv 决定）
- */
-@Deprecated(since = "3.4.0")
 public class AlgorithmRouter {
 
     public enum Algorithm {
