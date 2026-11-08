@@ -156,7 +156,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 | 组件 | 技术 | 规模 |
 |---|---|---|
-| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 99 端点 / 33 个测试类 / 244 用例 |
+| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 99 端点 / 36 个测试类 / 258 用例 |
 | Worker | Python 3.10 + FastAPI + aio-pika | 2 条队列 / 9 个测试文件 |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
 | 数据库 | MySQL 8.0 + Flyway | 15 个迁移 / **35 张表** |
@@ -486,6 +486,9 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | **access_token 不能即时吊销** | 紧急吊销（`POST /users/{id}/revoke-keys`，v3.4.2 已从空实现改成真吊销）能**立即**作废该用户全部 refresh_token ⇒ 续期通道当场断掉；但**已签发**的 access_token 是无状态 JWT、服务端无黑名单，最多再存活一个 TTL（默认 10 分钟）。这是 JWT 无状态的固有代价 |
 | **系统配置不可持久化** | 没有配置持久化端点。「设置 → 系统配置」Tab 里的值是后端 `application.yml` 的当前值，点「保存配置」会明确提示要走配置文件 + 重启 |
 | **外发审批的前端字段曾对不上** | v3.4.2 修：请求 DTO 缺 `@JsonProperty`，前端发的 `doc_id` / `external_recipient` / `valid_hours` 全绑不上 ⇒ 「发起外发审批」在界面上从来就没成功过（恒 400）。现已逐个标注 |
+| **审计导出** | v3.4.2 修：原先返回一个指向 `api.example.com` 的**伪造下载链接**（那个路由根本不存在）。现在**同步**返回真的 CSV（UTF-8 BOM，Excel 直接可开），带 MFA 二次校验，单次上限 5 万行。**前端审计页还没有导出按钮** —— 接口要手工调 |
+| **Webhook SSRF** | v3.4.2 收紧：协议白名单 + IPv4/IPv6/数字写法的私网判定 + **解析主机名后逐个判**（原先 `metadata.internal` 这类能直接过）+ 投递前重查 + 不跟随重定向 + 响应体限量读 64KB。**残留**：DNS 重绑定（检查在解析时刻，连接时刻可能解析出不同 IP） |
+| **国密切换不是"一刀切"** | `edam.jwt.algorithm=GS256` 只让**新签发**的 token 用 SM3-HMAC；验签端**仍然接受 HS256**（按 header 派发）—— 这是为了切换期间不踢在线用户下线。开了 GS256 ≠ 不再接受 SHA-256 签的 token |
 | ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
 | `fingerprint/` 下三个 Service | **算法已统一**（v3.4.1）：pHash 与盲水印各只有一份实现，两边逐位相同（此前 imagehash 与手写 DCT 并存 ⇒ 指纹对不上、匹配率 ≈ 0 且不报错）。泄露比对已可通过 `POST /ops/leak-detect` 调用，但产品链路未闭环（见上一行） |
 | SSO | 默认 `edam.sso.enabled: false` |

@@ -73,8 +73,68 @@
 | 可以自审自批 | 有 `distribution:approve` 的人能审批**自己**提交的申请 | 申请人 ≠ 审批人，否则 **403** |
 | 驳回可以不写理由 | 事后追责只剩"被拒了"三个字 | 驳回时 `comment` 为空 ⇒ **400** |
 
-### 文档（按代码为准，改掉手册里的失真描述）
+#### SSO 登录：部门被每次登录重置成「总公司」（会改小密级基线）
 
+`SsoUserProvisioning.resolveDeptId()` 忽略了自己的入参、**恒返回 1L**（总公司），
+而 `updateExistingUser()` 无条件用它覆盖用户部门 ⇒ **每登一次 SSO，
+用户的部门就被重置成「总公司」**。
+
+后果不止显示难看：密级基线是按**部门名**判定的（法务 / 审计 / 人力 → L3），
+「总公司」一个都不命中 ⇒ 基线掉到 L1；而最终密级 = max(服务端基线, 客户端声明)
+⇒ **一个法务部的员工用 SSO 登一次，之后就能把资产声明成 L1 公开**。
+L3「同部门可见」的范围也一并变了。
+
+现在按名字精确查 `sys_dept`，**查不到就保持原部门不动**并告警；
+兜底部门才走 `edam.sso.default-dept-code`（这个配置此前根本没被用过）。
+
+#### SSO 登录：IdP 没映射工号 ⇒ 500
+
+`provision()` 拿 null 工号去查库 → 查不到 → 走新建分支 → 往 NOT NULL 列插 null → **500**，
+错误信息完全指不到根因。现在入口就拦，给出"请检查 SSO 的属性映射配置"。
+
+#### SSO 登录：OIDC 侧两个 HTTP 问题
+
+- `HttpClient` **没设请求超时** ⇒ IdP 挂住时 SSO 回调线程被一直占着（两个请求都加 10 秒超时）
+- `fetchUserInfo` **不看状态码**就拿 body 当 userinfo ⇒ IdP 返 401/500 时
+  所有属性解析成 null ⇒ 拿 null 工号去建账号
+
+#### 审计导出：整个是假接口
+
+`POST /audit/logs/export` 返回的是一个指向
+`https://api.example.com/api/v1/audit/exports/...` 的**伪造下载链接** ——
+那个路由根本不存在，也没有何导出任务机制，但接口返回 202 + 一个很像样的链接。
+前端没有导出按钮，手册却写着"生成 Excel 文件，MFA 二次校验"。
+
+现在**同步返回真的 CSV**（UTF-8 BOM，Excel 直接能开）：
+过滤口径与列表完全一致、单次上限 5 万行、**MFA 二次校验**、
+`Cache-Control: no-store`、**CSV 公式注入防护**
+（detail 是用户可控的，以 `= + - @` 开头的单元格会被 Excel 当公式跑）。
+
+#### RBAC：分配权限的接口能改系统角色
+
+`updateRole` / `deleteRole` 都挡了 `is_system=true`，**只有 `assignPermissions` 没挡** ——
+"编辑角色"页面点不动 `employee`，但分配权限的接口能把它的权限集整个换掉。
+三个入口现在口径一致。另补权限 id 存在性校验（原先传错 id ⇒ 撞外键 ⇒ 500）。
+
+#### 国密：exp 缺失时 fail-open
+
+`parseToken` 里 `if (exp instanceof Number ...)` —— **exp 缺失时整段被跳过**，
+等于"没有过期时间的 token 也认"。现在缺 exp 直接拒。
+另修一条复制粘贴留下的错误信息（"edam.worker.token 需一致"跟 JWT 无关），
+并移除 `SM3Util` 上已经过时的 `@Deprecated`（它现在**确实**被调用）。
+
+#### Webhook：SSRF 守卫的四个缺口 + 响应体无限读
+
+- IPv6 只查了 `::1` ⇒ `[fc00::1]` / `[fe80::1]` / `[::ffff:169.254.169.254]` 能过
+- **不解析主机名** ⇒ `http://metadata.internal/`（解析到 10.x）能过
+- 十进制 / 十六进制 IP ⇒ `http://2130706433/`（= 127.0.0.1）能过
+- 响应体用 `BodyHandlers.ofString()` **整个读进内存**，"截断到 1KB"是读完之后才做的
+  ⇒ 返回 1GB body 的回调目标就能把后端 OOM 掉
+
+现在抽出 `SsrfGuard`（协议白名单 → IPv4/IPv6/数字写法私网判定 → **解析主机名逐个判**），
+**投递前再查一次**（fail-closed），`HttpClient` 显式不跟随重定向，响应体改成流式限量读 64KB。
+
+### 文档（按代码为准，改掉手册里的失真描述）
 - **管理员手册 §4 外发链接**：手册写着"同意 → 颁发外发链接"并给出
   `https://EDAM/external/token?doc_id=N` —— **那个端点从来不存在**，
   没有 `/external/*` 路由，`external_doc_view_log` 表也没有任何写入方。
@@ -104,12 +164,23 @@
 
 ### 验证
 
-- 后端 219 → **244** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+- 后端 219 → **258** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
+- 新增测试：`SsoUserProvisioningTest`（6）、`RbacControllerTest`（3）、
+  `AuditServiceExportTest`（5）
 - 前端 58 用例全绿
 - Worker 99 通过 / 2 跳过（未改动 Worker 代码）
 - 端点对账 98 ↔ 98 → **99 ↔ 99 / 100%**
 - OpenAPI 78 paths / 99 ops / 40 schemas / 18 tags，全部 `$ref` 可解析、无重复 key
+
+### 破坏性变更（上线前务必确认）
+
+- `POST /audit/logs/export` 的响应形态变了：
+  原 `202 + {task_id, download_url}` → 现 `200 + CSV 文件字节`。
+  （原实现返回的 URL 本来就打不开，但如果有第三方在调，形状变了。）
+- Webhook 的 SSRF 校验变严：原先能注册的地址（IPv6 私网、解析到内网的主机名）
+  现在会被拒；已注册的这类地址会在**每次投递前**失败并记 `webhook_post_failed`。
+- `/auth/refresh` 的响应多了一个 `refresh_token` 字段（轮换）—— 见上一轮说明。
 
 ---
 
