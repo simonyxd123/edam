@@ -3,6 +3,7 @@ package com.example.edam.controller;
 import com.example.edam.model.Notification;
 import com.example.edam.model.NotificationPreference;
 import com.example.edam.model.Webhook;
+import com.example.edam.model.WebhookDelivery;
 import com.example.edam.repository.NotificationPreferenceRepository;
 import com.example.edam.repository.NotificationRepository;
 import com.example.edam.repository.WebhookDeliveryRepository;
@@ -165,6 +166,36 @@ class NotificationsWebhooksControllerTest {
         webhooksController.list(OWNER);
 
         verify(webhookRepository).findByOwner(OWNER);
+    }
+
+    @Test
+    @DisplayName("投递历史带出重试信息（第几次 / 下次重试时间）")
+    void deliveriesExposeRetryInfo() {
+        // 2026-11-08 模型对账发现：webhook_delivery 表里本来就有
+        // retry_count / next_retry_at 两列，但 model 一直没映射它们，
+        // 于是"失败了 3 次然后成功"和"一次就成功"在列表里长得一模一样。
+        Webhook webhook = new Webhook();
+        webhook.setId(7L);
+        webhook.setOwnerId(OWNER);
+        when(webhookRepository.findByIdAndOwner(7L, OWNER)).thenReturn(webhook);
+
+        WebhookDelivery d = new WebhookDelivery();
+        d.setId(1L);
+        d.setWebhookId(7L);
+        d.setEvent("video.view");
+        d.setResponseStatus(500);
+        d.setRetryCount(3);
+        d.setNextRetryAt(java.time.Instant.parse("2026-11-08T10:00:00Z"));
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<WebhookDelivery> page =
+            new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 20);
+        page.setRecords(List.of(d));
+        when(webhookDeliveryRepository.selectPage(any(), any())).thenReturn(page);
+
+        List<Map<String, Object>> items = webhooksController.deliveries(7L, OWNER, 1);
+
+        assertEquals(1, items.size());
+        assertEquals(Integer.valueOf(3), items.get(0).get("retry_count"));
+        assertNotNull(items.get(0).get("next_retry_at"));
     }
 
     // ==================================================================

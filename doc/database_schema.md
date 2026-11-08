@@ -90,6 +90,9 @@ grep -rhoiE "CREATE TABLE (IF NOT EXISTS )?[\`a-z_]+" \
 | status | TINYINT | NOT NULL | 1 | 1=active 2=disabled 3=locked |
 | mfa_secret | VARCHAR(64) | | NULL | TOTP 密钥（加密存储） |
 | mfa_enabled | TINYINT(1) | NOT NULL | 0 | 是否启用 MFA |
+| must_change_password | TINYINT(1) | NOT NULL | 0 | 首次登录/重置密码后强制改密 |
+| default_classification | VARCHAR(8) | NOT NULL | 'L1' | ⚠️ **未接线**（见下方说明） |
+| pwd_history | JSON | | NULL | ⚠️ **未接线**（真正的密码历史在 `password_history` 表） |
 | last_login_at | DATETIME(3) | | NULL | 最后登录时间 |
 | last_login_ip | VARCHAR(45) | | NULL | 最后登录 IP（IPv6 兼容） |
 | failed_login_count | TINYINT UNSIGNED | NOT NULL | 0 | 连续失败次数（5 次锁定） |
@@ -111,6 +114,22 @@ grep -rhoiE "CREATE TABLE (IF NOT EXISTS )?[\`a-z_]+" \
 - dept_id → sys_dept.id
 
 **PII 字段**：`real_name`、`email`、`phone`、`mfa_secret`，需加密存储或访问审计。
+
+> **两列"看着像功能、其实没接线"**（2026-11-08 模型对账发现，Java 侧**零引用**）：
+>
+> - **`default_classification`** —— 注释写着"用户上传默认密级（按部门）"，
+>   但**没有任何代码读它、也没有任何代码写它**。管理员在库里把它改成 L3，
+>   该用户之后上传的文件**不会**默认成 L3。
+>   实际生效的是上传时 `ClassificationEnforcement` 现算的基线
+>   （文件名关键词 / 文件大小 / **上传者所在部门**）——
+>   也就是说"按部门定密级"这条规则**已经实现了**，只是走的是
+>   `ClassificationEnforcement` 而不是这一列。
+>   > 要么把这一列接上（改成"用户级默认密级，优先于部门基线"），
+>   > 要么承认它是历史遗留、只保留默认值。**当前状态是"改了也没用"**。
+>
+> - **`pwd_history`** —— 真正的密码历史在独立的 `password_history` 表
+>   （`V20260825_1000__add_password_history.sql` 建的那张，带 FK 与清理任务）。
+>   这一列是建表时多写的，**没有任何代码使用**，可以忽略。
 
 ---
 

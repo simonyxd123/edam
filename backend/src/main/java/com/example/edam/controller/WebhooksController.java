@@ -156,6 +156,11 @@ public class WebhooksController {
         item.put("response_status", d.getResponseStatus());
         item.put("response_body", d.getResponseBody());
         item.put("delivered_at", d.getDeliveredAt());
+        // 重试信息 —— 表里本来就有这两列，model 一直没映射（2026-11-08 对账发现）。
+        // 没有它们，"失败了 3 次然后成功"和"一次就成功"在列表里长得一模一样，
+        // 也看不出"这条还在等重试"。
+        item.put("retry_count", d.getRetryCount());
+        item.put("next_retry_at", d.getNextRetryAt());
         return item;
     }
 

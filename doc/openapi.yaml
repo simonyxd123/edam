@@ -3538,7 +3538,14 @@ components:
         response_status: { type: integer }
         response_body: { type: string }
         delivered_at: { type: string, format: date-time }
-        retry_count: { type: integer }
+        retry_count:
+          type: integer
+          description: 第几次尝试（1 = 首次投递，2 = 第一次重试 …）
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 下次重试时间（null = 没有待重试的 / 已成功 / 已进死信）
 
     # ===== 备份（v3.1 新增）=====
     Backup:

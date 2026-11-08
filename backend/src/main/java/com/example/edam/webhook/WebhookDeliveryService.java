@@ -105,6 +105,11 @@ public class WebhookDeliveryService {
         delivery.setResponseStatus(result.statusCode);
         delivery.setResponseBody(result.body);
         delivery.setDeliveredAt(Instant.now());
+        // 第几次尝试 —— 表里本来就有 retry_count 这一列，
+        // 但 model 一直没映射它（2026-11-08 模型对账发现），
+        // 于是投递历史里每条记录长得一模一样：
+        // "失败了 3 次然后成功"和"一次就成功"分不出来。
+        delivery.setRetryCount(attempt);
         deliveryRepository.insert(delivery);
 
         // 失败调度重试（attempt 逐次递增，不再重置为 1）
@@ -151,6 +156,17 @@ public class WebhookDeliveryService {
                 "original_delivery_id", deliveryId,
                 "retry_at_ms", System.currentTimeMillis() + backoffMs
             ));
+
+        // 把"下次重试时间"写回投递记录 —— 表里有 next_retry_at 这一列，
+        // 但 model 之前没映射它（2026-11-08 模型对账发现），
+        // 于是运维在投递历史里**看不出"这条还在等重试"**。
+        if (deliveryId != null) {
+            deliveryRepository.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WebhookDelivery>()
+                    .eq(WebhookDelivery::getId, deliveryId)
+                    .set(WebhookDelivery::getNextRetryAt,
+                        Instant.now().plusMillis(backoffMs)));
+        }
     }
 
     private void sendToDlq(Long webhookId, String event, String payload, int attempt, String reason) {
