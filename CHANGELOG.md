@@ -134,6 +134,21 @@ L3「同部门可见」的范围也一并变了。
 现在抽出 `SsrfGuard`（协议白名单 → IPv4/IPv6/数字写法私网判定 → **解析主机名逐个判**），
 **投递前再查一次**（fail-closed），`HttpClient` 显式不跟随重定向，响应体改成流式限量读 64KB。
 
+#### Worker：FFmpeg / ffprobe / LibreOffice 三处子进程没有超时
+
+三处都是 `await proc.communicate()` 裸等。一个 pathological 的输入
+（损坏的视频、畸形 docx、半截网络流）就能让协程**永远不返回**；
+而 `prefetch_count=10` ⇒ **10 个卡死的任务就把整个 worker 堵死**：
+队列不再消费、CPU 被占满，**没有异常、没有日志**
+（进程还"活着"，`/health/worker` 照样返回 ok，运维看不出来）。
+
+新增 `edam_worker/procutil.py`（`kill_process` / `run_with_timeout`），
+三处全部改用带超时的执行，超时后**杀掉子进程**
+（先 `terminate()`，给 5 秒宽限期，不行就 `kill()` —— 只 terminate 不够，
+挂在 I/O 上的进程收不到 SIGTERM，会继续吃 CPU）。
+超时配置：`FFMPEG_TIMEOUT_SEC`（3600）/ `FFPROBE_TIMEOUT_SEC`（120）/
+`LIBREOFFICE_TIMEOUT_SEC`（600）。
+
 ### 文档（按代码为准，改掉手册里的失真描述）
 - **管理员手册 §4 外发链接**：手册写着"同意 → 颁发外发链接"并给出
   `https://EDAM/external/token?doc_id=N` —— **那个端点从来不存在**，
@@ -169,7 +184,7 @@ L3「同部门可见」的范围也一并变了。
 - 新增测试：`SsoUserProvisioningTest`（6）、`RbacControllerTest`（3）、
   `AuditServiceExportTest`（5）
 - 前端 58 用例全绿
-- Worker 99 通过 / 2 跳过（未改动 Worker 代码）
+- Worker 99 → **103** 通过 / 2 跳过（新增 `test_subprocess_timeout.py` 4 例）
 - 端点对账 98 ↔ 98 → **99 ↔ 99 / 100%**
 - OpenAPI 78 paths / 99 ops / 40 schemas / 18 tags，全部 `$ref` 可解析、无重复 key
 
