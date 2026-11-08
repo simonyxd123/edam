@@ -190,6 +190,15 @@ public class RbacController {
         SysRole role = roleRepository.selectById(roleId);
         if (role == null) throw new ResourceNotFoundException("角色不存在");
 
+        // **系统预置角色同样不可改权限** —— 与 updateRole 的判定保持一致。
+        // 原先只有 updateRole / deleteRole 挡了系统角色，这个端点没挡 ——
+        // 于是"编辑角色"页面点不动 employee，但"分配权限"接口能把它的
+        // 权限集整个换掉，把普通员工的只读白名单改成有上传权。
+        // 权限是数据，改错了不会编译报错，只能靠这一层的门 + 回归测试兜住。
+        if (Boolean.TRUE.equals(role.getIsSystem())) {
+            throw new IllegalArgumentException("系统预置角色不可修改权限");
+        }
+
         rolePermRepository.deleteByRoleId(roleId);
         int n = assignPermissionsInternal(roleId, req.permission_ids);
 
@@ -197,7 +206,21 @@ public class RbacController {
     }
 
     private int assignPermissionsInternal(Long roleId, List<Long> permIds) {
-        if (permIds == null) return 0;
+        if (permIds == null || permIds.isEmpty()) return 0;
+
+        // 先校验权限 id 都存在 —— 否则插 sys_role_permission 时撞外键 → 500，
+        // 而且错误信息完全指不到"哪个 id 传错了"
+        List<Long> existing = permissionRepository.selectBatchIds(permIds).stream()
+            .map(SysPermission::getId)
+            .toList();
+        List<Long> missing = permIds.stream()
+            .filter(pid -> !existing.contains(pid))
+            .distinct()
+            .toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("权限 id 不存在: " + missing);
+        }
+
         int n = 0;
         for (Long pid : permIds) {
             SysRolePermission srp = new SysRolePermission();

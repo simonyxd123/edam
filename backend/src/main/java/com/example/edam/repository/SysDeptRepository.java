@@ -21,6 +21,15 @@ public interface SysDeptRepository extends BaseMapper<SysDept> {
     SysDept findById(@Param("id") Long id);
 
     /**
+     * 按部门**名称**查（SSO 的 department 属性映射用）。
+     *
+     * <p>名称精确匹配。查不到返回 null —— 调用方要能区分
+     * "IdP 给了个我们不认识的部门" 和 "IdP 没给部门"。
+     */
+    @Select("SELECT * FROM sys_dept WHERE name = #{name} LIMIT 1")
+    SysDept findByName(@Param("name") String name);
+
+    /**
      * 查某个部门及其所有下级（按物化路径前缀匹配）。
      *
      * <p>用于"整个部门树都算敏感部门"这种判定 —— 子部门继承上级部门的敏感度。

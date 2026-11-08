@@ -248,7 +248,7 @@
     "method": "POST",
     "path": "/audit/logs/export",
     "tag": "audit",
-    "summary": "导出日志",
+    "summary": "导出日志（CSV）",
     "impl": "AuditController"
   },
   {

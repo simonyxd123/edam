@@ -4,6 +4,8 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.repository.WebAuthnCredentialRepository;
 import com.example.edam.util.TimeUtil;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,6 +24,9 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class WebAuthnAuthenticationService {
+
+    /** clientDataJSON 是浏览器生成的 JSON —— 按字段解析，不做子串匹配。 */
+    private static final ObjectMapper CLIENT_DATA_MAPPER = new ObjectMapper();
 
     private final WebAuthnProperties properties;
     private final WebAuthnCredentialRepository credentialRepository;
@@ -84,21 +89,43 @@ public class WebAuthnAuthenticationService {
     }
 
     /**
-     * 验证 clientDataJSON
+     * 验证 clientDataJSON。
+     *
+     * <p><b>按字段解析，不做子串匹配</b>（2026-11-08 改）：
+     * 原实现是三行 {@code clientDataJson.contains(...)} ——
+     * 只要 challenge / "webauthn.get" / origin 这三段文本**出现在 JSON 里**
+     * 就算过。于是：
+     * <ul>
+     *   <li>{@code type} 字段写成别的值、但别处出现 "webauthn.get" 字样 → 放过</li>
+     *   <li>challenge 是另一个值的子串 → 放过</li>
+     *   <li>origin 写成 {@code https://evil.com/?x=https://ours.example.com}
+     *       → 放过（"包含 origin" ≠ "origin 等于 origin"）</li>
+     * </ul>
+     * 现在解出 JSON 逐字段**相等**比较。
+     *
+     * <p>注意：这还不构成 WebAuthn 的完整校验 —— 真正的根基是
+     * {@link #verifyAssertionSignature} 的签名验证（尚未实现，fail-closed）。
      */
     private void verifyClientDataJsonForLogin(String clientDataJsonB64, String expectedChallenge) {
         try {
-            String clientDataJson = new String(
-                Base64.getUrlDecoder().decode(clientDataJsonB64));
-            if (!clientDataJson.contains(expectedChallenge)) {
+            byte[] raw = Base64.getUrlDecoder().decode(clientDataJsonB64);
+            JsonNode cd = CLIENT_DATA_MAPPER.readTree(raw);
+
+            String type = cd.path("type").asText(null);
+            if (!"webauthn.get".equals(type)) {
+                throw new IllegalArgumentException("Type 错误（应为 webauthn.get），实际: " + type);
+            }
+            String challenge = cd.path("challenge").asText(null);
+            if (expectedChallenge == null || !expectedChallenge.equals(challenge)) {
                 throw new IllegalArgumentException("Challenge 不匹配");
             }
-            if (!clientDataJson.contains("webauthn.get")) {
-                throw new IllegalArgumentException("Type 错误（应为 webauthn.get）");
+            String origin = cd.path("origin").asText(null);
+            if (!properties.getRpOrigin().equals(origin)) {
+                throw new IllegalArgumentException("Origin 不匹配，实际: " + origin);
             }
-            if (!clientDataJson.contains(properties.getRpOrigin())) {
-                throw new IllegalArgumentException("Origin 不匹配");
-            }
+        } catch (IllegalArgumentException e) {
+            // 校验失败 —— 原样抛出，别把它包成"验证失败"盖掉根因
+            throw e;
         } catch (Exception e) {
             throw new IllegalArgumentException("clientDataJSON 验证失败", e);
         }

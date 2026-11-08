@@ -182,11 +182,17 @@ public class SmJwtTokenProvider {
 
         // 过期校验 —— 必须自己做：jjwt 的 parseSignedClaims 会顺手校验 exp，
         // 而 GS256 走的是手工解析，**不校验就等于永不过期的 token**。
+        //
+        // 缺 exp / exp 不是数字 ⇒ **直接拒**（fail-closed）。
+        // 原实现写成 `if (exp instanceof Number ...)` —— exp 缺失时整段被跳过，
+        // 等于"没有过期时间的 token 也认"。虽然签名覆盖了 payload，
+        // 攻击者改不了，但签发侧一旦出岔子就是永不过期的凭证。
         Object exp = payload.get("exp");
-        if (exp instanceof Number expSeconds) {
-            if (expSeconds.longValue() <= System.currentTimeMillis() / 1000) {
-                throw new IllegalArgumentException("JWT 已过期");
-            }
+        if (!(exp instanceof Number expSeconds)) {
+            throw new IllegalArgumentException("GS256 token 缺少 exp claim");
+        }
+        if (expSeconds.longValue() <= System.currentTimeMillis() / 1000) {
+            throw new IllegalArgumentException("JWT 已过期");
         }
         return result;
     }

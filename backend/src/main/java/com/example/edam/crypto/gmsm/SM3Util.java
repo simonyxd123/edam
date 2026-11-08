@@ -23,13 +23,14 @@ import java.util.HexFormat;
  * ```
  */
 /**
- * @deprecated 当前**未被任何业务代码引用**（只被
- * {@link com.example.edam.crypto.AlgorithmRouter} 引用，而后者本身也未接线）。
+ * <p><b>已接线</b>（v3.4.1）：{@code AlgorithmRouter.hmac(SM3_HMAC, ...)}
+ * 走本类的 {@link #hmac(byte[], byte[])}，
+ * 而 {@code AlgorithmRouter} 已被 {@code SmJwtTokenProvider}（国密 JWT 签发/验签）
+ * 实际调用 —— 所以 {@code edam.jwt.algorithm=GS256} 时，
+ * access_token 与播放 token 真的用 SM3-HMAC 签名。
  *
- * <p>保留原因：国密（SM2/SM3/SM4）是方案书与等保/商密合规的既定要求，
- * 属于"写好了但还没接线"的能力，不应直接删除。接线后移除本注解。
+ * <p>原先的 {@code @Deprecated}（"未被任何业务代码引用"）已经过时，随接线一并移除。
  */
-@Deprecated(since = "3.4.0")
 public final class SM3Util {
 
     private SM3Util() {}

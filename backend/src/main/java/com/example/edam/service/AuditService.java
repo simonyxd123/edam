@@ -176,31 +176,8 @@ public class AuditService {
                                   LocalDateTime startTime, LocalDateTime endTime,
                                   String result, String resourceType) {
 
-        LambdaQueryWrapper<OperationLog> wrapper = new LambdaQueryWrapper<>();
-        if (userId != null) wrapper.eq(OperationLog::getUserId, userId);
-        if (operationType != null && !operationType.isBlank()) {
-            Set<String> stored = AuditOpType.storedValuesFor(operationType);
-            if (stored.size() == 1) {
-                wrapper.eq(OperationLog::getOperationType, operationType);
-            } else {
-                wrapper.in(OperationLog::getOperationType, stored);
-            }
-        }
-        if (result != null && !result.isBlank()) {
-            wrapper.eq(OperationLog::getResult, parseResult(result));
-        }
-        if (resourceType != null && !resourceType.isBlank()) {
-            // 同时匹配历史遗留的大写写法（Document），否则老记录查不出来
-            String lower = resourceType.trim().toLowerCase(java.util.Locale.ROOT);
-            if (!lower.equals(resourceType)) {
-                wrapper.and(w -> w.eq(OperationLog::getResourceType, lower)
-                    .or().eq(OperationLog::getResourceType, resourceType));
-            } else {
-                wrapper.eq(OperationLog::getResourceType, lower);
-            }
-        }
-        if (startTime != null) wrapper.ge(OperationLog::getTimestamp, startTime);
-        if (endTime != null) wrapper.le(OperationLog::getTimestamp, endTime);
+        LambdaQueryWrapper<OperationLog> wrapper = buildFilter(
+            userId, operationType, startTime, endTime, result, resourceType);
         wrapper.orderByDesc(OperationLog::getTimestamp);
 
         Page<OperationLog> pageResult = operationLogRepository.selectPage(
@@ -248,6 +225,125 @@ public class AuditService {
         Page<AuditLogDTO> out = new Page<>(pageResult.getCurrent(), pageResult.getSize(), pageResult.getTotal());
         out.setRecords(dtos);
         return out;
+    }
+
+    /** 列表与导出共用的过滤条件 —— 两边的口径必须一致，否则"导出的"和"看到的"对不上。 */
+    private LambdaQueryWrapper<OperationLog> buildFilter(
+            Long userId, String operationType,
+            LocalDateTime startTime, LocalDateTime endTime,
+            String result, String resourceType) {
+        LambdaQueryWrapper<OperationLog> wrapper = new LambdaQueryWrapper<>();
+        if (userId != null) wrapper.eq(OperationLog::getUserId, userId);
+        if (operationType != null && !operationType.isBlank()) {
+            Set<String> stored = AuditOpType.storedValuesFor(operationType);
+            if (stored.size() == 1) {
+                wrapper.eq(OperationLog::getOperationType, operationType);
+            } else {
+                wrapper.in(OperationLog::getOperationType, stored);
+            }
+        }
+        if (result != null && !result.isBlank()) {
+            wrapper.eq(OperationLog::getResult, parseResult(result));
+        }
+        if (resourceType != null && !resourceType.isBlank()) {
+            // 同时匹配历史遗留的大写写法（Document），否则老记录查不出来
+            String lower = resourceType.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!lower.equals(resourceType)) {
+                wrapper.and(w -> w.eq(OperationLog::getResourceType, lower)
+                    .or().eq(OperationLog::getResourceType, resourceType));
+            } else {
+                wrapper.eq(OperationLog::getResourceType, lower);
+            }
+        }
+        if (startTime != null) wrapper.ge(OperationLog::getTimestamp, startTime);
+        if (endTime != null) wrapper.le(OperationLog::getTimestamp, endTime);
+        return wrapper;
+    }
+
+    // ==================================================================
+    // 导出（2026-11-08 新增）
+    // ==================================================================
+
+    /** 单次导出的行数上限 —— 超过就要求缩小时间范围，不做无限制的大导出。 */
+    public static final int MAX_EXPORT_ROWS = 50_000;
+
+    /**
+     * 导出审计日志（CSV，UTF-8 BOM）。
+     *
+     * <p><b>为什么是同步而不是异步</b>：契约里写的是"异步生成 + 签名 URL 下载"，
+     * 但仓库里**没有任何导出任务机制**（没有任务表、没有调度器）——
+     * 原实现返回的是一个指向 {@code api.example.com} 的**伪造 URL**，
+     * 点开永远是 404。与其留一个骗人的异步接口，不如同步导：
+     * 上限 {@link #MAX_EXPORT_ROWS} 行，够用且不会把内存和连接池打满。
+     *
+     * <p><b>CSV 注入防护</b>：单元格以 {@code = + - @ } 开头时，
+     * Excel 会当成公式执行。审计的 detail 字段是**用户可控**的
+     * （比如文件名、理由），所以这类单元格一律加前缀 {@code '} 打断公式。
+     */
+    public byte[] exportCsv(Long userId, String operationType,
+                             LocalDateTime startTime, LocalDateTime endTime,
+                             String result, String resourceType) {
+        LambdaQueryWrapper<OperationLog> wrapper = buildFilter(
+            userId, operationType, startTime, endTime, result, resourceType);
+        wrapper.orderByDesc(OperationLog::getTimestamp);
+
+        Page<OperationLog> page = new Page<>(1, MAX_EXPORT_ROWS + 1);
+        page.setSearchCount(false);
+        List<OperationLog> records = operationLogRepository.selectPage(page, wrapper).getRecords();
+        if (records.size() > MAX_EXPORT_ROWS) {
+            throw new IllegalArgumentException(
+                "导出结果超过 " + MAX_EXPORT_ROWS + " 行，请缩小时间范围后再试");
+        }
+
+        Set<Long> userIds = records.stream()
+            .map(OperationLog::getUserId)
+            .filter(java.util.Objects::nonNull)
+            .collect(Collectors.toSet());
+        Map<Long, String> empNoMap = Collections.emptyMap();
+        if (!userIds.isEmpty()) {
+            empNoMap = sysUserRepository.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(SysUser::getId, SysUser::getEmployeeNo,
+                    (a, b) -> a, HashMap::new));
+        }
+
+        StringBuilder sb = new StringBuilder();
+        // BOM —— 没有它 Excel 打开中文全是乱码
+        sb.append('﻿');
+        sb.append("时间,工号,操作类型,资源类型,资源ID,结果,HTTP方法,端点,状态码,耗时(ms),IP,User-Agent,详情");
+        sb.append('\n');
+        for (OperationLog ol : records) {
+            sb.append(csvCell(ol.getTimestamp() != null
+                ? ol.getTimestamp().toLocalDateTime().toString() : "")).append(',')
+              .append(csvCell(empNoMap.get(ol.getUserId()))).append(',')
+              .append(csvCell(AuditOpType.normalize(ol.getOperationType()))).append(',')
+              .append(csvCell(normalizeResourceType(ol.getResourceType()))).append(',')
+              .append(csvCell(ol.getResourceId() == null ? "" : String.valueOf(ol.getResourceId()))).append(',')
+              .append(csvCell(AuditLogDTO.textResult(ol.getResult()))).append(',')
+              .append(csvCell(ol.getHttpMethod())).append(',')
+              .append(csvCell(ol.getEndpoint())).append(',')
+              .append(csvCell(ol.getStatusCode() == null ? "" : String.valueOf(ol.getStatusCode()))).append(',')
+              .append(csvCell(ol.getDurationMs() == null ? "" : String.valueOf(ol.getDurationMs()))).append(',')
+              .append(csvCell(ol.getIp())).append(',')
+              .append(csvCell(ol.getUserAgent())).append(',')
+              .append(csvCell(ol.getDetail()))
+              .append('\n');
+        }
+        return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** CSV 单元格转义 + 公式注入防护。 */
+    private static String csvCell(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String v = raw;
+        // 去掉会截断单元格的换行
+        v = v.replace("\r", " ").replace("\n", " ");
+        // 公式注入：以 = + - @ 开头的单元格，Excel 会当公式跑
+        if (!v.isEmpty() && "=+-@".indexOf(v.charAt(0)) >= 0) {
+            v = "'" + v;
+        }
+        return "\"" + v.replace("\"", "\"\"") + "\"";
     }
 
     /**

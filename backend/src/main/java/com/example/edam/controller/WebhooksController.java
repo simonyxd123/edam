@@ -184,38 +184,10 @@ public class WebhooksController {
      * 指向内网就是 **SSRF**（能扫内网、能打云厂商的元数据服务）。
      */
     private static void assertPublicUrl(String url) {
-        java.net.URI uri;
-        try {
-            uri = java.net.URI.create(url.trim());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("url 不是合法的 URI: " + url);
-        }
-        String scheme = uri.getScheme();
-        if (scheme == null || !(scheme.equals("http") || scheme.equals("https"))) {
-            throw new IllegalArgumentException("url 只支持 http / https");
-        }
-        String host = uri.getHost();
-        if (host == null) {
-            throw new IllegalArgumentException("url 缺少主机名");
-        }
-        String h = host.toLowerCase();
-        if (h.equals("localhost") || h.equals("127.0.0.1") || h.equals("::1")
-                || h.equals("0.0.0.0") || h.endsWith(".localhost")
-                || h.startsWith("10.") || h.startsWith("192.168.")
-                || h.startsWith("169.254.") || h.startsWith("127.")) {
-            throw new IllegalArgumentException("url 不允许指向内网 / 回环地址: " + host);
-        }
-        // 172.16.0.0/12
-        if (h.startsWith("172.")) {
-            try {
-                int second = Integer.parseInt(h.split("\\.")[1]);
-                if (second >= 16 && second <= 31) {
-                    throw new IllegalArgumentException("url 不允许指向内网 / 回环地址: " + host);
-                }
-            } catch (NumberFormatException ignored) {
-                // 不是 IP，跳过
-            }
-        }
+        // SSRF 校验统一走 SsrfGuard（2026-11-08 抽出去）：
+        // 原先这里的实现只查 IPv4 字面量，IPv6 私网 / 主机名解析到内网 /
+        // 十进制写法（2130706433 == 127.0.0.1）都能绕过。
+        com.example.edam.security.SsrfGuard.assertPublicUrl(url);
     }
 
     @Data

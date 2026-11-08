@@ -1,6 +1,8 @@
 package com.example.edam.security.sso;
 
+import com.example.edam.model.SysDept;
 import com.example.edam.model.SysUser;
+import com.example.edam.repository.SysDeptRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.LoginAttemptService;
 import com.example.edam.service.TokenIssuanceService;
@@ -30,6 +32,7 @@ import java.time.OffsetDateTime;
 public class SsoUserProvisioning {
 
     private final SysUserRepository userRepository;
+    private final SysDeptRepository sysDeptRepository;
     private final UserRoleService userRoleService;
     private final LoginAttemptService loginAttemptService;
     private final TokenIssuanceService tokenIssuanceService;
@@ -45,6 +48,15 @@ public class SsoUserProvisioning {
      */
     @Transactional
     public void provision(SsoUserInfo userInfo) {
+        // 工号是 SSO 用户的唯一标识，也是 sys_user 的 NOT NULL 列。
+        // IdP 没映射这个属性时，原实现会拿 null 去查 → 查不到 → 走"新建用户"分支
+        // → 往 NOT NULL 列里插 null → **500**，而且错误信息完全指不到根因
+        // （看起来像"数据库炸了"）。这里提前拦下来，给出能看懂的消息。
+        if (userInfo.getEmployeeNo() == null || userInfo.getEmployeeNo().isBlank()) {
+            throw new IllegalArgumentException(
+                "IdP 未返回工号（employee_no）—— 请检查 SSO 的属性映射配置");
+        }
+
         SysUser existing = userRepository.findByEmployeeNo(userInfo.getEmployeeNo());
 
         if (existing == null) {
@@ -111,7 +123,9 @@ public class SsoUserProvisioning {
         user.setRealName(userInfo.getRealName());
         user.setEmail(userInfo.getEmail());
         user.setPhone(userInfo.getPhone());
-        user.setDeptId(resolveDeptId(defaultDeptCode));
+        // 新用户：优先用 IdP 给的部门，对不上号才落到兜底部门
+        Long deptId = resolveDeptIdByName(userInfo.getDepartment());
+        user.setDeptId(deptId != null ? deptId : resolveDefaultDeptId());
         user.setStatus(1);  // active
         user.setMfaEnabled(0);
         user.setFailedLoginCount(0);
@@ -130,7 +144,24 @@ public class SsoUserProvisioning {
         if (userInfo.getEmail() != null) user.setEmail(userInfo.getEmail());
         if (userInfo.getPhone() != null) user.setPhone(userInfo.getPhone());
         if (userInfo.getDepartment() != null) {
-            user.setDeptId(resolveDeptId(userInfo.getDepartment()));
+            // **只在能对上号的时候才改部门**。
+            // 原实现无条件 `user.setDeptId(resolveDeptId(...))`，而
+            // resolveDeptId 恒返回 1L ⇒ 每登一次 SSO 就把用户的部门
+            // 重置成「总公司」。
+            // 后果不只是显示难看：
+            //   ① 密级基线按**部门名**判定（法务 / 审计 / 人力 → L3），
+            //      「总公司」一个都不命中 ⇒ 用户的基线被降下来，
+            //      客户端再声明 L1 就能把资产声明成公开；
+            //   ② L3「同部门可见」按部门圈人 ⇒ 可见范围也变了。
+            // 对不上号就**保持原部门不动**，让管理员去改 ——
+            // 宁可用旧部门信息，也不能让一次登录把权限基线改小。
+            Long resolved = resolveDeptIdByName(userInfo.getDepartment());
+            if (resolved != null) {
+                user.setDeptId(resolved);
+            } else {
+                log.warn("sso_department_unresolved, employee_no={}, department={} —— 保持原部门不变",
+                    user.getEmployeeNo(), userInfo.getDepartment());
+            }
         }
         user.setLastLoginAt(OffsetDateTime.now());
         userRepository.updateById(user);
@@ -148,12 +179,36 @@ public class SsoUserProvisioning {
     }
 
     /**
-     * 解析部门 ID（按部门 code）
+     * 解析部门 ID（按部门**名称**精确查 sys_dept）。
+     *
+     * <p>查不到返回 {@code null} —— 调用方据此决定"保持原部门"还是"用默认部门"，
+     * **不能**像原来那样无脑返回 1L。
      */
-    private Long resolveDeptId(String deptCode) {
-        // 实际生产：sys_dept 表查询
-        // 简化实现：返回固定 dept_id（外部用户）
-        return 1L;
+    private Long resolveDeptIdByName(String deptName) {
+        if (deptName == null || deptName.isBlank()) {
+            return null;
+        }
+        SysDept dept = sysDeptRepository.findByName(deptName.trim());
+        return dept != null ? dept.getId() : null;
+    }
+
+    /**
+     * 兜底部门：优先按配置的 {@code edam.sso.default-dept-code} 查名字，
+     * 查不到就用 {@code sys_dept.id = 1}（总公司，迁移
+     * {@code V20260830_3000__seed_org_data.sql} 必然插入）。
+     *
+     * <p>这个配置此前**根本没被用过** —— {@code resolveDeptId} 忽略了自己的入参，
+     * 恒返回 1L。现在它真的是"兜底部门"。
+     */
+    private Long resolveDefaultDeptId() {
+        if (defaultDeptCode != null && !defaultDeptCode.isBlank()) {
+            Long byName = resolveDeptIdByName(defaultDeptCode);
+            if (byName != null) {
+                return byName;
+            }
+        }
+        SysDept root = sysDeptRepository.findById(1L);
+        return root != null ? root.getId() : 1L;
     }
 
     /**

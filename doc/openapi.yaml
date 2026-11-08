@@ -952,37 +952,58 @@ paths:
   /audit/logs/export:
     post:
       tags: [audit]
-      summary: 导出日志
+      summary: 导出日志（CSV）
       x-required-permission: audit:audit_export
-      description: 异步生成日志导出文件，签名 URL 下载
+      description: |
+        导出审计日志，**同步**返回 CSV 文件（UTF-8 BOM，Excel 直接可开）。
+
+        **为什么是同步而不是异步**（2026-11-08 改）：契约里原本写的是
+        "异步生成 + 签名 URL 下载"，但仓库里**没有任何导出任务机制**
+        （没有任务表、没有调度器）—— 实现只是返回了一个指向
+        `https://api.example.com/api/v1/audit/exports/...` 的**伪造 URL**，
+        点开永远是 404。与其留一个骗人的异步接口，不如同步导：
+        单次上限 50000 行，超过就返回 400 要求缩小时间范围。
+
+        **MFA 二次校验**：操作者开了 MFA 时必须带 `mfa_code`
+        （导出审计日志 ≈ 搬走全公司的行为画像）。
+
+        过滤口径与 `GET /audit/logs` **完全一致**（同一个查询构造）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [start_time, end_time, format]
               properties:
-                start_time: { type: string, format: date-time }
-                end_time: { type: string, format: date-time }
-                format:
+                start_time: { type: string, description: 'yyyy-MM-dd HH:mm:ss' }
+                end_time: { type: string, description: 'yyyy-MM-dd HH:mm:ss' }
+                mfa_code:
                   type: string
-                  enum: [csv, json, parquet]
+                  description: MFA 动态令牌（操作者开了 MFA 时必填）
                 filter:
                   type: object
-                  description: 过滤条件
+                  description: 过滤条件（user_id / operation_type / result / resource_type）
+                  properties:
+                    user_id: { type: integer }
+                    operation_type: { type: string }
+                    result: { type: string, enum: [success, failure, denied] }
+                    resource_type: { type: string }
       responses:
-        '202':
-          description: 导出任务已接受
+        '200':
+          description: 导出文件（CSV）
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="audit-export-<ts>.csv"'
           content:
-            application/json:
+            text/csv:
               schema:
-                type: object
-                properties:
-                  task_id: { type: string }
-                  download_url:
-                    type: string
-                    description: 签名 URL（30 分钟有效）
+                type: string
+                format: binary
+        '400':
+          description: MFA 校验失败 / 时间格式非法 / 超过 50000 行上限
+        '403':
+          description: 没有 audit:audit_export 权限
 
   # ===== 健康检查（v3.1 细化）=====
   /health:

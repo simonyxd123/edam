@@ -56,7 +56,13 @@ public class WebhookDeliveryService {
 
     private final HttpClient httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
+        // 不跟随重定向：Java 的 HttpClient 默认就是 NEVER，这里写出来是为了
+        // 明确意图 —— 一个公网地址 302 到 169.254.169.254 就是一次 SSRF。
+        .followRedirects(HttpClient.Redirect.NEVER)
         .build();
+
+    /** 回调响应体最多读这么多字节（超出部分直接丢弃）。 */
+    private static final int MAX_RESPONSE_BYTES = 64 * 1024;
 
     /**
      * 投递 webhook（带重试调度）
@@ -164,6 +170,13 @@ public class WebhookDeliveryService {
      */
     private DeliveryResult doPost(String url, String payload, String signature) {
         try {
+            // 投递前**再查一次** SSRF（2026-11-08）。
+            // 注册时查过一次，但中间可能过了很久；主机名也可能在注册后
+            // 被改 DNS 指向内网（DNS 重绑定）。每次投递前重查，
+            // 把窗口压到最小 —— 查不到就**不投**（fail-closed），
+            // 不能"检查失败就当没事"。
+            com.example.edam.security.SsrfGuard.assertPublicUrl(url);
+
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
@@ -174,11 +187,20 @@ public class WebhookDeliveryService {
                 .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                 .build();
 
-            HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            int code = httpResponse.statusCode();
+            // 响应体**限量读**：原先用 BodyHandlers.ofString() —— 那个 handler
+            // 会把整个响应读进内存，而截断到 1KB 是**读完之后**才做的。
+            // 一个返回 1GB body 的（恶意或坏掉的）回调目标就能把后端 OOM 掉。
+            // 现在流式读，最多取前 64KB。
+            HttpResponse<java.io.InputStream> streamed = httpClient.send(request,
+                HttpResponse.BodyHandlers.ofInputStream());
+            int code = streamed.statusCode();
             boolean success = code >= 200 && code < 300;
-            String body = httpResponse.body();
-            // 截断到 1KB
+            String body;
+            try (java.io.InputStream in = streamed.body()) {
+                byte[] buf = in.readNBytes(MAX_RESPONSE_BYTES);
+                body = new String(buf, StandardCharsets.UTF_8);
+            }
+            // 截断到 1KB（存进 webhook_delivery.response_body）
             if (body.length() > 1024) {
                 body = body.substring(0, 1024);
             }

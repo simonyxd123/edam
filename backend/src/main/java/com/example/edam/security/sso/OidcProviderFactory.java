@@ -15,6 +15,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.Map;
 
@@ -34,6 +35,9 @@ public class OidcProviderFactory {
     private static final SecureRandom RNG = new SecureRandom();
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 与 IdP 通信的超时 —— 不设的话 IdP 挂住会一直占着 SSO 回调线程。 */
+    private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
     private final SsoStateStore stateStore;
 
@@ -154,6 +158,10 @@ public class OidcProviderFactory {
                 .uri(URI.create(config.getTokenUri()))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Accept", "application/json")
+                // **必须设超时**：`HttpClient.newHttpClient()` 没有默认请求超时，
+                // IdP 挂住时这个线程会一直等下去 —— SSO 回调线程被占住，
+                // 而且 state 还在 Redis 里等着（10 分钟 TTL）。
+                .timeout(HTTP_TIMEOUT)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
@@ -165,7 +173,13 @@ public class OidcProviderFactory {
             }
 
             JsonNode json = MAPPER.readTree(response.body());
-            return json.get("access_token").asText();
+            JsonNode tokenNode = json.get("access_token");
+            if (tokenNode == null || tokenNode.isNull()) {
+                // 原实现直接 .asText() —— 字段缺失时抛 NPE，
+                // 错误信息完全指不到"IdP 没给 access_token"
+                throw new RuntimeException("Token exchange response has no access_token");
+            }
+            return tokenNode.asText();
         }
 
         /**
@@ -176,11 +190,19 @@ public class OidcProviderFactory {
                 .uri(URI.create(config.getUserinfoUri()))
                 .header("Authorization", "Bearer " + accessToken)
                 .header("Accept", "application/json")
+                .timeout(HTTP_TIMEOUT)
                 .GET()
                 .build();
 
             HttpResponse<String> response = HTTP_CLIENT.send(request,
                 HttpResponse.BodyHandlers.ofString());
+
+            // 原实现**不看状态码**就把 body 当 userinfo 用 ——
+            // IdP 返回 401/500 时 body 是一段错误 JSON，
+            // 于是所有属性都解析成 null → 拿 null 工号去建账号（500）。
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Userinfo request failed: " + response.statusCode());
+            }
             return response.body();
         }
 

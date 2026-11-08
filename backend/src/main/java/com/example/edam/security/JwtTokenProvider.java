@@ -199,7 +199,7 @@ public class JwtTokenProvider {
         if (SmJwtTokenProvider.isSm3Token(token)) {
             if (smProvider == null) {
                 throw new IllegalArgumentException(
-                    "GS256 token，但未启用国密 provider（edam.jwt.algorithm 与 edam.worker.token 需一致）");
+                    "GS256 token，但未启用国密 provider（检查 edam.jwt.algorithm=GS256）");
             }
             return smProvider.parseToken(token);
         }
