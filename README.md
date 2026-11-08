@@ -1,6 +1,6 @@
 # EDAM - 企业全格式数字资产防泄密系统
 
-[![Version](https://img.shields.io/badge/version-3.4.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.4.2-blue.svg)](CHANGELOG.md)
 [![Release Status](https://img.shields.io/badge/status-v3.4%E5%B7%B2%E5%8F%91%E5%B8%83-brightgreen.svg)](modify/2026-10-03-v3.4短期W1-W4收官总结.md)
 [![API Coverage](https://img.shields.io/badge/API_Coverage-100%25-success.svg)](scripts/check_controller_coverage.py)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
@@ -138,7 +138,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 │ 前端展示层（Vue3 + Canvas 动态明水印）      │
 ├─────────────────────────────────────────────┤
 │ 业务后端层（Spring Boot 3.3 + JWT + RBAC）   │
-│   20 个 Controller / 98 个 REST 端点          │
+│   20 个 Controller / 99 个 REST 端点          │
 ├─────────────────────────────────────────────┤
 │ 异步处理流水线（RabbitMQ + Python Worker）   │
 │   2 条队列：video / document preprocess           │
@@ -156,7 +156,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 | 组件 | 技术 | 规模 |
 |---|---|---|
-| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 98 端点 / 30 个测试类 |
+| 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 99 端点 / 33 个测试类 / 244 用例 |
 | Worker | Python 3.10 + FastAPI + aio-pika | 2 条队列 / 9 个测试文件 |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
 | 数据库 | MySQL 8.0 + Flyway | 15 个迁移 / **35 张表** |
@@ -219,7 +219,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 
 ### 权限门在哪
 
-- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 98 个端点里 **48 个**有角色门。
+- **后端**：`@PreAuthorize("hasAuthority('video:upload')")` —— 99 个端点里 **57 个**有角色门。
   哪些端点有门、门码是什么，见 [`doc/openapi.yaml`](doc/openapi.yaml) 的
   `x-required-permission` 扩展。
 - **前端**：`v-permission` 指令按权限**隐藏**按钮（`display:none` + `data-permission-denied` 标记）。
@@ -235,7 +235,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 edam/
 ├── doc/                          # 方案与 API 规范
 │   ├── 企业全格式数字资产防泄密系统技术方案书.docx   # 主方案书（权威基准）
-│   ├── openapi.yaml              # OpenAPI 3.0 规范（77 paths / 98 端点 / 18 tag / 40 schema）
+│   ├── openapi.yaml              # OpenAPI 3.0 规范（78 paths / 99 端点 / 18 tag / 40 schema）
 │   ├── database_schema.md        # 数据表详细定义（35 张表）
 │   ├── 2026-11-05-普通员工使用手册.pdf    # 员工手册
 │   ├── 2026-11-05-管理员使用手册.pdf      # 管理员手册
@@ -281,7 +281,7 @@ edam/
 │   ├── cdc/                      # Debezium + ES CDC（独立进程）
 │   ├── elk/ monitoring/ waf/ mock/
 │
-├── helm/edam/                    # K8s Helm Chart（version 1.1.0 / appVersion 3.4.1）
+├── helm/edam/                    # K8s Helm Chart（version 1.2.0 / appVersion 3.4.2）
 ├── docker/                       # backend / worker / web Dockerfile
 ├── gitops/                       # ArgoCD：argocd/ + overlays/{dev,staging,prod}
 ├── e2e/                          # Playwright + Cypress
@@ -301,7 +301,7 @@ edam/
 
 ## 核心 API
 
-完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**77 paths / 98 端点 / 18 tag / 40 schema**）。
+完整规范：[`doc/openapi.yaml`](doc/openapi.yaml)（**78 paths / 99 端点 / 18 tag / 40 schema**）。
 
 | Tag | 端点数 | 说明 |
 |---|---|---|
@@ -325,7 +325,7 @@ edam/
 | dashboard | 1 | 仪表板统计 |
 
 > 端点数与实现的对账由 `scripts/check_controller_coverage.py` 自动跑，
-> 当前 **98 ↔ 98，100% 覆盖**。
+> 当前 **99 ↔ 99，100% 覆盖**。
 
 ---
 
@@ -384,7 +384,7 @@ cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查�
 # API 规范校验（YAML 语法 + 必需字段 + $ref 可解析）
 ./scripts/validate-openapi.sh
 
-# Controller ↔ OpenAPI 对账（应输出 98 ↔ 98 / 100%）
+# Controller ↔ OpenAPI 对账（应输出 99 ↔ 99 / 100%）
 python scripts/check_controller_coverage.py
 ```
 
@@ -481,6 +481,11 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | `q.watermark` 队列 | **已删除**（v3.4.1）—— 它从来没有生产者，真实的水印嵌入走 `q.document.preprocess`。留着一条"已声明、已绑定、已被监控、但永远是空"的队列，会让运维误以为这条链路是活的 |
 | 泄露检测（帧指纹比对） | 算法**已统一且可用**（`POST /ops/leak-detect`，受 `OPS_TOKEN` 保护）。但**三段链路尚未接线**：① 按观看用户入库指纹（`video_fingerprint` 表无写入方，现在比对的是上传时生成的 `fingerprint.json`，归属粒度是"视频"而非"用户"）② 自动触发比对（何时算"疑似泄露"是产品决策）③ 告警回后端（`leak_detection` 表与告警服务均无写入方） |
 | 文档处理回调 | **已闭环**（v3.4.1）：Worker 处理完文档会回调 `PATCH /documents/{id}/status`，水印与预览两个状态分开报，`preview_path` / `watermark_path` 一并回写 |
+| **外发链接** | **没有这个端点**（v3.4.2 查清）：外发审批只做**审批**（同意 / 驳回 / 撤销 / 决策留痕），**不签发**任何能给外部接收方用的下载链接 —— 没有 `/external/*` 路由，`external_doc_view_log` 表也没有写入方。`max_open_count` / `current_open_count` 字段存在但恒为初值。早先的管理员手册把它写成可用功能，现已按代码更正 |
+| **权限码 ≠ 权限** | 权限目录 46 条里只有 **25 条**真正挂在端点上（`@PreAuthorize`），另 21 条（`mfa:manage` / `system:manage` / `leak:manage` / `sso:manage` / `document:download` / `document:print` / `video:download` / `report:*` / `notification:manage` …）**没有任何端点读取** —— 在「角色权限」页勾它们**不会**让角色多出对应能力。实际生效的门以 `doc/openapi.yaml` 的 `x-required-permission` 为准 |
+| **access_token 不能即时吊销** | 紧急吊销（`POST /users/{id}/revoke-keys`，v3.4.2 已从空实现改成真吊销）能**立即**作废该用户全部 refresh_token ⇒ 续期通道当场断掉；但**已签发**的 access_token 是无状态 JWT、服务端无黑名单，最多再存活一个 TTL（默认 10 分钟）。这是 JWT 无状态的固有代价 |
+| **系统配置不可持久化** | 没有配置持久化端点。「设置 → 系统配置」Tab 里的值是后端 `application.yml` 的当前值，点「保存配置」会明确提示要走配置文件 + 重启 |
+| **外发审批的前端字段曾对不上** | v3.4.2 修：请求 DTO 缺 `@JsonProperty`，前端发的 `doc_id` / `external_recipient` / `valid_hours` 全绑不上 ⇒ 「发起外发审批」在界面上从来就没成功过（恒 400）。现已逐个标注 |
 | ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
 | `fingerprint/` 下三个 Service | **算法已统一**（v3.4.1）：pHash 与盲水印各只有一份实现，两边逐位相同（此前 imagehash 与手写 DCT 并存 ⇒ 指纹对不上、匹配率 ≈ 0 且不报错）。泄露比对已可通过 `POST /ops/leak-detect` 调用，但产品链路未闭环（见上一行） |
 | SSO | 默认 `edam.sso.enabled: false` |

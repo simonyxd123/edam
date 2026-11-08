@@ -13,6 +13,106 @@
 
 ---
 
+## [3.4.2] - 2026-11-08
+
+> v3.4.1 把「写好但没接线」的功能接上了线；这一版是**回头审一遍已上线代码**，
+> 结果挖出四个比那八项更严重的问题 —— 特征都是：
+> **接口返回成功、界面弹"成功"、但底层什么都没发生**，或者
+> **前端按权限过滤了菜单、后端却没设门**。
+
+### 修复
+
+#### 一批端点漏了 `@PreAuthorize`，任何登录用户都能直接调
+
+前端菜单早就按权限过滤了（「审计日志」要 `audit:read`），
+但后端对应端点**没有门** —— 绕过菜单直接调 API 就行：
+
+| 端点 | 漏掉的后果 | 补的门 |
+|---|---|---|
+| `GET /audit/logs*` | **全公司操作审计日志**（谁在哪个 IP 预览了哪个 L4 文档） | `audit:read` |
+| `GET /users`、`GET /users/{id}` | 全公司员工名册（工号 / 邮箱 / 部门 / MFA 开关 / 登录失败次数 / 最后登录 IP） | `user:read` |
+| `GET /admin/backups` | 备份清单（今天返回空列表，是个等着被填上的洞） | `admin:backup` |
+| `GET /rbac/users/{id}/permissions` | 任意用户的有效权限清单 | `user:read or role:read` |
+
+- 这四个权限码**本来就在权限目录里**，`dept_manager` / `auditor` 也早就授权了 ——
+  只是端点忘了写 `@PreAuthorize`。补门不影响既有角色。
+- 新增 `EndpointAuthorizationTest`：扫全部 `@RestController`，
+  每个端点要么有门、要么在**例外清单**里写明"这里靠什么鉴权"。
+  以后再加端点忘了设门 ⇒ 测试红。例外清单同时校验"没有僵尸条目"。
+
+#### 「紧急吊销」是个空实现
+
+`POST /users/{id}/revoke-keys` 原先只打了一条日志就返回 204 ——
+**token 一个都没作废**。管理员在界面点「紧急吊销」，弹成功提示，然后什么都没发生。
+`sys_session.revoked` 字段、`SysSessionRepository.revokeAllByUserId` 全是死代码。
+
+- Redis 维护「用户 → 其 refresh_token 集合」索引（原先只有 `refresh:<token>` → userId，
+  **没法按用户反查**，只有 `KEYS refresh:*` 全库扫描这种下策）
+- 吊销 = 取出索引里的 token 逐个作废 + `sys_session.revoked = 1` 留痕
+- 前端补上「紧急吊销」按钮（原先**根本不存在**，只有手册里有）
+- 口径写准：**refresh_token 立即作废（续期通道当场断）**；
+  已签发的 access_token 是无状态 JWT、无服务端黑名单，最多再活一个 TTL（10 分钟）
+
+#### refresh 不查账号状态、refresh_token 不轮换
+
+- 管理员把离职员工禁用（status=2）之后，他手上的 refresh_token 照样能换出
+  新的 access_token —— 「禁用」只是个页面上的标记，管不住人。
+  现在 `/auth/refresh` 也走 `assertLoginAllowed`。
+- refresh_token 原封不动继续用，一张泄露的能在整个 7 天 TTL 里无限续期，
+  **没有失效点、没有重放检测**。现在**每次刷新轮换**：旧的当场作废，
+  响应里回一张新的（前端 `client.ts` 已兼容）。
+
+#### 外发审批模块
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| 请求 DTO 缺 `@JsonProperty` | 前端发 `doc_id` / `external_recipient` / `valid_hours` **全绑不上** ⇒ 「发起外发审批」在界面上从来就没成功过（恒 400） | 逐个标注 snake_case |
+| 入参不校验 | 缺 `external_recipient` ⇒ NPE → **500**；缺 `reason` / `valid_hours` ⇒ 撞 NOT NULL → **500** | 统一入口校验，非法一律 **400** |
+| 审批意见不保存 | `comment` 收了却从不写；`distribution_approval_decision` 表**零引用** ⇒ 谁批的、什么时候、批语是什么**全都查不到** | 写决策流水表，新增 `GET /distribution/approvals/{id}/decisions` |
+| 没有状态机 | 已驳回的申请能被再"批准"一次 | 只允许 `pending` 决策，否则 **409** |
+| 可以自审自批 | 有 `distribution:approve` 的人能审批**自己**提交的申请 | 申请人 ≠ 审批人，否则 **403** |
+| 驳回可以不写理由 | 事后追责只剩"被拒了"三个字 | 驳回时 `comment` 为空 ⇒ **400** |
+
+### 文档（按代码为准，改掉手册里的失真描述）
+
+- **管理员手册 §4 外发链接**：手册写着"同意 → 颁发外发链接"并给出
+  `https://EDAM/external/token?doc_id=N` —— **那个端点从来不存在**，
+  没有 `/external/*` 路由，`external_doc_view_log` 表也没有任何写入方。
+  审批通过后**不会**产生外部接收方能用的链接。已按代码改写。
+- **管理员手册 §3.3 权限目录**：46 条权限码里只有 **25 条**真正挂在端点上，
+  另 **21 条**没有任何端点读取（含 `mfa:manage` / `system:manage` /
+  `leak:manage` / `sso:manage` / `document:download` / `document:print` 等）。
+  在「角色权限」页勾它们**不会**让角色多出对应能力 —— 手册已写明。
+- **管理员手册 §9 系统配置**：手册说"修改后点保存 → 重启后端生效"，
+  实际上**没有配置持久化端点**（前端点保存会明确提示要走配置文件）。已改。
+- **管理员手册 §8.2 紧急吊销**："立即失效"改成准确口径（见上）。
+
+### 工具
+
+- `scripts/sync_openapi_permissions.py` 此前 `--write` 会给已有权限行的 operation
+  **再插一行**，产生重复 YAML key（解析器只认最后一个，规范文件不可审阅）；
+  且只认方法级 `@PreAuthorize`、只取多权限表达式里的**第一个** ——
+  类级门被整段漏掉，多权限端点的契约被悄悄削弱。现已全部修正。
+- 新增 `distribution_approval_decision` 的 Java 侧 model / repository。
+
+### 变更
+
+- 端点数 98 → **99**（新增 1 个决策流水查询端点）
+- 有角色门的端点 48 → **57**
+- OpenAPI 77 → **78** paths
+- 版本 3.4.1 → **3.4.2**（7 处版本号同步）
+
+### 验证
+
+- 后端 219 → **244** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+  需要真实 MySQL，与本次无关）
+- 前端 58 用例全绿
+- Worker 99 通过 / 2 跳过（未改动 Worker 代码）
+- 端点对账 98 ↔ 98 → **99 ↔ 99 / 100%**
+- OpenAPI 78 paths / 99 ops / 40 schemas / 18 tags，全部 `$ref` 可解析、无重复 key
+
+---
+
 ## [3.4.1] - 2026-11-07
 
 > 本版本修掉 v3.4.0 盘点出的**真问题** —— 不是文档，是代码里真实存在的洞。

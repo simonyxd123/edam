@@ -3,7 +3,7 @@ name: edam
 description: 企业全格式数字资产防泄密系统 Helm Chart
 type: application
 version: 1.2.0
-appVersion: "3.4.1"
+appVersion: "3.4.2"
 home: https://example.com/edam
 sources:
   - https://example.com/edam.git

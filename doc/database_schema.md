@@ -243,6 +243,12 @@ sso:manage, mfa:manage
 ```
 
 > **注意**：目录里有权限码 ≠ 端点上有对应的 `@PreAuthorize`。
+> 46 条里只有 **25 条**真正挂在端点上，另 **21 条**目前没有任何端点读取
+> （`mfa:manage` / `system:manage` / `leak:manage` / `sso:manage` /
+> `document:download` / `document:print` / `video:download` /
+> `report:read` / `notification:manage` …）。
+> **在管理界面勾这些码不会让角色多出对应能力** ——
+> 权限目录是面向未来的清单，功能长出来时直接挂上去即可。
 > 端点实际校验的码见 [`doc/openapi.yaml`](openapi.yaml) 的
 > `x-required-permission` 扩展（如 `document:download` / `video:download` /
 > `document:print` 目前**没有**角色级端点校验 ——
@@ -430,6 +436,14 @@ sso:manage, mfa:manage
 **索引**：
 - PRIMARY KEY (id)
 - KEY idx_approval_id (approval_id)
+
+> **写入方（2026-11-08 接入）**：此前这张表在 Java 侧**零引用** ——
+> `DistributionController.decide()` 只改审批单主表的 `status`，
+> 收进来的 `comment`（审批意见）**从不保存**，
+> 于是"谁批的、什么时候批的、批语是什么"全都查不到。
+> 现在每次决策写一条流水，查询端点
+> `GET /distribution/approvals/{id}/decisions`。
+> 审批单主表保留**当前状态**，本表保留**历史**，两者合起来才是证据链。
 
 ---
 
