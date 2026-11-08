@@ -17,6 +17,7 @@ from minio import Minio
 from prometheus_client import start_http_server
 import requests
 
+from . import __version__
 from .config import settings
 from .errors import PermanentWorkerError
 from .ffmpeg_probe import probe_ffmpeg, remediation
@@ -375,7 +376,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EDAM Worker",
-    version="3.4.1",
+    # 版本号跟着包版本走 —— 原先这里写死 "3.4.1"，发版时漏改
+    version=__version__,
     lifespan=lifespan,
 )
 

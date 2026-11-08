@@ -13,6 +13,7 @@ import structlog
 from minio import Minio
 
 from ..config import backend_api_url, settings
+from ..procutil import kill_process
 from ..errors import PermanentWorkerError
 from .watermark import WatermarkProcessor
 
@@ -265,7 +266,16 @@ class DocumentProcessor:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        # **必须带超时**（2026-11-08 补）：LibreOffice headless 挂在畸形
+        # docx 上是家常便饭，裸 communicate() 会让协程永远不返回，
+        # 10 个这样的任务就把 worker 堵死（且没有异常、没有日志）。
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=settings.LIBREOFFICE_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            await kill_process(proc)
+            raise RuntimeError(
+                f"LibreOffice 转换超时（{settings.LIBREOFFICE_TIMEOUT_SEC}s）")
         # 必须检查 returncode —— 原来从不检查，LibreOffice 失败也静默通过，
         # 最后把一个不存在的 .pdf 当成"预览成功"上传
         if proc.returncode != 0:

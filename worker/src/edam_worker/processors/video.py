@@ -16,6 +16,7 @@ import structlog
 from minio import Minio
 
 from ..config import backend_api_url, settings
+from ..procutil import kill_process
 from ..errors import PermanentWorkerError
 from ..fingerprint.phash import compute_frame_phash, phash_to_hex
 from ..fonts import FONT_CANDIDATES, find_font
@@ -155,7 +156,22 @@ class VideoProcessor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            # **必须带超时**（2026-11-08 补）：原先是裸 await communicate()，
+            # 没有超时 ⇒ 一个损坏的文件就能让协程永远不返回，
+            # 而 prefetch_count=10 ⇒ 10 个卡死的 ffprobe 就把 worker 堵死，
+            # 且没有任何异常、没有日志（健康检查照样 ok）。
+            # 超时后要**杀掉子进程**，否则它继续占着 CPU。
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=settings.FFPROBE_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                await kill_process(proc)
+                log.error("ffprobe_timeout",
+                          input_path=input_path,
+                          timeout_sec=settings.FFPROBE_TIMEOUT_SEC)
+                return None
             if proc.returncode != 0:
                 log.warning("ffprobe_failed",
                             returncode=proc.returncode,
@@ -372,7 +388,21 @@ class VideoProcessor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=output_dir,
             )
-            stdout, stderr = await proc.communicate()
+            # **必须带超时**（2026-11-08 补）：见 _probe_duration 处的说明 ——
+            # 裸 communicate() 会让一个卡死的 FFmpeg 永久占住协程，
+            # 10 个这样的任务就把 worker 堵死。超时后杀掉子进程。
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=settings.FFMPEG_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                await kill_process(proc)
+                log.error("ffmpeg_timeout",
+                           video_id=video_id,
+                           timeout_sec=settings.FFMPEG_TIMEOUT_SEC)
+                raise RuntimeError(
+                    f"FFmpeg HLS 转码超时（{settings.FFMPEG_TIMEOUT_SEC}s）：{video_id}")
             err = stderr.decode("utf-8", errors="replace")
 
             if proc.returncode == 0:

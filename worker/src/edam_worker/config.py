@@ -98,6 +98,26 @@ class Settings:
     WORKER_CALLBACK_RETRY_BACKOFF_SEC: float = field(
         default_factory=lambda: _env("WORKER_CALLBACK_RETRY_BACKOFF_SEC", 2.0))
 
+    # ----------------------------------------------------------------
+    # 外部子进程的超时（FFmpeg / ffprobe）
+    #
+    # 为什么必须有：这两个子进程原先是**裸 await proc.communicate()**，
+    # 没有超时。一个 pathological 的输入（损坏的文件、卡死的网络流、
+    # FFmpeg 自己死锁）会让协程**永远不返回** ——
+    # 而 prefetch_count=10 ⇒ 10 个卡住的任务就把整个 worker 堵死，
+    # 队列不再消费，而且没有任何异常、没有任何日志（进程还"活着"，
+    # 健康检查照样返回 ok）。
+    #
+    # 超时之后要**杀掉子进程**，否则它继续占着 CPU 和内存。
+    # ----------------------------------------------------------------
+    FFMPEG_TIMEOUT_SEC: float = field(
+        default_factory=lambda: _env("FFMPEG_TIMEOUT_SEC", 3600.0))
+    FFPROBE_TIMEOUT_SEC: float = field(
+        default_factory=lambda: _env("FFPROBE_TIMEOUT_SEC", 120.0))
+    # LibreOffice headless 转 PDF（docx/xlsx → pdf）
+    LIBREOFFICE_TIMEOUT_SEC: float = field(
+        default_factory=lambda: _env("LIBREOFFICE_TIMEOUT_SEC", 600.0))
+
 
 settings = Settings()
 
