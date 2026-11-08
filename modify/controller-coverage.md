@@ -9,9 +9,9 @@
 
 | 指标 | 数值 |
 | --- | --- |
-| OpenAPI 端点总数 | 98 |
-| Controller 实现端点数 | 98 |
-| 已覆盖 | 98 (100.0%) |
+| OpenAPI 端点总数 | 99 |
+| Controller 实现端点数 | 99 |
+| 已覆盖 | 99 (100.0%) |
 | ⚠️ 未实现（OpenAPI 缺失） | **0** |
 | 多余（实现但 OpenAPI 无） | 0 |
 
@@ -27,7 +27,7 @@
 
 ## 四、已覆盖端点清单
 
-共 98 个端点，详见 `controller-coverage-covered.json` 备份文件。
+共 99 个端点，详见 `controller-coverage-covered.json` 备份文件。
 
 ## 五、优先级建议
 

@@ -175,6 +175,13 @@
     "impl": "DistributionController"
   },
   {
+    "method": "GET",
+    "path": "/distribution/approvals/{approval_id}/decisions",
+    "tag": "distribution",
+    "summary": "审批决策流水",
+    "impl": "DistributionController"
+  },
+  {
     "method": "POST",
     "path": "/distribution/approvals/{approval_id}/decide",
     "tag": "distribution",

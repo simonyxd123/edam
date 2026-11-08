@@ -340,6 +340,37 @@ async function deleteUser(u: SysUserView) {
   }
 }
 
+/**
+ * 紧急吊销用户的全部密钥（离职 / 违规）。
+ *
+ * <p>后端原先这个端点是空实现 —— 点「紧急吊销」弹成功提示，
+ * 但 token 一个都没作废（v3.4.1 审计发现，2026-11-07 修）。
+ */
+async function revokeUserKeys(u: SysUserView) {
+  if (!userStore.hasPermission('user:manage')) {
+    ElMessage.warning('没有 user:manage 权限');
+    return;
+  }
+  if (u.id === 1) {
+    ElMessage.warning('默认 admin 账号不可吊销');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认紧急吊销 "${u.real_name ?? u.username}" (${u.employee_no}) 的全部密钥？\n` +
+        `该用户立即无法再续期登录（已签发的 access_token 最多再存活 10 分钟）。`,
+      '紧急吊销',
+      { type: 'error', confirmButtonText: '吊销', cancelButtonText: '取消' }
+    );
+    await rbacApi.revokeKeys(u.id);
+    ElMessage.success('密钥已吊销');
+  } catch (e: any) {
+    if (!isDialogDismissed(e)) {
+      ElMessage.error('吊销失败：' + (e?.message || '未知'));
+    }
+  }
+}
+
 // ============== 用户分配角色弹窗 ==============
 const userAssignDialog = ref(false);
 const userAssignForm = ref<{ user: SysUserView | null; roleIds: number[] }>({
@@ -599,6 +630,15 @@ onMounted(async () => {
                 @click="openResetPassword(row as SysUserView)"
               >
                 重置密码
+              </el-button>
+              <el-button
+                v-permission="'user:manage'"
+                link
+                type="danger"
+                @click="revokeUserKeys(row as SysUserView)"
+                :disabled="row.id === 1"
+              >
+                紧急吊销
               </el-button>
               <el-button
                 v-permission="'user:manage'"

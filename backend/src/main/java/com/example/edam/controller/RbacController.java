@@ -220,6 +220,7 @@ public class RbacController {
      * 现在统一到 {@code /rbac/*} 前缀下，与 RbacController 其余端点一致。
      */
     @GetMapping("/users/{user_id}/permissions")
+    @PreAuthorize("hasAuthority('user:read') or hasAuthority('role:read')")
     @Operation(summary = "用户的有效权限（含 RBAC + 资源 ACL）")
     @AuditOp(op = AuditOpType.LIST, resourceType = "user_permission", resourceId = "#userId")
     public List<Map<String, Object>> getUserPermissions(

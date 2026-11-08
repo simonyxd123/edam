@@ -22,6 +22,12 @@ import java.util.UUID;
  * 对应 openapi.yaml tag: admin
  *
  * 高危操作（备份/恢复）需 MFA + 二级审批
+ *
+ * <p><b>三个端点全部要 {@code admin:backup} 门（2026-11-07 补）</b>：
+ * 触发备份与恢复本来就有门，只有"备份列表"漏了 —— 对任何登录用户敞开。
+ * 今天它返回空列表所以没漏东西，但这是个**等着被填上的洞**：
+ * 谁来实现备份列表，谁就会不小心把备份清单（备份时间点、覆盖范围、
+ * 数据库快照位置）暴露给全体员工。
  */
 @Slf4j
 @RestController
@@ -31,6 +37,7 @@ import java.util.UUID;
 public class AdminController {
 
     @GetMapping("/backups")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('admin:backup')")
     @Operation(summary = "备份列表")
     @AuditOp(op = AuditOpType.LIST, resourceType = "backup")
     public List<Map<String, Object>> listBackups() {

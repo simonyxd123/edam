@@ -29,6 +29,14 @@ import java.util.stream.Collectors;
  * 用户管理 Controller（v3.2 V-1 RBAC Phase 2）
  * 输出 snake_case JSON（用 SysUserView DTO 转换），前端 UserDoc 接口字段对齐
  * 所有写接口 @PreAuthorize('user:manage') 保护
+ *
+ * <p><b>读接口同样有门（2026-11-07 补）</b>：原先只给写接口设门，
+ * {@code GET /users} 与 {@code GET /users/{id}} 对**所有登录用户**敞开 ——
+ * 任何普通员工都能拉出全公司员工名册（工号 / 姓名 / 邮箱 / 部门 /
+ * MFA 开关 / 登录失败次数 / 最后登录时间与 IP）。前端「用户管理」Tab 在
+ * 「角色权限」页里、只对 admin 可见，但那只是菜单过滤，API 本身没人管。
+ * 现在按权限目录里已有的 {@code user:read} 设门 ——
+ * admin 与 dept_manager 都持有该权限（见 rbac_seed 迁移），不受影响。
  */
 @Slf4j
 @RestController
@@ -40,8 +48,10 @@ public class UserController {
     private final PasswordEncoder passwordEncoder;
     private final com.example.edam.service.PasswordService passwordService;
     private final com.example.edam.security.PasswordPolicy passwordPolicy;
+    private final com.example.edam.service.AuthService authService;
 
     @GetMapping
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:read')")
     @AuditOp(op = AuditOpType.LIST, resourceType = "user")
     public Map<String, Object> list(
         @RequestParam(defaultValue = "1") int page,
@@ -115,6 +125,7 @@ public class UserController {
     }
 
     @GetMapping("/{user_id}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:read')")
     @AuditOp(op = AuditOpType.DETAIL, resourceType = "user", resourceId = "#userId")
     public SysUserView getById(@PathVariable("user_id") Long userId) {
         SysUser user = userRepository.findById(userId);
@@ -193,6 +204,18 @@ public class UserController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * 紧急吊销该用户的全部密钥（离职 / 违规）。
+     *
+     * <p><b>原实现是空壳</b>（2026-11-07 修）：只打了一条日志就返回 204，
+     * token 一个都没作废 —— 管理员点「紧急吊销」看到成功提示，
+     * 但被吊销的人照样能用 refresh_token 续期 7 天。
+     *
+     * <p>现在真的会吊销（见 {@code AuthService#revokeAllForUser}）：
+     * 该用户全部 refresh_token 立即作废，他再也换不到新的 access_token。
+     * 已经签发出去的那张 access_token 是无状态 JWT，会活到自己的 TTL
+     * （默认 10 分钟）为止 —— 这是架构事实，手册里按这个口径写。
+     */
     @PostMapping("/{user_id}/revoke-keys")
     @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('user:manage')")
     @AuditOp(op = AuditOpType.UPDATE, resourceType = "user", resourceId = "#userId",
@@ -201,7 +224,7 @@ public class UserController {
         @PathVariable("user_id") Long userId,
         @CurrentUserId Long operatorId
     ) {
-        log.warn("user_keys_revoked, user_id={}, operator_id={}", userId, operatorId);
+        authService.revokeAllForUser(userId, "紧急吊销 by operator " + operatorId);
         return ResponseEntity.noContent().build();
     }
 

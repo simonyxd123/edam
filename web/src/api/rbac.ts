@@ -102,6 +102,15 @@ export const rbacApi = {
 
   deleteUser: (id: number) =>
     api.delete<void>(`/users/${id}`),
+
+  /**
+   * 紧急吊销该用户的全部密钥（离职 / 违规）。
+   *
+   * <p>吊销后该用户**立即**换不到新的 access_token（refresh_token 全部作废）；
+   * 已经签发出去的那张 access_token 是无状态 JWT，最多再活一个 TTL（10 分钟）。
+   */
+  revokeKeys: (id: number) =>
+    api.post<void>(`/users/${id}/revoke-keys`),
 };
 
 // SysUserView 类型（与后端 SysUserView DTO 对齐）

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -56,6 +57,7 @@ class TokenIssuanceServiceTest {
     private PermissionService permissionService;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> valueOps;
+    private SetOperations<String, String> setOps;
     private TokenIssuanceService service;
 
     @BeforeEach
@@ -69,7 +71,11 @@ class TokenIssuanceServiceTest {
         permissionService = mock(PermissionService.class);
         redisTemplate = mock(StringRedisTemplate.class);
         valueOps = mock(ValueOperations.class);
+        // 「用户 → refresh_token 集合」索引用 SetOperations（2026-11-07 加，
+        // 紧急吊销要按用户反查 token，见 TokenIssuanceService#revokeAllForUser）
+        setOps = mock(SetOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(redisTemplate.opsForSet()).thenReturn(setOps);
 
         service = new TokenIssuanceService(
             jwtTokenProvider, userRoleService, permissionService, redisTemplate);
@@ -143,16 +149,54 @@ class TokenIssuanceServiceTest {
     }
 
     @Test
-    @DisplayName("刷新 access_token 不轮换 refresh_token")
-    void refreshDoesNotRotateRefreshToken() {
+    @DisplayName("刷新时轮换 refresh_token —— 旧的立刻作废（2026-11-07 改）")
+    void refreshRotatesRefreshToken() {
         SysUser user = user(3L, "E000003");
         when(userRoleService.getRoleCodes(3L)).thenReturn(List.of("employee"));
         when(permissionService.getUserPermissionCodes(3L)).thenReturn(Set.of("video:read"));
 
-        TokenIssuanceService.IssuedTokens tokens = service.refresh(user);
+        TokenIssuanceService.IssuedTokens tokens = service.refresh(user, "old-refresh-token");
 
         assertNotNull(tokens.getAccessToken());
-        org.junit.jupiter.api.Assertions.assertNull(tokens.getRefreshToken());
+        // 轮换后必须给出一张新的 refresh_token
+        assertNotNull(tokens.getRefreshToken());
+        org.junit.jupiter.api.Assertions.assertNotEquals("old-refresh-token",
+            tokens.getRefreshToken());
+        // 旧的当场作废，且从该用户的 token 索引里摘掉
+        verify(redisTemplate).delete("refresh:old-refresh-token");
+        verify(setOps).remove("refresh:user:3", "old-refresh-token");
+        // 新的进 Redis 并登记进索引
+        verify(valueOps).set(eq("refresh:" + tokens.getRefreshToken()),
+            eq("3"), eq(Duration.ofSeconds(604800L)));
+        verify(setOps).add("refresh:user:3", tokens.getRefreshToken());
+    }
+
+    @Test
+    @DisplayName("紧急吊销：按用户反查 token 索引并逐个作废")
+    void revokeAllForUserDeletesEveryRefreshToken() {
+        when(setOps.members("refresh:user:5")).thenReturn(Set.of("t1", "t2"));
+        when(redisTemplate.delete("refresh:t1")).thenReturn(true);
+        when(redisTemplate.delete("refresh:t2")).thenReturn(true);
+
+        int revoked = service.revokeAllForUser(5L);
+
+        assertEquals(2, revoked);
+        verify(redisTemplate).delete("refresh:t1");
+        verify(redisTemplate).delete("refresh:t2");
+        // 索引本身也要删掉，否则下次吊销会重复处理同一批
+        verify(redisTemplate).delete("refresh:user:5");
+    }
+
+    @Test
+    @DisplayName("紧急吊销：token 已经过期时也不报错，索引照样清掉")
+    void revokeAllForUserToleratesExpiredTokens() {
+        when(setOps.members("refresh:user:6")).thenReturn(Set.of("gone"));
+        when(redisTemplate.delete("refresh:gone")).thenReturn(false);
+
+        int revoked = service.revokeAllForUser(6L);
+
+        assertEquals(0, revoked);
+        verify(redisTemplate).delete("refresh:user:6");
     }
 
     @Test

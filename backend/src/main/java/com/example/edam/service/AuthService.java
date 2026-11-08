@@ -43,6 +43,7 @@ public class AuthService {
     private final LoginAttemptService loginAttemptService;
     private final PasswordService passwordService;
     private final TokenIssuanceService tokenIssuanceService;
+    private final com.example.edam.repository.SysSessionRepository sysSessionRepository;
 
     /**
      * 自助修改个人资料。
@@ -157,6 +158,9 @@ public class AuthService {
      * 刷新 access_token
      */
     public Map<String, Object> refresh(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new IllegalArgumentException("refresh_token 不能为空");
+        }
         String userId = redisTemplate.opsForValue().get("refresh:" + refreshToken);
         if (userId == null) {
             throw new IllegalArgumentException("refresh_token 无效或已过期");
@@ -166,14 +170,58 @@ public class AuthService {
             throw new ResourceNotFoundException("用户不存在");
         }
 
-        // 从 DB 读真实角色 + 权限码，写进 token
-        TokenIssuanceService.IssuedTokens tokens = tokenIssuanceService.refresh(user);
+        // 账号状态：禁用 / 锁定的账号不该再续期。
+        // 原先这里只查 token 存不存在 —— 管理员把离职员工禁用掉之后，
+        // 他手上的 refresh_token 照样能换出新的 access_token，
+        // "禁用"就只是个页面上的标记，管不住人。
+        loginAttemptService.assertLoginAllowed(user);
+
+        // 从 DB 读真实角色 + 权限码，写进 token；顺带**轮换** refresh_token
+        // （旧的那张立刻作废，见 TokenIssuanceService#refresh）。
+        TokenIssuanceService.IssuedTokens tokens =
+            tokenIssuanceService.refresh(user, refreshToken);
 
         Map<String, Object> response = new HashMap<>();
         response.put("access_token", tokens.getAccessToken());
+        // 轮换后的新 refresh_token 必须回给客户端，否则客户端手里的旧 token
+        // 下一轮就废了 —— 前端 client.ts 已经会把它写回 localStorage。
+        response.put("refresh_token", tokens.getRefreshToken());
         response.put("token_type", "Bearer");
         response.put("expires_in", tokenIssuanceService.accessTokenTtlSeconds());
         return response;
+    }
+
+    /**
+     * 紧急吊销该用户的全部密钥（离职 / 违规）。
+     *
+     * <p>原实现是个**空壳** —— {@code /users/{id}/revoke-keys} 只打了一条日志
+     * 就返回 204，token 一个都没作废。管理员在界面上点「紧急吊销」，
+     * 弹个成功提示，然后**什么都没发生**。
+     *
+     * <p>现在做三件事：
+     * <ol>
+     *   <li>删掉该用户全部 refresh_token（Redis）—— 这一刻起他再也续不了期</li>
+     *   <li>{@code sys_session.revoked = 1}（DB 留痕；会话表目前还没人写，
+     *       但吊销路径先接上，将来会话落库就自动生效）</li>
+     *   <li>写一条审计（{@code revoke_keys}）</li>
+     * </ol>
+     *
+     * <p><b>已经签发出去的 access_token 不会立刻消失</b>：它是无状态 JWT，
+     * 服务端没有黑名单，只能等它自己的 TTL（默认 10 分钟）走完。
+     * 这是架构事实，不是实现偷懒 —— 管理员手册按这个口径写。
+     */
+    public int revokeAllForUser(Long userId, String reason) {
+        int revoked = tokenIssuanceService.revokeAllForUser(userId);
+        try {
+            sysSessionRepository.revokeAllByUserId(userId, reason);
+        } catch (Exception e) {
+            // DB 侧留痕失败**不能**让吊销失败 —— Redis 那一步已经生效了，
+            // token 已经续不了了；这里只是少了条会话留痕。
+            log.warn("session_revoke_failed, user_id={}, error={}", userId, e.toString());
+        }
+        log.warn("user_keys_revoked user_id={} revoked_refresh_tokens={} reason={}",
+            userId, revoked, reason);
+        return revoked;
     }
 
     /**
