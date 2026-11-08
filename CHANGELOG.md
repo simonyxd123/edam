@@ -149,6 +149,26 @@ L3「同部门可见」的范围也一并变了。
 超时配置：`FFMPEG_TIMEOUT_SEC`（3600）/ `FFPROBE_TIMEOUT_SEC`（120）/
 `LIBREOFFICE_TIMEOUT_SEC`（600）。
 
+#### 模型 ↔ 数据库列 对账：Webhook 投递历史看不出重试
+
+写脚本把 24 个 Java model 的每个字段与 35 张迁移建出来的表逐列对账
+（处理 `ADD COLUMN` / `CHANGE COLUMN` / `DROP COLUMN`）：**0 处不匹配**。
+但查出 **7 列"库里有、model 里没有"**，其中一处是真缺口：
+
+- `webhook_delivery.retry_count` / `next_retry_at` —— 表里从建表起就有，
+  `WebhookDelivery` model **一直没映射** ⇒
+  `retry_count` 恒为 0（"失败了 3 次然后成功"和"一次就成功"在列表里长得一模一样）、
+  `next_retry_at` 恒为 NULL（**看不出"这条还在等重试"**）。
+  现在 model 补上两个字段，投递时写 `attempt`、调度重试时回写下次重试时间。
+
+另两列已在 `doc/database_schema.md` 写明是**未接线的历史遗留**：
+
+- `sys_user.default_classification`（注释写着"用户上传默认密级（按部门）"）——
+  Java 侧**零引用**，管理员改了它**不生效**。
+  实际生效的是上传时 `ClassificationEnforcement` 现算的基线（按**上传者所在部门**），
+  也就是说"按部门定密级"这条规则**已经实现了**，只是不走这一列。
+- `sys_user.pwd_history` —— 真正的密码历史在独立的 `password_history` 表。
+
 ### 文档（按代码为准，改掉手册里的失真描述）
 - **管理员手册 §4 外发链接**：手册写着"同意 → 颁发外发链接"并给出
   `https://EDAM/external/token?doc_id=N` —— **那个端点从来不存在**，
@@ -179,7 +199,7 @@ L3「同部门可见」的范围也一并变了。
 
 ### 验证
 
-- 后端 219 → **258** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+- 后端 219 → **259** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
 - 新增测试：`SsoUserProvisioningTest`（6）、`RbacControllerTest`（3）、
   `AuditServiceExportTest`（5）
