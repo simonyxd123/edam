@@ -143,6 +143,40 @@ class AuditAspectTest {
     }
 
     // ==================================================================
+    // detail 模板求值
+    // ==================================================================
+
+    @Test
+    @DisplayName("detail 的 k=v 模板要真求值出来（整串丢给 SpEL 会被当成赋值而失败）")
+    void detailTemplateIsEvaluated() throws Throwable {
+        // 回归锁：detail 曾被整串丢进 SpEL.parseExpression()，
+        // 而 SpEL 把 '=' 当**赋值运算符** ⇒ "employee_no=#request.employeeNo"
+        // 报 EL1009E「cannot be set on null」、带逗号的报 EL1041E。
+        // 结果是全仓 40 多处 @AuditOp(detail=...) 的补充说明**全部为空**。
+        givenMethod("withDetail");
+
+        aspect.around(pjp);
+
+        String detail = capturedDetail();
+        assertTrue(detail.contains("level=L2"),
+            "detail 的值必须求值成实际值，而不是原文或空白：" + detail);
+        assertFalse(detail.contains("#level"),
+            "求值成功后不该再残留表达式原文：" + detail);
+    }
+
+    @Test
+    @DisplayName("detail 里引用不到的变量保留原文，不整段丢弃")
+    void detailKeepsUnresolvableValue() throws Throwable {
+        givenMethod("withDetailUnknownVar");
+
+        aspect.around(pjp);
+
+        String detail = capturedDetail();
+        assertTrue(detail.contains("who=#noSuchVar"),
+            "求不出值时保留原文，好过留白让人看不出这里本该有内容：" + detail);
+    }
+
+    // ==================================================================
     // 操作者 / IP / 端点
     // ==================================================================
 
@@ -257,8 +291,17 @@ class AuditAspectTest {
     private void givenMethod(String fixtureMethod) throws Throwable {
         Method method = methodOf(fixtureMethod);
         when(signature.getMethod()).thenReturn(method);
-        when(signature.getParameterNames()).thenReturn(new String[]{"videoId"});
-        when(pjp.getArgs()).thenReturn(new Object[]{7L});
+        // 参数名与实参按方法真实签名给 —— SpEL 变量（#videoId / #level）
+        // 就是按参数名绑定的，写死一份会让多参数的 fixture 取不到值。
+        Class<?>[] types = method.getParameterTypes();
+        String[] names = new String[types.length];
+        Object[] args = new Object[types.length];
+        for (int i = 0; i < types.length; i++) {
+            names[i] = i == 0 ? "videoId" : "level";
+            args[i] = i == 0 ? 7L : "L2";
+        }
+        when(signature.getParameterNames()).thenReturn(names);
+        when(pjp.getArgs()).thenReturn(args);
         when(pjp.proceed()).thenReturn("ok");
     }
 
@@ -355,5 +398,15 @@ class AuditAspectTest {
         @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
             auditSuccess = false)
         void skipSuccess(Long videoId) {}
+
+        /** detail 里的值来自方法参数（#level 对应参数 level） */
+        @AuditOp(op = AuditOpType.UPDATE, resourceType = "video", resourceId = "#videoId",
+            detail = "level=#level")
+        void withDetail(Long videoId, String level) {}
+
+        /** detail 里引用了不存在的变量 —— 求值失败应保留原文 */
+        @AuditOp(op = AuditOpType.UPDATE, resourceType = "video", resourceId = "#videoId",
+            detail = "who=#noSuchVar")
+        void withDetailUnknownVar(Long videoId) {}
     }
 }

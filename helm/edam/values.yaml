@@ -169,6 +169,10 @@ nginx:
   config:
     # 与后端 spring.servlet.multipart.max-file-size=8GB 对齐
     clientMaxBodySize: "8g"
+    # API 路径的代理超时（秒）。nginx 默认 60s，对 8GB 上传远远不够 ——
+    # 后端收完文件还要算 hash + 传 MinIO + 落库，网关会先返回 504。
+    # 与 ingress 的 proxy-*-timeout 注解（21600s = 6h）保持一致。
+    apiProxyTimeout: "21600s"
     # NOTE: upstream server names must be the REAL Service names.
     # The old value was "backend:8080" but the actual name is
     # {{fullname}}-backend - nginx would fail with "host not found in upstream".
@@ -205,6 +209,19 @@ nginx:
           # backend API (keep the /api/v1 prefix - backend context-path=/api/v1)
           location /api/ {
             proxy_pass http://edam_backend;
+
+            # 上传相关的三个超时必须显式放宽 —— nginx 默认值全是 60s：
+            #   proxy_read_timeout  : 等**后端响应**的上限。后端收完 8GB 后还要算
+            #                          SHA-256 + 传 MinIO + 落库 + 发 MQ，
+            #                          这段时间远超 60s ⇒ 网关先返回 504，
+            #                          而后端还在闷头干活，用户看到的是"上传失败"。
+            #   proxy_send_timeout  : 往**后端写请求体**的间隔上限，同理。
+            #   client_body_timeout : 收**客户端请求体**的间隔上限。
+            # 三者都得 ≥ 上传上限 / 最低带宽，否则慢链路会被网关掐断。
+            # 与 ingress 的 proxy-*-timeout 注解（21600s）保持一致。
+            proxy_read_timeout {{ .Values.nginx.config.apiProxyTimeout }};
+            proxy_send_timeout {{ .Values.nginx.config.apiProxyTimeout }};
+            client_body_timeout {{ .Values.nginx.config.apiProxyTimeout }};
           }
 
           # WebSocket (STOMP over WebSocket) - upgrade headers required

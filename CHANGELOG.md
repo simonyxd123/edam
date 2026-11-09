@@ -199,11 +199,11 @@ L3「同部门可见」的范围也一并变了。
 
 ### 验证
 
-- 后端 219 → **259** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
+- 后端 219 → **261** 用例，0 失败（6 个 error 仍是既有的 `ApplicationStartupTest`，
   需要真实 MySQL，与本次无关）
 - 新增测试：`SsoUserProvisioningTest`（6）、`RbacControllerTest`（3）、
-  `AuditServiceExportTest`（5）
-- 前端 58 用例全绿
+  `AuditServiceExportTest`（5）、`AuditAspectTest` detail 模板求值（2）
+- 前端 58 → **60** 用例全绿（新增 `client.spec.ts` 上传超时 2 例）
 - Worker 99 → **103** 通过 / 2 跳过（新增 `test_subprocess_timeout.py` 4 例）
 - 端点对账 98 ↔ 98 → **99 ↔ 99 / 100%**
 - OpenAPI 78 paths / 99 ops / 40 schemas / 18 tags，全部 `$ref` 可解析、无重复 key
@@ -216,6 +216,25 @@ L3「同部门可见」的范围也一并变了。
 - Webhook 的 SSRF 校验变严：原先能注册的地址（IPv6 私网、解析到内网的主机名）
   现在会被拒；已注册的这类地址会在**每次投递前**失败并记 `webhook_post_failed`。
 - `/auth/refresh` 的响应多了一个 `refresh_token` 字段（轮换）—— 见上一轮说明。
+
+#### 视频上传报错：三个缺陷
+
+用户反馈「登录后上传视频报错」。提供的后端日志里**没有上传请求的记录**
+（审计写的是 DB 表不是日志文件，日志又是筛过的片段），
+所以这次是「代码层可证」的三处：
+
+| 缺陷 | 根因 | 后果 |
+|---|---|---|
+| **前端上传被 30s 掐断** | `api.upload()` 没覆盖 `timeout`，axios 的 `mergeConfig` 让实例级的 30000 泄进上传请求 | axios 的 XHR `timeout` 是**总时长**（从 `send()` 算起）不是「空闲多久」⇒ **任何传超 30 秒的视频都被浏览器单方面掐断**，哪怕每秒都在收数据。代码里那套「5 分钟无进展」的 AbortController 根本没机会生效。是 `265abbd`（2GB→8GB）引入的回归 |
+| **审计 detail 全为空** | `detail` 被整串丢给 `parser.parseExpression()`，而 SpEL 把 `=` 当**赋值**运算符 | `EL1009E: cannot be set on null` / `EL1041E: ...there is still more data` ⇒ **全仓 40 多处 `@AuditOp(detail=...)` 的补充说明全部求值失败**（操作了哪个对象、什么密级、批量几条 —— 审计最该有的部分）。改成按 `k=v` 模板逐段求值 |
+| **网关比后端先返回 504** | nginx 网关 `location /api/` 三个超时全走默认 60s | 后端收完 8GB 还要算 SHA-256 + 传 MinIO + 落库 + 发 MQ，远超 60s ⇒ 网关先 504，**后端还在闷头干活** |
+
+- 顺带澄清：手设的 `Content-Type: multipart/form-data`（不带 boundary）**无害** ——
+  axios 在浏览器里会删掉它、由浏览器自己补 boundary。**不要**去动它。
+- 测试：后端 `AuditAspectTest` +2（回退修复即变红，已验证）；
+  前端 `client.spec.ts` +2（同样验证过）。
+- ⚠️ **线上跑的不是当前 HEAD 的版本**（日志里缺 `token_issued` 那行），
+  上述三处修复需**重新构建后端 + 前端 + worker 镜像并部署**后才生效。
 
 ---
 

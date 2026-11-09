@@ -26,6 +26,15 @@ import java.lang.annotation.Target;
  * public ResponseEntity<?> getById(@PathVariable("video_id") Long videoId, ...) { ... }
  * }</pre>
  *
+ * <p><b>三个属性里只有 {@code resourceId} / {@code userId} 是单个 SpEL 表达式</b>
+ * （{@code #videoId}、{@code #result?.body?.get('user_id')}）。
+ *
+ * <p><b>{@code detail} 不是 SpEL 表达式，而是「{@code k=v, k2=v2}」模板</b>：
+ * 每个 {@code v} 单独求值，键是字面量。
+ * <b>不能</b>把整串丢给 SpEL —— SpEL 会把 {@code =} 当成**赋值运算符**，
+ * 于是 {@code "employee_no=#request.employeeNo"} 报
+ * {@code EL1009E: cannot be set on null}，带逗号的报 {@code EL1041E}。
+ *
  * <p><b>SpEL 可用的变量</b>：方法的所有入参（按参数名，如 {@code #videoId}），
  * 以及位置别名 {@code #p0}、{@code #p1}…（不依赖编译参数名，最保险）。
  *
@@ -66,7 +75,13 @@ public @interface AuditOp {
     String userId() default "";
 
     /**
-     * 补充说明的 SpEL 表达式（求值为字符串）。
+     * 补充说明，格式为 <b>{@code k=v, k2=v2}</b> 模板。
+     *
+     * <p><b>每个 {@code v} 单独按 SpEL 求值</b>（键是字面量，不参与求值）。
+     * 整串**不是**一个 SpEL 表达式 —— SpEL 会把 {@code =} 解析成赋值运算符，
+     * 那样求值必然失败。
+     *
+     * <p>求不出值的项保留原文（{@code #noSuchVar}），不整段丢弃。
      *
      * <p>建议只放**不敏感**的字段（标题、大小、密级、条数）。
      * 凭据类字段一律不许出现 —— 用 {@link AuditDetail} 拼装时它会自动脱敏，

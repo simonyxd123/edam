@@ -402,6 +402,14 @@ public class AuditAspect {
         return null;
     }
 
+    /**
+     * 求值一个**单独的** SpEL 表达式（{@code resourceId} / {@code userId} 用）。
+     *
+     * <p>与 {@link #evalDetailTemplate} 的区别：那两个属性就是**一个**表达式
+     * （{@code #videoId}、{@code #result?.body?.get('user_id')}），
+     * 而 {@code detail} 是「{@code k=v, k2=v2}」模板 —— 整串丢给 SpEL 会被
+     * 当成赋值而失败。
+     */
     private String evalString(String expression, EvaluationContext ctx) {
         if (expression == null || expression.isBlank()) {
             return null;
@@ -426,7 +434,7 @@ public class AuditAspect {
                                EvaluationContext ctx, Throwable failure) {
         List<String> parts = new ArrayList<>();
 
-        String explicit = evalString(auditOp.detail(), ctx);
+        String explicit = evalDetailTemplate(auditOp.detail(), ctx);
         if (explicit != null && !explicit.isBlank()) {
             parts.add(AuditDetail.scrub(explicit));
         }
@@ -445,6 +453,72 @@ public class AuditAspect {
         }
 
         return String.join("; ", parts);
+    }
+
+    /**
+     * 求值 detail 模板。
+     *
+     * <p><b>detail 不是 SpEL 表达式，而是「{@code k=v, k2=v2}」模板</b> ——
+     * 每个 {@code v} 单独求值。
+     *
+     * <p><b>为什么不能整串丢给 SpEL</b>：SpEL 把 {@code =} 解析成**赋值运算符**。
+     * 于是 {@code detail = "employee_no=#request.employeeNo"} 会被当成
+     * 「把 {@code #request.employeeNo} 赋给变量 {@code employee_no}」，
+     * 而 {@code employee_no} 不是可写属性 ⇒
+     * {@code EL1009E: Property or field 'employee_no' cannot be set on null}。
+     * 带逗号的更糟：{@code "title=#title, classification_lv=#classificationLv"}
+     * 直接报 {@code EL1041E: After parsing a valid expression, there is still more data}。
+     *
+     * <p>也就是说<b>全仓 40 多处 {@code @AuditOp(detail=...)} 全部求值失败</b>，
+     * 审计详情里的补充说明（操作了哪个对象、什么密级）一直是空的 ——
+     * 而这恰恰是审计日志最该有的部分。
+     *
+     * <p><b>怎么求值</b>：按 {@code ,} 切成段，每段再按第一个 {@code =} 切成
+     * 键和值；<b>只有值</b>拿去当 SpEL 求值（键是字面量，不参与求值）。
+     * 值求不出来（引用了不存在的变量、或压根不是表达式）时，
+     * <b>保留原文</b>而不是整段丢弃 —— 宁可记下「{@code employee_no=#request.employeeNo}」
+     * 让人知道这里本该有值，也好过留下空白。
+     */
+    private String evalDetailTemplate(String template, EvaluationContext ctx) {
+        if (template == null || template.isBlank()) {
+            return null;
+        }
+        List<String> segments = new ArrayList<>();
+        for (String segment : template.split(",")) {
+            String s = segment.trim();
+            if (s.isEmpty()) {
+                continue;
+            }
+            int eq = s.indexOf('=');
+            if (eq < 0) {
+                // 没有 '=' 的整段是字面量（如 "refresh_token cleared"）
+                segments.add(s);
+                continue;
+            }
+            String key = s.substring(0, eq).trim();
+            String rawValue = s.substring(eq + 1).trim();
+            String value = evalOrKeep(rawValue, ctx);
+            segments.add(key + "=" + value);
+        }
+        return segments.isEmpty() ? null : String.join(", ", segments);
+    }
+
+    /**
+     * 求值一个 detail 的值；求不出来就原样返回。
+     */
+    private String evalOrKeep(String rawValue, EvaluationContext ctx) {
+        if (rawValue.isEmpty()) {
+            return rawValue;
+        }
+        try {
+            Object v = parser.parseExpression(rawValue).getValue(ctx);
+            return v == null ? rawValue : String.valueOf(v);
+        } catch (Exception e) {
+            // 表达式本身合法、但引用的变量不存在（如 #req 在该方法里没有这个参数）
+            // —— 保留原文，好过留空。
+            log.debug("audit_detail_value_eval_failed, expr={}", rawValue, e);
+            return rawValue;
+        }
     }
 
     /**

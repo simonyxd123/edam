@@ -170,3 +170,41 @@ describe('api client 的 refresh 流程', () => {
     expect(endSessionRecovery).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('api client 的上传超时', () => {
+  beforeEach(() => {
+    h.mockInstance.post.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('upload() 必须覆盖实例级 timeout（置 0），否则大文件在 30s 被浏览器掐断', async () => {
+    // 回归锁：axios 的 XHR `timeout` 是**总时长**上限（从 send() 算起），
+    // 不是「空闲多久」。实例级 timeout: 30000 会自动合并进 upload 的请求，
+    // 于是任何传超过 30 秒的视频都被浏览器单方面掐断 ——
+    // 而代码里那套「5 分钟无进展」的 AbortController 根本没机会生效。
+    h.mockInstance.post.mockResolvedValueOnce({ data: { video_id: 1 } });
+
+    const fd = new FormData();
+    fd.append('file', new Blob(['x'], { type: 'video/mp4' }), 'a.mp4');
+    await api.upload('/videos', fd);
+
+    expect(h.mockInstance.post).toHaveBeenCalledTimes(1);
+    const cfg = h.mockInstance.post.mock.calls[0][2];
+    expect(cfg.timeout).toBe(0);
+  });
+
+  it('upload() 必须带 signal（无进展超时的那道闸）', async () => {
+    h.mockInstance.post.mockResolvedValueOnce({ data: { video_id: 1 } });
+
+    const fd = new FormData();
+    fd.append('file', new Blob(['x'], { type: 'video/mp4' }), 'a.mp4');
+    await api.upload('/videos', fd);
+
+    const cfg = h.mockInstance.post.mock.calls[0][2];
+    expect(cfg.signal).toBeDefined();
+    expect(cfg.signal.__idleTimeout).toBe(true);
+  });
+});

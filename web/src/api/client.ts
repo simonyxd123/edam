@@ -280,6 +280,16 @@ class ApiClient {
       return (
         await this.instance.post(url, formData, {
           signal,
+          // ⚠️ 必须显式置 0 —— axios 的 XHR `timeout` 是**总时长**上限
+          // （从 send() 算起），**不是**「空闲多久」。上传在传字节的整个过程里
+          // 都算在这个总时长里，所以只要文件比 30s 大就一定被浏览器掐断，
+          // 哪怕每秒都在稳定收到数据。
+          //
+          // 实例级的 `timeout: DEFAULT_TIMEOUT_MS` 会**自动合并**进来
+          // （axios 的 mergeConfig 里 timeout 走 defaultToConfig2：
+          // 请求没显式给就沿用实例的），所以这里必须写 `timeout: 0` 才能覆盖掉它。
+          // 下面的 AbortController「5 分钟无进展」才是真正生效的那道闸。
+          timeout: 0,
           headers: { 'Content-Type': 'multipart/form-data' },
           onUploadProgress: (e) => {
             resetIdleTimer();
