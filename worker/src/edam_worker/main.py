@@ -6,20 +6,28 @@ import asyncio
 import datetime
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import structlog
 from aio_pika import DeliveryMode, Message, connect_robust, ExchangeType
 from aio_pika.abc import AbstractIncomingMessage
+
+try:
+    from aio_pika.exceptions import ChannelInvalidStateError
+except ImportError:  # pragma: no cover - 老版本 aio_pika 没转出这个异常
+    # 异常类实际定义在 aiormq 里（aio_pika 从那里转出），
+    # 所以退回直接引用 aiormq —— 它是 aio_pika 的硬依赖，一定在
+    from aiormq.exceptions import ChannelInvalidStateError
 from fastapi import FastAPI
 from minio import Minio
 from prometheus_client import start_http_server
 import requests
 
 from . import __version__
-from .config import settings
-from .errors import PermanentWorkerError
+from .config import settings, timeout_budget_warnings
+from .errors import PermanentWorkerError, TaskDeadlineExceeded
 from .ffmpeg_probe import probe_ffmpeg, remediation
 from .hls_keyinfo import probe_key_info_layout
 from .fonts import find_font
@@ -56,10 +64,88 @@ class WorkerApp:
         # 最近一次任务结果（task_type → {last_success_*, last_failure_*}）
         # 暴露给 /health/worker，让运维一眼看清"worker 真活着 + 真在干活"
         self._last_task_state: Dict[str, Dict[str, Any]] = {}
+        # 优雅关闭进行中 —— 用来区分"我们自己在关"与"broker 掐了我们"
+        # 两种 CancelledError（见 _process_with_retry）
+        self._shutting_down = False
 
     # ----------------------------------------------------------------
     # 任务状态追踪 + 重试包装
     # ----------------------------------------------------------------
+
+    async def _run_with_deadline(
+        self,
+        task_type: str,
+        processor_fn: Callable[[Dict[str, Any]], Awaitable[None]],
+        payload: Dict[str, Any],
+        remaining: Optional[float],
+    ) -> None:
+        """在剩余的墙钟预算内跑完一次任务尝试。
+
+        **为什么 worker 要自己掐表**：RabbitMQ 的未确认投递超时
+        （consumer_timeout，默认 30 分钟）一旦先到，broker 会**掐断 channel**，
+        正在跑的 consumer 协程被连带取消 ⇒ 异常以 CancelledError 的形式冒出来
+        （Python 3.8+ 里它继承 BaseException，`except Exception` 抓不到）。
+
+        那种失败在监控上是**完全隐形**的：没有失败日志、
+        Prometheus 计数器不动、/health/worker 也不更新 ——
+        而视频确实没转出来，用户点播放还是 404。
+
+        worker 自己先超时，就拿到一个**干净、可诊断、可告警**的失败：
+        TaskDeadlineExceeded（永久失败，不重试 —— 同样的输入再跑一遍
+        还是超，每次重试都是几小时的 CPU）。
+
+        超时用 ``asyncio.wait`` 实现：它按"跑完了没有"判定，
+        不会把内部抛出的 TimeoutError（socket 超时也是它）误判成超时；
+        超时后取消内层协程，处理器里已经处理好了 CancelledError
+        （记失败、通知后端、杀掉 FFmpeg 子进程），所以取消语义不会丢。
+
+        :param remaining: 剩余预算（秒）。None = 不限。
+            **必须是"整条消息"的剩余预算**，不能是单次尝试的 ——
+            broker 的未确认投递超时覆盖的是**整条消息的处理时长**
+            （含全部重试与退避），不是单次尝试。
+        """
+        if remaining is None:
+            await processor_fn(payload)
+            return
+
+        # 用 ``asyncio.wait`` 而不是 ``asyncio.wait_for`` ——
+        # 后者靠异常类型区分"超时"和"内部抛的 TimeoutError"，
+        # 而 Python 3.11+ 里 ``asyncio.TimeoutError`` 就是内置的
+        # ``TimeoutError``，**socket 超时（socket.timeout）也是它**
+        # ⇒ MinIO 的一次网络抖动会被误报成"任务超时"。
+        # asyncio.wait 用"跑完了没有"来判定，没有这种歧义。
+        inner = asyncio.ensure_future(processor_fn(payload))
+        try:
+            done, pending = await asyncio.wait({inner}, timeout=remaining)
+        except asyncio.CancelledError:
+            # 外层被取消（broker 掐断 channel / 优雅关闭）
+            # ⇒ 内层必须一起取消，否则它会变成没人管的孤儿任务，
+            #    FFmpeg 还在跑、回调还在发。
+            inner.cancel()
+            await asyncio.gather(inner, return_exceptions=True)
+            raise
+
+        if pending:
+            # 真的超时了 —— 取消内层（它的 finally 会把失败状态通知后端），
+            # 等它收尾，再抛一个明确的错误。
+            inner.cancel()
+            await asyncio.gather(inner, return_exceptions=True)
+            log.error(
+                f"{task_type}_task_deadline_exceeded",
+                deadline_sec=settings.WORKER_TASK_DEADLINE_SEC,
+                hint=(
+                    f"任务总时长超过 {settings.WORKER_TASK_DEADLINE_SEC:.0f}s。"
+                    "这个视频本身太大（转码要更久）—— "
+                    "调大 WORKER_TASK_DEADLINE_SEC 可以放宽，"
+                    "但必须同时确认 broker 的 consumer_timeout 比它更大。"
+                ),
+            )
+            raise TaskDeadlineExceeded(
+                f"任务总时长超过上限（{settings.WORKER_TASK_DEADLINE_SEC:.0f}s）"
+            )
+
+        # 跑完了 —— 把内层的异常原样抛出去（不吞、不改写）
+        inner.result()
 
     def _record_task(
         self,
@@ -96,16 +182,54 @@ class WorkerApp:
 
         任何一次重试用尽都把 ``payload`` 与最终错误打到日志里
         （loud error），并更新 ``_last_task_state`` 供 /health/worker 暴露。
+
+        **任务总时长有上限**（WORKER_TASK_DEADLINE_SEC）：
+        整个流水线（下载 + 转码 + 指纹 + 上传）必须在上限内跑完。
+        原因见 config.py 里那三个超时的排序说明 ——
+        broker 的未确认投递超时一旦先到，channel 会被掐断，
+        正在跑的任务被连带取消（CancelledError），
+        而 CancelledError 继承的是 BaseException ⇒ 这次失败**完全看不见**。
+        worker 自己先超时，才拿得到一个干净、可诊断、可告警的失败。
+
+        ⚠️ 这个预算是**整条消息**的（所有重试加起来），
+        不是每次尝试各算一份 —— broker 的未确认投递超时覆盖的是
+        消息从投递到 ack 的**全部**时长。3 次重试各 1 小时 = 3 小时，
+        而 broker 只给了 30 分钟 ⇒ 第二次尝试照样被掐断。
         """
         max_attempts = max(1, settings.WORKER_MAX_ATTEMPTS)
         base = max(0.0, settings.WORKER_RETRY_BASE_BACKOFF_SEC)
         video_id = payload.get("video_id") if isinstance(payload, dict) else None
         last_error: Optional[BaseException] = None
 
+        # 整条消息的墙钟预算 —— 所有尝试共享，见 docstring 的说明
+        budget = settings.WORKER_TASK_DEADLINE_SEC
+        deadline_at = (
+            time.monotonic() + budget if budget > 0 else None
+        )
+
         for attempt in range(1, max_attempts + 1):
+            remaining = (
+                deadline_at - time.monotonic() if deadline_at is not None else None
+            )
+            if remaining is not None and remaining <= 0:
+                # 预算已经用光 —— 再跑一次也只是超时，直接按超时失败收场
+                last_error = TaskDeadlineExceeded(
+                    f"任务总时长超过上限（{budget:.0f}s）"
+                )
+                self._record_task(task_type, success=False, video_id=video_id,
+                                  error=last_error)
+                TASKS_PROCESSED.labels(
+                    task_type=task_type, result="failed_permanent"
+                ).inc()
+                log.error(f"{task_type}_task_deadline_exceeded",
+                          deadline_sec=budget, attempt=attempt)
+                raise last_error
+
             try:
                 with TASK_DURATION.labels(task_type=task_type).time():
-                    await processor_fn(payload)
+                    await self._run_with_deadline(
+                        task_type, processor_fn, payload, remaining
+                    )
                 # 成功
                 TASK_ATTEMPTS.labels(task_type=task_type, attempt_result="success").inc()
                 self._record_task(task_type, success=True, video_id=video_id)
@@ -118,9 +242,39 @@ class WorkerApp:
                     )
                 return
             except asyncio.CancelledError:
-                # 收到 SIGTERM / uvicorn 优雅关闭时的 cancel：
-                # 绝不能当成"任务失败"去重试，否则关闭流程被反复拖延，
-                # 且会在 MinIO 上留下半成品目录。直接向上抛。
+                # 协程被取消 —— 两种来源，处理方式**完全不同**：
+                #
+                # ① worker 自己优雅关闭（SIGTERM）—— 不是任务失败。
+                #    消息未 ack ⇒ broker 会自动重投给别人。
+                #    绝不能当成失败去重试，否则关闭流程被反复拖延。
+                #
+                # ② broker 掐断了 channel（未确认投递超时到点）——
+                #    **这是任务失败**，而且必须被记录：
+                #    原来的代码只是 `raise`，于是
+                #    - 不进 Prometheus（失败率永远是 0）
+                #    - 不更新 /health/worker 的 last_failure_*
+                #    - 没有一条日志能说明"这个视频为什么没转出来"
+                #    ⇒ 一次被 broker 掐死的转码，在监控上完全隐形
+                #    （2026-11-10 事故）。
+                if self._shutting_down:
+                    log.info(f"{task_type}_task_cancelled_during_shutdown",
+                             video_id=video_id)
+                else:
+                    self._record_task(task_type, success=False, video_id=video_id,
+                                      error=asyncio.CancelledError("channel closed by broker"))
+                    TASKS_PROCESSED.labels(
+                        task_type=task_type, result="cancelled"
+                    ).inc()
+                    log.error(
+                        f"{task_type}_task_cancelled",
+                        video_id=video_id,
+                        hint=(
+                            "broker 掐断了消费 channel —— 通常是未确认投递超时"
+                            "（consumer_timeout，默认 30 分钟）到点。"
+                            "消息未确认，broker 会自动重投。"
+                            "对策见 ops/rabbitmq/README.md。"
+                        ),
+                    )
                 raise
             except PermanentWorkerError as e:
                 # 重试也不会变好（配置/鉴权问题，最典型的是回调被 401 拒了）。
@@ -191,6 +345,23 @@ class WorkerApp:
                 hint=("后端 PATCH /videos/{id}/status 要求 X-Worker-Token（fail-closed）。"
                       "不配的话回调一律 401 —— 转码完成了 hls_status 也不会变，"
                       "用户点播放还是 404。必须与后端的 edam.worker.token 完全一致"),
+            )
+
+        # 超时预算自检 —— 三档超时必须自上而下递减。
+        # 不自洽 ⇒ broker 会先掐断 channel ⇒ 转码被取消 ⇒ 而 CancelledError
+        # 在监控上是隐形的（见 config.py 的说明）。
+        # 这个坑不能等到"某个大视频转了 30 分钟然后消失"才发现 ——
+        # 启动时就说清楚。
+        budget_warnings = timeout_budget_warnings()
+        if budget_warnings:
+            for w in budget_warnings:
+                log.error("worker_timeout_budget_invalid", detail=w)
+        else:
+            log.info(
+                "worker_timeout_budget_ok",
+                broker_consumer_timeout_sec=settings.RABBITMQ_CONSUMER_TIMEOUT_SEC,
+                task_deadline_sec=settings.WORKER_TASK_DEADLINE_SEC,
+                ffmpeg_timeout_sec=settings.FFMPEG_TIMEOUT_SEC,
             )
 
         # FFmpeg 能力自检 —— 把"第一个视频转码失败"提前到启动时暴露。
@@ -304,6 +475,9 @@ class WorkerApp:
     async def stop(self) -> None:
         """优雅关闭"""
         log.info("worker_stopping")
+        # 先置位：**关连接会取消正在跑的 consumer 协程**，
+        # 那些 CancelledError 是"我们自己关的"，不是失败，不该记成失败
+        self._shutting_down = True
         if self.connection:
             await self.connection.close()
         log.info("worker_stopped")
@@ -338,30 +512,51 @@ class WorkerApp:
 
     async def handle_video(self, message: AbstractIncomingMessage) -> None:
         """处理视频预处理任务（含内部重试）"""
-        async with message.process(requeue=False):
-            try:
-                payload = json.loads(message.body)
-            except Exception as e:
-                # payload 不合法不值得重试 —— ACK 掉（不 requeue），尽早暴露
-                log.error("video_task_invalid_payload", error=str(e)[:200],
-                          body_preview=message.body[:200].decode(errors="replace"))
-                return
-            await self._process_with_retry(
-                "video", payload, self.video_processor.process
-            )
+        try:
+            async with message.process(requeue=False):
+                try:
+                    payload = json.loads(message.body)
+                except Exception as e:
+                    # payload 不合法不值得重试 —— ACK 掉（不 requeue），尽早暴露
+                    log.error("video_task_invalid_payload", error=str(e)[:200],
+                              body_preview=message.body[:200].decode(errors="replace"))
+                    return
+                await self._process_with_retry(
+                    "video", payload, self.video_processor.process
+                )
+        except ChannelInvalidStateError as e:
+            # channel 已经没了（broker 掐断 / 连接断开）⇒ ACK/reject 送不出去。
+            #
+            # **不能让它顶替掉真正的失败原因**：异常发生在
+            # ``message.process()`` 的 __aexit__ 里，而真正的失败
+            # （通常是 CancelledError —— broker 的未确认投递超时到点）
+            # 挂在 __context__ 上。直接抛 ChannelInvalidStateError 的话，
+            # 日志里就只剩一句没头没尾的 "channel invalid state"，
+            # 而"是谁掐了我们"这条关键线索被吞掉了。
+            cause = e.__context__
+            if cause is not None:
+                raise cause from e
+            raise
 
     async def handle_document(self, message: AbstractIncomingMessage) -> None:
         """处理文档预处理任务（含内部重试）"""
-        async with message.process(requeue=False):
-            try:
-                payload = json.loads(message.body)
-            except Exception as e:
-                log.error("document_task_invalid_payload", error=str(e)[:200],
-                          body_preview=message.body[:200].decode(errors="replace"))
-                return
-            await self._process_with_retry(
-                "document", payload, self.document_processor.process
-            )
+        try:
+            async with message.process(requeue=False):
+                try:
+                    payload = json.loads(message.body)
+                except Exception as e:
+                    log.error("document_task_invalid_payload", error=str(e)[:200],
+                              body_preview=message.body[:200].decode(errors="replace"))
+                    return
+                await self._process_with_retry(
+                    "document", payload, self.document_processor.process
+                )
+        except ChannelInvalidStateError as e:
+            # 同 handle_video：channel 已死，别让善后失败顶替掉真正的失败原因
+            cause = e.__context__
+            if cause is not None:
+                raise cause from e
+            raise
 
 worker = WorkerApp()
 

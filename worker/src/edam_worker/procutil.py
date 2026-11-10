@@ -49,6 +49,47 @@ async def kill_process(proc) -> None:
         log.warning("process_kill_failed", error=str(e))
 
 
+def kill_process_nowait(proc) -> None:
+    """在**不能 await** 的场景里杀掉子进程（协程正在被取消时）。
+
+    **为什么需要它**：协程被取消时（broker 掐断 channel / worker 自己的
+    任务上限到了），当前协程正在 unwind —— 此时再 ``await kill_process()``
+    会立刻被再次取消，**子进程就杀不掉了**。
+
+    而杀不掉的后果很实在：FFmpeg 变成孤儿进程继续吃 CPU，
+    10 个这样的孤儿就能把整台机器的 CPU 吃满，
+    而 worker 侧**看不到任何异常**（进程还"活着"，健康检查照样 ok）。
+
+    这里用 ``loop.call_later`` 补一个"宽限后强制 kill"，
+    整个过程不 await —— 取消中的协程可以安全调用。
+    """
+    try:
+        if proc.returncode is not None:
+            return
+        proc.terminate()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 没有运行中的 loop
+            proc.kill()
+            return
+        loop.call_later(KILL_GRACE_SEC, _force_kill, proc)
+    except ProcessLookupError:
+        pass
+    except Exception as e:  # pragma: no cover - 防御性
+        log.warning("process_kill_nowait_failed", error=str(e))
+
+
+def _force_kill(proc) -> None:
+    """宽限期到点，强制 kill（挂在 I/O 上收不到 SIGTERM 的进程）。"""
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception:  # pragma: no cover - 防御性
+        pass
+
+
 async def run_with_timeout(
     cmd,
     timeout: float,

@@ -16,7 +16,7 @@ import structlog
 from minio import Minio
 
 from ..config import backend_api_url, settings
-from ..procutil import kill_process
+from ..procutil import kill_process, kill_process_nowait
 from ..errors import PermanentWorkerError
 from ..fingerprint.phash import compute_frame_phash, phash_to_hex
 from ..fonts import FONT_CANDIDATES, find_font
@@ -102,6 +102,41 @@ class VideoProcessor:
 
             log.info("video_processing_complete", video_id=video_id, duration_sec=duration_sec)
 
+        except asyncio.CancelledError:
+            # **协程被取消** —— 2026-11-10 事故的核心。
+            #
+            # 触发场景：RabbitMQ 的"未确认投递超时"（consumer_timeout，
+            # 默认 30 分钟）到点 ⇒ broker 掐断 channel ⇒ aio_pika 取消
+            # 正在跑的 consumer 协程 ⇒ 异常从 wait_for 里以 CancelledError
+            # 的形式冒出来（**不是** TimeoutError）。
+            #
+            # 为什么必须单独接住：
+            #   Python 3.8+ 起 CancelledError 继承的是 **BaseException**，
+            #   下面的 `except Exception` **抓不到它** ⇒
+            #   - 不打 video_processing_failed 日志
+            #   - Prometheus 的失败计数器不动
+            #   - /health/worker 的 last_failure_* 也不更新
+            #   ⇒ 一次"被 broker 掐死"的转码，在监控上**完全看不见**。
+            #
+            # 这里显式处理：标记失败、打日志、让 finally 把 failed 状态
+            # 通知给后端（用户在前端看到"处理失败"而不是永远"处理中"），
+            # 然后**继续向上抛** —— 取消语义必须保留，
+            # 否则 asyncio 会认为协程"正常结束"，任务被误记成成功。
+            failed = True
+            log.error(
+                "video_processing_cancelled",
+                video_id=video_id,
+                error_type="CancelledError",
+                hint=(
+                    "协程被取消。绝大多数情况是 RabbitMQ 的未确认投递超时"
+                    "（consumer_timeout，默认 30 分钟）到点掐断了 channel —— "
+                    "转码耗时超过了 broker 的容忍上限。"
+                    "对策：把 broker 的 consumer_timeout 调大"
+                    "（见 ops/rabbitmq/README.md），"
+                    "并确保它 > worker 的 WORKER_TASK_DEADLINE_SEC。"
+                ),
+            )
+            raise
         except Exception as e:
             failed = True
             log.error("video_processing_failed", video_id=video_id, error=str(e))
@@ -403,6 +438,15 @@ class VideoProcessor:
                            timeout_sec=settings.FFMPEG_TIMEOUT_SEC)
                 raise RuntimeError(
                     f"FFmpeg HLS 转码超时（{settings.FFMPEG_TIMEOUT_SEC}s）：{video_id}")
+            except asyncio.CancelledError:
+                # 协程被取消（broker 掐断 channel / worker 任务上限到了）
+                # ⇒ **必须杀掉 FFmpeg**。不杀的话它变成孤儿进程继续吃 CPU，
+                # 而 worker 侧看不到任何异常 —— 10 个孤儿就能吃满整机 CPU。
+                # 这里不能 await（协程正在 unwind，再 await 会被立刻取消），
+                # 所以用 kill_process_nowait（terminate + 宽限后强制 kill）。
+                kill_process_nowait(proc)
+                log.error("ffmpeg_cancelled", video_id=video_id)
+                raise
             err = stderr.decode("utf-8", errors="replace")
 
             if proc.returncode == 0:

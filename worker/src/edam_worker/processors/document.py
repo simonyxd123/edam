@@ -13,7 +13,7 @@ import structlog
 from minio import Minio
 
 from ..config import backend_api_url, settings
-from ..procutil import kill_process
+from ..procutil import kill_process, kill_process_nowait
 from ..errors import PermanentWorkerError
 from .watermark import WatermarkProcessor
 
@@ -94,6 +94,27 @@ class DocumentProcessor:
 
             log.info("document_processing_complete", doc_id=doc_id)
 
+        except asyncio.CancelledError:
+            # 协程被取消 —— 典型场景：RabbitMQ 的未确认投递超时
+            # （consumer_timeout，默认 30 分钟）到点掐断了 channel。
+            #
+            # CancelledError 在 Python 3.8+ 继承 BaseException，
+            # 下面的 `except Exception` **抓不到它** ⇒ 原来这次失败
+            # 不打日志、不进 Prometheus、/health/worker 也不更新
+            # ⇒ 在监控上完全看不见。这里显式接住：标记失败 + 打日志，
+            # 让 finally 把 failed 状态通知给后端，然后继续向上抛
+            # （取消语义必须保留，否则任务会被误记成成功）。
+            failed = True
+            if watermark_status == 0:
+                watermark_status = 3
+            if preview_status == 0:
+                preview_status = 3
+            log.error("document_processing_cancelled", doc_id=doc_id,
+                      error_type="CancelledError",
+                      hint=("协程被取消。通常是 RabbitMQ 的未确认投递超时"
+                            "（consumer_timeout，默认 30 分钟）掐断了 channel。"
+                            "见 ops/rabbitmq/README.md"))
+            raise
         except Exception as e:
             failed = True
             # 失败时把还停在 pending 的那半标成 failed（3=failed）
@@ -276,6 +297,12 @@ class DocumentProcessor:
             await kill_process(proc)
             raise RuntimeError(
                 f"LibreOffice 转换超时（{settings.LIBREOFFICE_TIMEOUT_SEC}s）")
+        except asyncio.CancelledError:
+            # 协程被取消 ⇒ 杀掉 LibreOffice，否则它变成孤儿进程继续吃 CPU。
+            # 取消中的协程不能 await，所以用 nowait 版本。
+            kill_process_nowait(proc)
+            log.error("libreoffice_cancelled", file_type=file_type)
+            raise
         # 必须检查 returncode —— 原来从不检查，LibreOffice 失败也静默通过，
         # 最后把一个不存在的 .pdf 当成"预览成功"上传
         if proc.returncode != 0:

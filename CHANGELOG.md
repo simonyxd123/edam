@@ -11,6 +11,43 @@
 - v3.4 中期（W5-W18）：等保测评现场执行 + 商密许可颁发 + 频域水印生产化灰度
 - AI 辅助文档审核（敏感信息自动识别 + LLM 二次校验）
 
+### 修复
+
+#### 视频转码被 RabbitMQ 掐断 —— 失败在监控上完全隐形
+
+2026-11-10 线上事故：video 14 转码 12.7 分钟成功，video 15 转码到
+**正好 30 分钟**就被掐断。根因是 RabbitMQ 的未确认投递超时
+（`consumer_timeout`，默认 1800000 ms = 30 分钟）到点掐断 channel，
+正在跑的 consumer 协程被连带取消。
+
+三个连锁缺陷：
+
+| 缺陷 | 后果 |
+|---|---|
+| `asyncio.CancelledError` 继承 **BaseException**，`except Exception` 抓不到 | 不打失败日志、不进 Prometheus、`/health/worker` 不更新 ⇒ **失败在监控上隐形** |
+| `message.process()` 的 `__aexit__` 在死 channel 上抛 `ChannelInvalidStateError` | 顶替掉真正的失败原因 ⇒ 日志里只剩一句没头没尾的 "channel invalid state" |
+| 转码被取消时 FFmpeg 子进程没被杀 | 变成吃 CPU 的孤儿进程，而 worker 侧看不到任何异常 |
+
+顺带查出 `VideoTranscodeFailure` 告警是**条死规则** ——
+它查 `result="failed"`，而代码发出的值是 `failed_permanent`，
+**从来没触发过**（这次事故正是被它漏掉的）。
+
+整改：
+
+- **broker 侧**：`dev/rabbitmq/rabbitmq.conf`（新增）+ `dev/docker-compose.yml`
+  调大 `consumer_timeout`；`ops/rabbitmq/README.md`（新增）给出**按 RabbitMQ
+  版本分别的**生产环境操作手册（生产 broker 不在本仓库的 Helm chart 里）
+- **worker 侧**：新增任务墙钟上限 `WORKER_TASK_DEADLINE_SEC`（3 小时，
+  跨重试共享的**整条消息**预算）—— 超时由 worker 主动触发，
+  拿到干净可诊断的失败，而不是被 broker 从背后掐断
+- **worker 侧**：显式处理 `CancelledError`；区分"自己优雅关闭"与
+  "broker 掐断"（前者不记失败，后者必须记）
+- **worker 侧**：新增 `kill_process_nowait()` —— 取消中的协程不能 `await`，
+  FFmpeg / LibreOffice 不再留孤儿进程
+- **监控**：修掉死规则的 label 值；新增 `WorkerTaskCancelledByBroker` 告警
+
+详见 `modify/2026-11-10-视频转码被broker掐断-consumer-timeout.md`。
+
 ---
 
 ## [3.4.2] - 2026-11-08

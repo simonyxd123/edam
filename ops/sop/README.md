@@ -7,6 +7,13 @@
 | SOP-03 | [性能调优](./03-performance-tuning.md) | 性能瓶颈定位与优化 |
 | SOP-04 | [变更管理](./04-change-management.md) | 所有生产变更 |
 
+## 配套操作手册
+
+| 文档 | 内容 |
+| --- | --- |
+| [../rabbitmq/README.md](../rabbitmq/README.md) | RabbitMQ 未确认投递超时（consumer_timeout）配置 —— **长视频转码必须配**，见 2026-11-10 事故 |
+| [../worker/README.md](../worker/README.md) | Worker 裸机部署运维手册（systemd / 环境变量 / 排障） |
+
 ## 使用指南
 
 1. **故障发生**：参考 SOP-01

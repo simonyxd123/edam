@@ -118,8 +118,76 @@ class Settings:
     LIBREOFFICE_TIMEOUT_SEC: float = field(
         default_factory=lambda: _env("LIBREOFFICE_TIMEOUT_SEC", 600.0))
 
+    # ----------------------------------------------------------------
+    # 超时预算：三个时间必须**从大到小**排成一条链
+    #
+    #   RABBITMQ_CONSUMER_TIMEOUT_SEC   （broker 侧的"未确认投递超时"）
+    #     > WORKER_TASK_DEADLINE_SEC     （worker 侧"整个任务"的墙钟上限）
+    #       > FFMPEG_TIMEOUT_SEC         （单个 FFmpeg 子进程的上限）
+    #
+    # 为什么必须这样（2026-11-10 事故）：
+    # RabbitMQ 有一个未确认投递超时（consumer_timeout，**默认 30 分钟**）。
+    # 消息投递后超过这个时间还没 ack，broker 会**掐断 channel**
+    # （PRECONDITION_FAILED: delivery acknowledgement on channel timed out），
+    # 正在跑的转码任务被连带取消 —— 协程收到 CancelledError。
+    #
+    # CancelledError 在 Python 3.8+ 继承的是 **BaseException**，
+    # 所以 `except Exception` **抓不到它** ⇒
+    #   - 没有 video_processing_failed 日志
+    #   - Prometheus 计数器不动
+    #   - /health/worker 里的 last_failure_* 也不更新
+    # ⇒ 一次"被 broker 掐死"的转码，在监控上**完全看不见**。
+    #
+    # worker 自己的任务上限必须**小于** broker 的未确认超时，
+    # 这样超时由 worker 主动触发：拿到一个干净的、可重试的、
+    # 已经通知过后端的失败，而不是被 broker 从背后掐断。
+    # ----------------------------------------------------------------
+    WORKER_TASK_DEADLINE_SEC: float = field(
+        default_factory=lambda: _env("WORKER_TASK_DEADLINE_SEC", 10800.0))
+    # **必须与 RabbitMQ 侧实际配置的 consumer_timeout 保持一致**。
+    # broker 侧怎么配见 ops/rabbitmq/README.md（默认 4 小时 = 14400s）。
+    RABBITMQ_CONSUMER_TIMEOUT_SEC: float = field(
+        default_factory=lambda: _env("RABBITMQ_CONSUMER_TIMEOUT_SEC", 14400.0))
+
 
 settings = Settings()
+
+
+def timeout_budget_warnings() -> list:
+    """检查超时预算是否自洽，返回告警列表（空 = 一切正常）。
+
+    **为什么要有这个自检**：三个超时值分布在三个地方 ——
+    worker 的环境变量、RabbitMQ 的配置、代码里的默认值。
+    任何一处漂移，后果都是"broker 先掐断 channel"，
+    而那种失败的现场在监控上**完全看不见**（见 Settings 里的说明）。
+
+    所以启动时必须喊出来：现在的配置**会不会**被 broker 掐断。
+
+    顺序要求（从大到小）：
+        RABBITMQ_CONSUMER_TIMEOUT_SEC > WORKER_TASK_DEADLINE_SEC > FFMPEG_TIMEOUT_SEC
+    """
+    warnings = []
+    broker = settings.RABBITMQ_CONSUMER_TIMEOUT_SEC
+    task = settings.WORKER_TASK_DEADLINE_SEC
+    ffmpeg = settings.FFMPEG_TIMEOUT_SEC
+
+    if task >= broker:
+        warnings.append(
+            f"WORKER_TASK_DEADLINE_SEC({task:.0f}s) >= "
+            f"RABBITMQ_CONSUMER_TIMEOUT_SEC({broker:.0f}s)："
+            f"broker 会先掐断 channel，转码任务被连带取消，"
+            f"且监控上看不到任何失败记录。"
+            f"请把 worker 的任务上限调小，或把 broker 的 consumer_timeout 调大"
+            f"（见 ops/rabbitmq/README.md）。"
+        )
+    if ffmpeg >= task:
+        warnings.append(
+            f"FFMPEG_TIMEOUT_SEC({ffmpeg:.0f}s) >= "
+            f"WORKER_TASK_DEADLINE_SEC({task:.0f}s)："
+            f"单个 FFmpeg 的超时永远不会触发 —— 任务级上限会先把它掐掉，"
+            f"于是永远拿不到 'FFmpeg 转码超时' 这个可诊断的错误。"
+        )
+    return warnings
 
 
 # 后端的 context-path（server.servlet.context-path）

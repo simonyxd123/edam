@@ -23,3 +23,22 @@ class PermanentWorkerError(Exception):
     与之相对，瞬时故障（连不上后端、5xx）用普通异常表达 ——
     那些值得把整个任务重跑一遍。
     """
+
+
+class TaskDeadlineExceeded(PermanentWorkerError):
+    """任务总时长超过 WORKER_TASK_DEADLINE_SEC。
+
+    **为什么算"永久失败"、不重试**：超时的原因是这个视频本身就大
+    （转码要 hours 级）。同样的输入再跑一遍还是超 ——
+    每次重试都是几小时的 CPU 加一遍完整的下载/转码/上传。
+
+    宁可明确失败、让人去调大上限或换台更快的机器，
+    也不要一个视频把 worker 的 CPU 占满 hours。
+
+    2026-11-10 事故：RabbitMQ 的未确认投递超时（默认 30 分钟）
+    掐断 channel 时，异常以 CancelledError 的形式冒出来 ——
+    Python 3.8+ 里 CancelledError 继承 BaseException，
+    ``except Exception`` 抓不到它 ⇒ 这次失败在监控上完全看不见。
+    加上 worker 自己的任务上限，超时就由 worker 主动触发，
+    变成一个**干净、可诊断、可告警**的失败。
+    """

@@ -241,9 +241,15 @@ spec:
       interval: 60s
       rules:
         # HLS 切片失败率高
+        #
+        # ⚠️ label 值必须与代码一致：worker/src/edam_worker/metrics.py 里
+        #    result ∈ {success, failed_permanent, cancelled}。
+        #    原先这里写的是 result="failed" —— 代码里根本没有这个值，
+        #    ⇒ 这个告警**永远不会触发**（死规则）。
+        #    2026-11-10 事故正是被这条死规则漏掉的。
         - alert: VideoTranscodeFailure
           expr: |
-            sum(rate(worker_tasks_processed_total{task_type="video",result="failed"}[10m]))
+            sum(rate(worker_tasks_processed_total{task_type="video",result=~"failed_permanent|cancelled"}[10m]))
             /
             sum(rate(worker_tasks_processed_total{task_type="video"}[10m]))
             > 0.1
@@ -254,6 +260,21 @@ spec:
             component: worker
           annotations:
             summary: '视频转码失败率 > 10%'
+            description: '含被 broker 掐断（cancelled）的任务 —— 通常是 RabbitMQ 的未确认投递超时到点'
+
+        # 被 broker 掐断消费 channel —— 直接对应"转码中途消失"的故障
+        # （RabbitMQ consumer_timeout 默认 30 分钟到点就掐 channel）
+        - alert: WorkerTaskCancelledByBroker
+          expr: |
+            sum(rate(worker_tasks_processed_total{result="cancelled"}[10m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            tier: business
+            component: worker
+          annotations:
+            summary: 'Worker 任务被 broker 掐断（channel 被关闭）'
+            description: '通常是 RabbitMQ 未确认投递超时（consumer_timeout，默认 30 分钟）到点；把 broker 的 consumer_timeout 调大，见 ops/rabbitmq/README.md'
 
         # 登录失败激增（可能暴力破解）
         - alert: SuspiciousLoginAttempts

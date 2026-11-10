@@ -25,7 +25,13 @@ from prometheus_client import Counter, Histogram
 TASKS_PROCESSED = Counter(
     "worker_tasks_processed_total",
     "Total tasks processed (final outcome only, after retries)",
-    ["task_type", "result"],   # result ∈ {success, failed_permanent}
+    # result ∈ {success, failed_permanent, cancelled}
+    #
+    # cancelled：协程被取消 —— broker 掐断了消费 channel
+    # （未确认投递超时到点）。它**不是**成功，也不是"永久失败"，
+    # 消息未确认 ⇒ broker 会自动重投 ⇒ 有可能还会被重做。
+    # 单独一个 label 值，运维一眼能分清"彻底失败"与"被 broker 打断"。
+    ["task_type", "result"],
 )
 TASK_ATTEMPTS = Counter(
     "worker_task_attempts_total",

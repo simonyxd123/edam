@@ -114,6 +114,15 @@ sudo systemctl restart edam-worker
 | `OPS_ENABLED` | false | 运维接口（按 video_id 重触发 HLS），默认关 |
 | `WORKER_MAX_ATTEMPTS` | 3 | 整个流水线重试次数（下载+转码+回调，很贵） |
 | `WORKER_CALLBACK_MAX_ATTEMPTS` | 3 | 回调后端失败时的重试次数（只重发 PATCH，很便宜）；401/403 不重试 |
+| `WORKER_TASK_DEADLINE_SEC` | 10800（3 小时） | 整条流水线的墙钟上限，**必须小于 broker 的 consumer_timeout** |
+| `RABBITMQ_CONSUMER_TIMEOUT_SEC` | 14400（4 小时） | worker 自检用："我以为 broker 是多少"；**改 broker 后必须同步改这里** |
+| `FFMPEG_TIMEOUT_SEC` | 3600（1 小时） | 单个 FFmpeg 子进程的上限，必须小于任务上限 |
+
+> ⚠️ **三档超时必须自上而下递减**：broker 的 `consumer_timeout` >
+> `WORKER_TASK_DEADLINE_SEC` > `FFMPEG_TIMEOUT_SEC`。
+> broker 的超时到点会**掐断 channel**，正在转码的协程被连带取消 ——
+> 而 `CancelledError` 在监控上是隐形的（2026-11-10 事故）。
+> 详见 `ops/rabbitmq/README.md`。
 
 ---
 
@@ -184,6 +193,7 @@ journalctl -u edam-worker -n 200 --no-pager | grep -i "callback\|status\|token"
 | 后端日志 `... reason=backend_token_not_configured` | 后端没配 | 给后端进程加 `WORKER_TOKEN=<值>` 并重启后端 |
 | 后端日志 `... reason=worker_token_header_missing` | worker 没配 | 给 worker 配 `WORKER_TOKEN` 并重启 worker |
 | MinIO 有对象但播放仍 404 | 产物不在 `videos/{id}/hls/playlist.m3u8` | 核对对象路径；见 `modify/2026-10-28-...md` |
+| **转码跑到一半消失**，日志里只有 `ChannelInvalidStateError` | **RabbitMQ 的未确认投递超时（默认 30 分钟）掐断了 channel**，正在跑的协程被取消（`CancelledError`） | 调大 broker 的 `consumer_timeout`，见 `ops/rabbitmq/README.md`；同时确认 `WORKER_TASK_DEADLINE_SEC` 小于它 |
 | 审计页面查不到登录/预览记录 | `operation_log.detail` 列类型不对，写入全被 MySQL 拒 | 见 `modify/2026-10-29-fix-audit-log-json-and-worker-callback.md` |
 
 ---

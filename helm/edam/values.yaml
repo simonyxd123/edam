@@ -143,6 +143,24 @@ worker:
     # 运维接口（按 video_id 重触发 HLS）：默认关闭，
     # 需要时在 overlays 里设 OPS_ENABLED=true
     OPS_ENABLED: "false"
+    # ----------------------------------------------------------------
+    # 超时预算（三档必须自上而下递减，见 ops/rabbitmq/README.md）
+    #
+    #   RABBITMQ_CONSUMER_TIMEOUT_SEC (4h)
+    #     > WORKER_TASK_DEADLINE_SEC   (3h)
+    #       > FFMPEG_TIMEOUT_SEC       (1h)
+    #
+    # broker 的 consumer_timeout 到点会**掐断 channel**，
+    # 正在转码的协程被连带取消 —— 而 CancelledError 在监控上是隐形的。
+    # worker 自己先超时，才拿得到一个干净、可诊断、可告警的失败。
+    #
+    # ⚠️ RABBITMQ_CONSUMER_TIMEOUT_SEC **不是** broker 的配置，
+    #    它是 worker 用来自检"我以为 broker 是多少"。
+    #    改了 broker 的 consumer_timeout，必须同步改这里。
+    # ----------------------------------------------------------------
+    RABBITMQ_CONSUMER_TIMEOUT_SEC: "14400"
+    WORKER_TASK_DEADLINE_SEC: "10800"
+    FFMPEG_TIMEOUT_SEC: "3600"
 
 # Nginx 网关（统一入口：/api 与 /ws → 后端，其余 → 前端 SPA）
 nginx:

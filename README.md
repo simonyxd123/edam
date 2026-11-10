@@ -157,7 +157,7 @@ SDK 自带灰度开关（`GrayReleaseConfig`），当前版本 **v3.2.0**。
 | 组件 | 技术 | 规模 |
 |---|---|---|
 | 后端 | Java 17 + Spring Boot 3.3.0 + MyBatis-Plus 3.5.7 | 20 Controller / 99 端点 / 36 个测试类 / 258 用例 |
-| Worker | Python 3.10 + FastAPI + aio-pika | 2 条队列 / 9 个测试文件 |
+| Worker | Python 3.10 + FastAPI + aio-pika | 2 条队列 / 10 个测试文件 |
 | 前端 | Vue 3.5 + Vite 5 + Pinia + Element Plus | 11 条路由 / 10 个视图 / 7 个测试文件 |
 | 数据库 | MySQL 8.0 + Flyway | 15 个迁移 / **35 张表** |
 | 移动 SDK | Swift + Kotlin | v3.2.0 |
@@ -370,7 +370,7 @@ cd web     && npm run build       # 前端（build 内置 vue-tsc 类型检查�
 |---|---|---|
 | 后端 | `cd backend && mvn test` | 30 个测试类 / **219 用例** |
 | 前端 | `cd web && npx vitest run` | 7 个文件 / **58 用例** |
-| Worker | `cd worker && pytest` | 9 个文件 / **101 用例**（2 个需 ffmpeg / PyPDF2，跳过） |
+| Worker | `cd worker && pytest` | 10 个文件 / **116 用例**（2 个需 ffmpeg / PyPDF2，跳过） |
 | E2E | `cd e2e && npx playwright test` | Playwright + Cypress |
 
 > 后端测试需要**真实的 MySQL**（迁移是 MySQL 方言，不用 H2）。

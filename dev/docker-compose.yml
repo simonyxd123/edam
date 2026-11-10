@@ -137,6 +137,10 @@ services:
       - "15672:15672" # Management UI
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      # 未确认投递超时（consumer_timeout）必须调大 ——
+      # 默认 30 分钟会把正在转码的 consumer 协程连带取消，
+      # 而 CancelledError 在监控上是隐形的（详见文件内注释）。
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 30s
