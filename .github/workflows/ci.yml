@@ -279,7 +279,60 @@ jobs:
           path: web/dist/
 
   # ===========================================================================
-  # 6. 镜像构建
+  # 6. 移动端 SDK 编译（iOS）
+  # ===========================================================================
+  # 2026-11-11 代码审计第四轮 §2：iOS SDK **从来就没有被编译过** ——
+  # 仓库里 CI 只有后端 / 前端 / Worker 三个 job，移动端一个都没有。
+  # 于是 `avPlayerLayer = = nil`（多一个 =）这种**必然编译失败**的语法错误
+  # 能在仓库里躺很久没人发现：SDK 根本不可用，也没人发现它不可用。
+  #
+  # 这个 job 的作用就是**把"写完但没编译过"这件事变成红灯**。
+  #
+  # 为什么用 macos runner：iOS SDK 依赖 UIKit / AVKit / WebKit，
+  # 只有 macOS 上的 Xcode 才编得了。代价是 macos runner 比 linux 贵，
+  # 但这是唯一能验证的办法 —— 报告 §2.4 已记下这个权衡。
+  mobile-sdk-ios:
+    name: 移动端 SDK 编译（iOS）
+    runs-on: macos-latest
+    needs: docs-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示 Xcode 版本
+        run: xcodebuild -version
+
+      # ⚠️ **不能用 `swift build`**：
+      # 它默认按**宿主平台**（macOS）编译，而本 SDK 依赖 UIKit / AVKit / WebKit
+      # —— 这些框架在 macOS 上不存在 ⇒ 会报 "no such module 'UIKit'"，
+      # 那不是 SDK 的问题，是命令选错了。
+      #
+      # `xcodebuild -destination 'generic/platform=iOS'` 才是对的：
+      # Xcode 能直接构建纯 SPM 包（不需要 .xcodeproj），
+      # -scheme 用包名即可（这里 包名/目标名/产品名 三者都是 EDAMPlayer）。
+      #
+      # CODE_SIGNING_ALLOWED=NO：CI 没有证书，别让签名卡住编译。
+      - name: 列出可用 scheme（失败时便于定位）
+        working-directory: mobile-sdk/ios
+        run: xcodebuild -list
+
+      - name: 编译 iOS SDK
+        working-directory: mobile-sdk/ios
+        run: |
+          xcodebuild build \
+            -scheme EDAMPlayer \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet
+
+      # 顺带确认 Package.swift 能被解析（manifest 里写错的路径、
+      # 缺失的 target 目录在这里就会暴露 —— 第四轮 §2 的
+      # EDAMPlayerTests 目录缺失就是这种问题）
+      - name: 校验 Package.swift
+        working-directory: mobile-sdk/ios
+        run: swift package describe --type json > /dev/null && echo "Package.swift OK"
+
+  # ===========================================================================
+  # 7. 镜像构建
   # ===========================================================================
   docker-build:
     name: Docker 镜像构建

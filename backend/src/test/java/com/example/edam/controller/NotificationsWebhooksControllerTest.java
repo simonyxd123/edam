@@ -154,7 +154,7 @@ class NotificationsWebhooksControllerTest {
         when(webhookRepository.findByIdAndOwner(7L, STRANGER)).thenReturn(null);
 
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
-            () -> webhooksController.deliveries(7L, STRANGER, 1));
+            () -> webhooksController.deliveries(7L, STRANGER, 1, 20));
         assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
     }
 
@@ -191,7 +191,7 @@ class NotificationsWebhooksControllerTest {
         page.setRecords(List.of(d));
         when(webhookDeliveryRepository.selectPage(any(), any())).thenReturn(page);
 
-        List<Map<String, Object>> items = webhooksController.deliveries(7L, OWNER, 1);
+        List<Map<String, Object>> items = webhooksController.deliveries(7L, OWNER, 1, 20);
 
         assertEquals(1, items.size());
         assertEquals(Integer.valueOf(3), items.get(0).get("retry_count"));

@@ -59,7 +59,19 @@ public final class EDAMDocumentViewer: NSObject {
         let cacheKey = "doc_\(docId)_\(docType.rawValue)"
         if let cached = cache.cachedResponse(for: request) {
             print("EDAMDocumentViewer: cache_hit key=\(cacheKey)")
-            webView.load(cached.data.flatMap { String(data: $0, encoding: .utf8).map(URL.init) } ?? url)
+            // ⚠️ 2026-11-11 审计第四轮 §8：原来是
+            //   `webView.load(cached.data.flatMap { String(data: $0, encoding: .utf8).map(URL.init) } ?? url)`
+            // —— 把**响应体**（文档内容本身）当成 URL 字符串去解析，
+            // 解析失败就 fallback 到 `url`（于是缓存命中反而又发了一次网络请求，
+            // 缓存形同虚设）；万一文档内容碰巧长得像 URL，就直接加载到错误的地方。
+            //
+            // 正确做法：把**缓存的字节**直接喂给 WebView。
+            // WKWebView.load(_:mimeType:characterEncodingName:baseURL:) 接受内存数据。
+            let mimeType = cached.response.mimeType ?? "application/octet-stream"
+            webView.load(cached.data,
+                         mimeType: mimeType,
+                         characterEncodingName: "utf-8",
+                         baseURL: url)
             return
         }
 

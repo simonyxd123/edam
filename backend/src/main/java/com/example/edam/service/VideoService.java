@@ -10,6 +10,7 @@ import com.example.edam.repository.VideoResourceRepository;
 import com.example.edam.security.classification.ClassificationEnforcement;
 import com.example.edam.security.classification.ClassificationLevel;
 import com.example.edam.util.FileHashUtils;
+import com.example.edam.util.PageParams;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
@@ -89,7 +90,11 @@ public class VideoService {
         // 不加这个的话，列表里会出现根本点不开的视频（L3/L4 未授权时播放会 403），
         // 用户只能看到"列表里有、点进去报没权限"，体验上等于没做鉴权。
         videoPermissionService.applyVisibility(wrapper, CurrentUser.optionalUserId());
-        return videoRepository.selectPage(new Page<>(page, pageSize), wrapper);
+        // 分页参数夹取（2026-11-11 审计第四轮 §1）：
+        // 分页插件补上之前 page_size 完全无效（selectPage 退化成全表查询），
+        // 现在它真正生效 ⇒ 必须夹住，否则 page_size=100000 就能一次拉 10 万行。
+        return videoRepository.selectPage(
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(pageSize)), wrapper);
     }
 
     /**
@@ -130,6 +135,15 @@ public class VideoService {
         // **不支持参数化**，所以换用 Page 对象：selectPage 会生成参数化的
         // `LIMIT ?, ?`（偏移固定 0，等价于 `LIMIT size`）。
         // searchCount 关掉 —— cursor 分页不需要总数，多一次 count 纯属浪费。
+        //
+        // ⚠️ 2026-11-11 审计第四轮 §1：这段代码的注释**曾经是错的**，
+        // 而且它掩盖了一个 critical 缺陷。分页插件当时根本没注册，
+        // selectPage 退化成全表查询 —— 也就是说这个 Page 对象的
+        // size=limit+1 **完全没起作用**，DB 把整张 video_resource 发了过来。
+        // 真正把返回条数救回来的是下面这行手工 subList(0, limit)：
+        // 它让接口"看起来正常"（条数对），代价是每次请求全表扫描 +
+        // 全量实例化，而监控上看不出来。
+        // 插件补上后 subList 不再是"救命的"，只是"多取一个用来判断 has_more"。
         Page<VideoResource> page = new Page<>(1, limit + 1);
         page.setSearchCount(false);
         java.util.List<VideoResource> result = videoRepository.selectPage(page, wrapper).getRecords();

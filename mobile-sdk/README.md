@@ -13,11 +13,30 @@ EDAM Mobile SDK 是 EDAM 系统的移动端集成 SDK，提供：
 
 | 能力 | iOS | Android |
 | --- | --- | --- |
-| HLS 安全播放 | ✅ | ✅ |
-| Canvas 动态水印（每 5 秒） | ✅ | ✅ |
+| HLS 安全播放 | ✅ | ❌ 未实现 |
+| Canvas 动态明水印（每 5 秒） | ✅ | ❌ 未实现 |
 | 截屏检测 | ✅ (iOS 17+) | ✅ (Android 11+) |
-| Session Token 刷新 | ✅ | ✅ |
-| 播放日志上报 | ✅ | ✅ |
+| 越狱 / Root 检测 | ✅ | ✅ |
+| 调试器检测 | ✅ | ✅ |
+| 文档预览 | ✅ | ✅ |
+| 播放日志上报 | ✅ | ❌ 未实现 |
+| Session Token 刷新 | ❌ 未实现 | ❌ 未实现 |
+
+> ⚠️ **2026-11-11 说明**：这张表此前把**全部能力都标成了 ✅**，
+> 但其中三项当时**根本没有实现**：
+>
+> - **Android 的 HLS 播放与水印** —— `mobile-sdk/android/` 下只有
+>   `EDAMDocumentViewer` / `EDAMSecurityGuard` / `GrayReleaseConfig`
+>   三个类，**没有任何播放器**（没有 ExoPlayer / Media3 的使用痕迹）。
+> - **播放日志上报** —— iOS 侧原来只 `print` 一行就完事，
+>   移动端播放在溯源链上是空白（视频从手机外泄，play_log 里查不到）。
+>   已于 2026-11-11 补上（POST /playback/{id}/log）。
+> - **Session Token 刷新** —— 一直只有声明，没有实现。
+>
+> 表格按**代码里实际有什么**来标，不是按 README 想要什么来标。
+> 这正是第四轮代码审计 §2 的教训：iOS SDK 此前**根本编译不过**，
+> 而仓库里**没有任何东西会告诉集成方这件事** ——
+> README 反而把它写成"全绿"的能力表。
 
 ---
 

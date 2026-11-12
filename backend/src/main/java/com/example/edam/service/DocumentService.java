@@ -8,6 +8,7 @@ import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.security.classification.ClassificationEnforcement;
 import com.example.edam.security.classification.ClassificationLevel;
 import com.example.edam.util.FileHashUtils;
+import com.example.edam.util.PageParams;
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
@@ -83,7 +84,9 @@ public class DocumentService {
         // 可见性过滤（密级 + 显式授权）—— 与 DocPermissionService.canView 同源，
         // 与视频侧（VideoService.list）保持一致的做法。
         docPermissionService.applyVisibility(wrapper, CurrentUser.optionalUserId());
-        return docRepository.selectPage(new Page<>(page, pageSize), wrapper);
+        // 分页参数夹取（2026-11-11 审计第四轮 §1）—— 见 VideoService.list 的说明
+        return docRepository.selectPage(
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(pageSize)), wrapper);
     }
 
     /**
@@ -164,7 +167,20 @@ public class DocumentService {
             doc.setMinioPath(minioPath);
             doc.setPreviewPath(null);
             doc.setSizeBytes(file.getSize());
-            doc.setMimeType(file.getContentType());
+            // 落库的 MIME **由服务端按后缀判定**，不信客户端的 Content-Type。
+            //
+            // 2026-11-11 代码审计第四轮 §3：原来存的是 `file.getContentType()`
+            // —— 客户端说了算。而预览端点用它决定 Content-Type 与是否 inline
+            // （DocumentPreviewService.load），于是攻击者可以把任意 MIME 写进库。
+            //
+            // 具体危害：上传 `payload.svg`（Content-Type: image/svg+xml）
+            // → 库里 mime_type 就是 image/svg+xml
+            // → 预览时 inline=true + Content-Type: image/svg+xml
+            // → 浏览器内联执行 SVG 里的脚本 ⇒ 存储型 XSS
+            //   （且落在持有 localStorage JWT 的认证域上）。
+            //
+            // 改成服务端按**文件后缀**判定后，客户端声明什么都不影响落库值。
+            doc.setMimeType(resolveMimeType(originalName));
             // 落库用的是**裁决后**的密级，不是客户端声明的那个
             doc.setClassificationLv(classification.getFinalLevel().getLevel());
             doc.setUploaderId(uploaderId);
@@ -270,6 +286,43 @@ public class DocumentService {
             lower.endsWith(".jpeg") || lower.endsWith(".gif") ||
             lower.endsWith(".bmp")) return "image";
         return "docx";
+    }
+
+    /**
+     * 按**文件后缀**判定 MIME（服务端权威值）。
+     *
+     * <p>为什么不能信客户端的 {@code Content-Type}：
+     * 落库的 MIME 会被预览端点直接当作响应的 {@code Content-Type} 发出去，
+     * 客户端能声明什么，就等于能决定浏览器怎么解析这个文件。
+     * SVG 就是这么变成存储型 XSS 的（审计第四轮 §3）。
+     *
+     * <p>SVG **没有**对应项 —— 它不是合法的文档类型，
+     * 且带脚本的 SVG 会被浏览器内联执行。
+     * 万一有 SVG 流进来（老数据 / 绕过白名单），落到
+     * {@code application/octet-stream} ⇒ 浏览器只当二进制下载，不解析。
+     */
+    public static String resolveMimeType(String filename) {
+        if (filename == null) return "application/octet-stream";
+        String lower = filename.toLowerCase();
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".gif")) return "image/gif";
+        if (lower.endsWith(".bmp")) return "image/bmp";
+        if (lower.endsWith(".docx")) {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        if (lower.endsWith(".doc")) return "application/msword";
+        if (lower.endsWith(".xlsx")) {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        }
+        if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+        if (lower.endsWith(".pptx")) {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        }
+        if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        // SVG / 未知类型 ⇒ 二进制流，浏览器不解析内容
+        return "application/octet-stream";
     }
 
     /**

@@ -117,7 +117,19 @@ object GrayReleaseConfig {
         // 未启用灰度时全量启用
         if (!enabled) return true
         // 灰度比例判定（哈希分流）
-        val bucket = stableHash(userId) % 100
+        //
+        // ⚠️ 2026-11-11 审计第四轮 §8.5：原来写的是 `stableHash(userId) % 100`。
+        // Kotlin 的 `%` **保留被除数的符号** ⇒ 负数 hash 得到负数 bucket。
+        // 而 `bucket < percentage` 对负数**恒为真**（负数永远 < 任何非负 percentage）
+        // ⇒ 负 bucket 的用户 100% 命中灰度。
+        //
+        // stableHash 取 SHA-256 的前 4 字节拼成 Int，最高位为 1 时就是负数
+        // ⇒ **约一半**用户的 bucket 是负数。
+        // 实测（第四轮）：percentage=10 时，10000 个工号里命中 5543 个（55.4%），
+        // 而期望值约 1000（10%）⇒ 灰度比例实际上是 55%，不是 10%。
+        //
+        // Math.floorMod 保证结果永远落在 0~99。
+        val bucket = Math.floorMod(stableHash(userId), 100)
         return bucket < percentage
     }
 

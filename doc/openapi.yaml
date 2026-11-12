@@ -1736,6 +1736,13 @@ paths:
       x-required-permission: webhook:read
       parameters:
         - $ref: '#/components/parameters/PageParam'
+        # 2026-11-12：新增 page_size。
+        # 原来只有 page，且每页条数是 `20 * page`（随页码线性增长）——
+        # 那个公式只在分页失效时才能"看起来对"（MP 分页插件从未注册，
+        # selectPage 退化成全表查询）。分页插件补上后它会真的生效，
+        # 而 offset = (page-1) * size 会算出错位的偏移（第 21~40 条被跳过）。
+        # ⇒ 改成常规的 page + page_size。
+        - $ref: '#/components/parameters/PageSizeParam'
       responses:
         '200':
           description: 投递历史

@@ -5,6 +5,7 @@ import com.example.edam.model.Notification;
 import com.example.edam.model.NotificationPreference;
 import com.example.edam.repository.NotificationPreferenceRepository;
 import com.example.edam.repository.NotificationRepository;
+import com.example.edam.util.PageParams;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -92,7 +93,7 @@ public class NotificationsController {
         wrapper.orderByDesc(Notification::getCreatedAt);
 
         Page<Notification> result = notificationRepository.selectPage(
-            new Page<>(Math.max(1, page), Math.min(100, Math.max(1, page_size))), wrapper);
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(page_size)), wrapper);
 
         Map<String, Object> response = new HashMap<>();
         response.put("items", result.getRecords().stream().map(this::toItem).toList());

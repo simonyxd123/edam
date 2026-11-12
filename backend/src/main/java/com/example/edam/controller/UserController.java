@@ -11,6 +11,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.util.PageParams;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -65,7 +66,8 @@ public class UserController {
             wrapper.eq(SysUser::getStatus, parseStatus(status));
         }
         wrapper.orderByDesc(SysUser::getCreatedAt);
-        Page<SysUser> result = userRepository.selectPage(new Page<>(page, page_size), wrapper);
+        Page<SysUser> result = userRepository.selectPage(
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(page_size)), wrapper);
 
         // 转 SysUserView DTO（snake_case + 脱敏 password_hash）
         List<SysUserView> items = result.getRecords().stream()

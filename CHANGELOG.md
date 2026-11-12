@@ -13,6 +13,100 @@
 
 ### 修复
 
+#### MyBatis-Plus 分页插件从未注册 —— 10 个列表端点返回全表
+
+分页插件**从未被注册过**。MyBatis-Plus 的 `selectPage(IPage, Wrapper)`
+本身不做 LIMIT —— LIMIT 是 `PaginationInnerInterceptor` 在 SQL 拦截层
+改写出来的。而 MP 的自动装配带 `@ConditionalOnBean(InnerInterceptor.class)`，
+**应用不自己声明 bean，它就不会被创建**。
+
+后果：10 个列表端点（`/videos` `/documents` `/users` `/audit` `/notifications`
+`/webhooks` `/distributions` `/v2/videos` …）返回**全表**，
+`page_size` 参数完全失效，`total` 恒为 0 ⇒ 前端分页器一直显示"共 0 条"。
+
+最隐蔽的一处是审计导出：5 万行的上限保护形同虚设 ——
+因为 LIMIT 没生效，代码是**先把整张 `operation_log` 拉进内存**再检查行数
+（方案书 §14.3 资源耗尽型）。
+
+整改：
+
+- 新增 `config/MybatisPlusConfig` 注册分页插件（`maxLimit=1000` 兜底，
+  `overflow=false` ⇒ 页码越界返回空而不是回退首页）
+- 新增 `util/PageParams` 夹住 `page` / `page_size`（1~100），9 处调用点全部改用
+- **审计导出显式 `page.setMaxLimit(50001)`** —— 全局 `maxLimit=1000`
+  会把它静默截断成 1000 行，"5 万行上限"就变成了"最多导出 1000 行而且不报错"
+- 顺带修掉 Webhook 投递历史的 `size = 20 * page` 公式
+  （每页条数随页码线性增长，分页真生效后第 21~40 条会被整段跳过）
+- 新增 `MybatisPlusConfigTest`（10 条，H2，**用生产配置类**），
+  并验证过"摘掉插件测试必红"
+
+#### iOS SDK 根本编译不过 —— 且与后端的解码契约对不上
+
+`mobile-sdk/ios/` 有两处**必然编译失败**的语法错误
+（`avPlayerLayer = = nil`；`setupPlayer` 用了不在作用域的 `accessToken`），
+`Package.swift` 还指向不存在的 `EDAMPlayerTests/` 目录 ⇒ 整个包构建不了。
+而 **CI 里没有任何 mobile-sdk 编译检查** —— 这是它能长期潜伏的原因。
+
+即使编译过了也跑不起来：
+
+- `PlaybackSession` 声明了 `userId`（后端**根本不返回** `user_id`）和
+  `expiresAt: Date`（后端返回的是 ISO-8601 **字符串**）⇒ **每次播放都解码失败**
+- 水印用的是 `currentSession?.userId` ⇒ **永远显示 "USER_0"**，
+  水印看着在，其实指不出是谁
+- 播放日志只 `print` 一行 ⇒ **移动端在溯源链上是空白**
+  （前端早就接了 `/playback/{id}/log`，`play_log` 表保留 365 天）
+- `m3u8_url` 是**根相对**路径，直接 `URL(string:)` 得到的 URL 没有 scheme
+  ⇒ AVURLAsset 拉不到内容
+- 两个资源泄漏：播放进度 observer 句柄没存（AVPlayer 永远不释放）、
+  `AVPlayerLayer` 没从视图上移除
+
+整改：
+
+- 改用后端签发的**播放 token**（`scope=playback` + 绑定 video_id），
+  **不再往 AVURLAsset 塞登录 JWT** —— 那三个端点是 `permitAll`，
+  只读 query token；而且 `AVURLAssetHTTPHeaderFieldsKey` 是 Apple 未公开的私有 API
+- 解码契约与后端对齐（显式 `CodingKeys` + 自己做 ISO-8601 解析），
+  后端加 2 条**契约测试**把字段名钉死
+- 水印改用工号（`/auth/me` 的 `employee_no`），与前端一致
+- 播放日志接上 `/playback/{id}/log`
+- 修掉两个资源泄漏 + 根相对 URL 拼接
+- **CI 新增 `mobile-sdk-ios` 编译门**（macos runner）——
+  没有这一步，上面这些改完照样会烂掉
+
+顺带修：Android 灰度哈希负 bucket（`%` 保留符号 ⇒ 负数恒命中，
+10% 实际命中 **55.4%**，实测 10000 个工号命中 5543 个）；
+iOS `abs(Int.min)` 崩溃（Swift 里是 precondition 失败）；
+iOS 文档预览缓存命中分支把响应体当 URL 解析。
+
+`mobile-sdk/README.md` 的能力表此前把**全部能力都标成 ✅**，
+但 Android 的播放器与水印**根本没实现** ⇒ 已按代码实际情况重标。
+
+#### SVG 文档绕过白名单 —— 存储型 XSS，落在持有 JWT 的认证域上
+
+上传白名单用 `c.contains("image/")` 匹配 MIME ⇒ `image/svg+xml` 正好命中。
+SVG 不是图片，是**可执行 XML**，浏览器会内联解析并执行其中的 `<script>`。
+
+攻击路径：上传带脚本的 SVG → 分享给同事 → 对方打开预览
+⇒ 脚本在**后端域名**下执行 ⇒ 直接偷走 localStorage 里的
+`access_token` / `refresh_token`。
+
+`X-Content-Type-Options: nosniff` **挡不住** ——
+它只防"声明类型与实际内容不符"，而 SVG 的声明类型**就是**
+浏览器会执行脚本的类型。
+
+整改（后端三处 + 前端三处）：
+
+- 上传白名单排除 SVG（**后缀检查放在 MIME 分支之前** ——
+  MIME 分支命中就 `return true`，后缀分支根本没机会执行，
+  `image/png` + `payload.svg` 会混进来），并排除 `text/*` 与 `.html`
+- 落库 MIME 改由**服务端按后缀判定**，不信客户端的 `Content-Type`
+- 预览 inline 白名单改成**精确枚举**（`image/svg+xml` / `text/html` 一律不 inline）
+- 前端同样收紧（**关键**：前端走 `fetch → blob → iframe`，
+  **完全绕过服务端的 `Content-Disposition`**；
+  且 Blob URL 的 origin 继承本站 ⇒ SVG 脚本就在本站 origin 下执行）
+
+新增 `DocumentSvgXssTest`（9 条）+ `previewMime.spec.ts`（12 条）。
+
 #### 视频转码被 RabbitMQ 掐断 —— 失败在监控上完全隐形
 
 2026-11-10 线上事故：video 14 转码 12.7 分钟成功，video 15 转码到

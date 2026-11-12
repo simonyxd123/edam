@@ -1,5 +1,6 @@
 package com.example.edam.controller;
 
+import com.example.edam.model.VideoResource;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.service.AuditService;
 import com.example.edam.service.VideoPermissionService;
@@ -18,10 +19,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -57,11 +60,13 @@ class PlaybackControllerTest {
     private PlaybackController controller;
     private MinioClient minioClient;
     private JwtTokenProvider jwtTokenProvider;
+    private VideoService videoService;
+    private VideoPermissionService videoPermissionService;
 
     @BeforeEach
     void setUp() {
-        VideoService videoService = mock(VideoService.class);
-        VideoPermissionService videoPermissionService = mock(VideoPermissionService.class);
+        videoService = mock(VideoService.class);
+        videoPermissionService = mock(VideoPermissionService.class);
         jwtTokenProvider = mock(JwtTokenProvider.class);
         minioClient = mock(MinioClient.class);
         com.example.edam.service.PlayLogService playLogService =
@@ -406,5 +411,74 @@ class PlaybackControllerTest {
 
         assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
         verify(minioClient, never()).getObject(any(GetObjectArgs.class));
+    }
+
+    // ==================================================================
+    // 播放 token 端点的**响应契约**
+    //
+    // 2026-11-11 代码审计第四轮 §2：iOS SDK 的 PlaybackSession 结构体
+    // 与本端点的响应**对不上**，解码必然抛错：
+    //   - SDK 声明了 userId（Int64，非可选）—— 本端点**根本不返回** user_id
+    //   - SDK 声明了 expiresAt（Date）—— 本端点返回的是 ISO-8601 **字符串**
+    //
+    // 跨语言契约没有测试守着，就会漂移。这里把字段名钉死。
+    // ==================================================================
+
+    @Test
+    @DisplayName("播放 token 响应：字段名固定（iOS SDK 按这些 key 解码）")
+    void tokenResponseShapeIsStable() {
+        VideoResource video = new VideoResource();
+        video.setId(1L);
+        video.setClassificationLv(1);
+
+        when(videoService.getById(1L)).thenReturn(video);
+        when(videoPermissionService.canView(any(), any())).thenReturn(true);
+        when(jwtTokenProvider.createPlaybackToken(any(), any(), any())).thenReturn("playback-tok");
+
+        ResponseEntity<Map<String, Object>> resp = controller.getToken(1L, 7L, request());
+        Map<String, Object> body = resp.getBody();
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertNotNull(body);
+
+        // SDK 的 PlaybackSession 用 CodingKeys 声明了这些 ——
+        // 少一个 ⇒ iOS 端解码抛错；多一个不用管（Swift 会忽略未知 key）。
+        for (String key : new String[]{
+                "session_id", "m3u8_url", "token", "expires_at"}) {
+            assertTrue(body.containsKey(key),
+                "播放 token 响应必须包含 '" + key + "' —— iOS SDK 按它解码，"
+                    + "少了就解码失败。实际字段：" + body.keySet());
+        }
+
+        // **不要**加 user_id：SDK 原来声明了它，但那时它根本不存在。
+        // 现在 SDK 改成用工号（来自 /auth/me）做水印标识，不再依赖这个字段。
+        assertFalse(body.containsKey("user_id"),
+            "播放 token 响应里不应有 user_id —— 它不是水印标识的来源，"
+                + "留着只会诱导客户端再写一个解码必错的字段");
+
+        // expires_at 必须是 ISO-8601 **字符串**（Swift 的 ISO8601DateFormatter 能解）
+        assertTrue(body.get("expires_at") instanceof String,
+            "expires_at 必须是字符串（ISO-8601），实际类型：" + body.get("expires_at"));
+    }
+
+    @Test
+    @DisplayName("播放 token 响应：m3u8_url 是根相对路径且带播放 token")
+    void tokenResponseM3u8UrlCarriesPlaybackToken() {
+        VideoResource video = new VideoResource();
+        video.setId(1L);
+        video.setClassificationLv(1);
+
+        when(videoService.getById(1L)).thenReturn(video);
+        when(videoPermissionService.canView(any(), any())).thenReturn(true);
+        when(jwtTokenProvider.createPlaybackToken(any(), any(), any())).thenReturn("playback-tok");
+
+        Map<String, Object> body = controller.getToken(1L, 7L, request()).getBody();
+        String m3u8Url = (String) body.get("m3u8_url");
+
+        assertTrue(m3u8Url.startsWith("/api/v1/playback/"),
+            "m3u8_url 必须是根相对路径（后端不猜客户端 origin），实际：" + m3u8Url);
+        assertTrue(m3u8Url.contains("token=playback-tok"),
+            "m3u8_url 必须带上播放 token —— playlist/segment/key 三个端点是 "
+                + "permitAll，只靠 query token 鉴权。实际：" + m3u8Url);
     }
 }

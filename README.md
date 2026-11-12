@@ -493,6 +493,8 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | ES CDC | 在 `dev/cdc/` 是独立 Python 进程，**后端没有 ES 客户端** —— 搜索走的是标题模糊匹配，不是 Elasticsearch |
 | `fingerprint/` 下三个 Service | **算法已统一**（v3.4.1）：pHash 与盲水印各只有一份实现，两边逐位相同（此前 imagehash 与手写 DCT 并存 ⇒ 指纹对不上、匹配率 ≈ 0 且不报错）。泄露比对已可通过 `POST /ops/leak-detect` 调用，但产品链路未闭环（见上一行） |
 | SSO | 默认 `edam.sso.enabled: false` |
+| **移动端 SDK** | **iOS 可用，Android 只有一半**（v3.4.2 查清）：`mobile-sdk/android/` 下**只有** `EDAMDocumentViewer` / `EDAMSecurityGuard` / `GrayReleaseConfig` 三个类 —— **没有播放器**（grep `ExoPlayer`/`Media3`/`PlayerView` 零命中），**没有动态水印**。iOS 侧此前**根本编译不过**（2026-11-12 已修，并加了 CI 编译门），且它的解码契约与后端对不上（`user_id` 字段不存在 + `expires_at` 类型不对 ⇒ 每次播放都失败）、水印显示的是 `USER_0`（指不出是谁）、播放日志从没上报过（手机端外泄在 `play_log` 里查不到）—— 这四条均已修。**"Session Token 刷新"两端都没实现**。详见 `mobile-sdk/README.md` 的能力表 |
+| **分页** | 列表端点**已真分页**（v3.4.2 修）：MyBatis-Plus 的分页插件此前**从未注册** ⇒ `selectPage` 退化成全表查询 ⇒ 10 个列表端点返回**全表**、`total` 恒为 0（前端分页器一直显示"共 0 条"）、`page_size` 完全失效；审计导出的 5 万行上限保护也因此形同虚设（先把整张 `operation_log` 拉进内存再检查）。现已注册插件 + 夹住 `page_size`（1~100）+ 加回归测试 |
 
 方案书里的**驱动层**（Windows minifilter / macOS Endpoint Security / Linux FUSE）
 在本仓库中**没有实现** —— 只有协议与设计文档。

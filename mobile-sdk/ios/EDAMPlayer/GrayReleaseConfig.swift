@@ -103,8 +103,15 @@ public class GrayReleaseConfig {
         if !enabled { return true }
 
         // 灰度比例判定（哈希分流）
-        let hashValue = stableHash(userId)
-        let bucket = hashValue % 100
+        //
+        // ⚠️ 2026-11-11 审计第四轮 §8.6：stableHash 里写的是 `abs(hash)`。
+        // Swift 的 `abs(Int.min)` 是**precondition 失败**（直接崩溃，不是返回 0），
+        // 而 djb2 变体在极端输入下**确实能算出 Int.min**
+        // （Int.min 的二进制是 0x8000000000000000，djb2 的移位/加法能撞上）
+        // ⇒ 那个 userId 一调用就崩。
+        //
+        // 改用无符号运算取模，避开负数与溢出边界。
+        let bucket = Int(UInt(bitPattern: stableHash(userId)) % 100)
         return bucket < percentage
     }
 
@@ -117,12 +124,21 @@ public class GrayReleaseConfig {
     // MARK: - 私有方法
 
     /// 稳定哈希（同一 userId 始终落到同一桶）
+    ///
+    /// ⚠️ 这里**不能**用 `abs(hash)`：Swift 的 `abs(Int.min)` 是 precondition 失败
+    /// —— 直接崩溃，而不是返回 0。djb2 变体在极端输入下能算出 Int.min
+    /// （Int.min 的位模式是 0x8000000000000000）⇒ 那个 userId 一调用就崩。
+    ///
+    /// 溢出全部用**显式的**无符号/回绕运算符：
+    /// `&<<`（掩码移位）与 `&+`（回绕加法）——
+    /// 它们按定义不会 trap，而 `<<` / `+` 在结果超出表示范围时会 precondition 失败。
+    /// 取模放在调用方用无符号运算做（见 isFeatureEnabled）。
     private func stableHash(_ input: String) -> Int {
         var hash = 5381
         for char in input.utf8 {
-            hash = ((hash << 5) &+ hash) &+ Int(char)
+            hash = ((hash &<< 5) &+ hash) &+ Int(char)
         }
-        return abs(hash)
+        return hash
     }
 
     /// 版本比较（返回 -1/0/1）

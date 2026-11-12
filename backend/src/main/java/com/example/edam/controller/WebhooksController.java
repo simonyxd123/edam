@@ -7,6 +7,7 @@ import com.example.edam.model.Webhook;
 import com.example.edam.model.WebhookDelivery;
 import com.example.edam.repository.WebhookDeliveryRepository;
 import com.example.edam.repository.WebhookRepository;
+import com.example.edam.util.PageParams;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.swagger.v3.oas.annotations.Operation;
@@ -111,7 +112,8 @@ public class WebhooksController {
     public List<Map<String, Object>> deliveries(
         @PathVariable("webhook_id") Long webhookId,
         @CurrentUserId Long userId,
-        @RequestParam(defaultValue = "1") int page) {
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int page_size) {
         // 归属校验：不能读别人的投递历史
         if (webhookRepository.findByIdAndOwner(webhookId, userId) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
@@ -120,9 +122,20 @@ public class WebhooksController {
         LambdaQueryWrapper<WebhookDelivery> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(WebhookDelivery::getWebhookId, webhookId)
                .orderByDesc(WebhookDelivery::getDeliveredAt);
-        int size = Math.min(100, Math.max(1, 20 * Math.max(1, page)));
+        // 分页参数夹取（2026-11-11 审计第四轮 §1）。
+        //
+        // 原来是 `int size = Math.min(100, Math.max(1, 20 * Math.max(1, page)))` ——
+        // 每页条数随页码**线性增长**。这个公式只有在分页失效时才能"看起来对"：
+        // 插件没注册 ⇒ selectPage 忽略 page/size 直接返回全量，
+        // 那个 size 算出来纯粹是个死数字。
+        //
+        // 分页插件补上后它会真的生效，而 `size = 20 * page` 配合
+        // offset = (page-1) * size 会算出乱七八糟的偏移：
+        // page=2 ⇒ size=40, offset=40 ⇒ **第 21~40 条被整段跳过**。
+        // ⇒ 改成常规的 page + page_size（page_size 夹在 1~100）。
         List<Map<String, Object>> items = webhookDeliveryRepository
-            .selectPage(new Page<>(Math.max(1, page), size), wrapper)
+            .selectPage(new Page<>(PageParams.clampPage(page),
+                                   PageParams.clampSize(page_size)), wrapper)
             .getRecords().stream()
             .map(WebhooksController::toDeliveryItem)
             .toList();

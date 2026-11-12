@@ -8,6 +8,7 @@ import com.example.edam.model.OperationLog;
 import com.example.edam.model.SysUser;
 import com.example.edam.repository.OperationLogRepository;
 import com.example.edam.repository.SysUserRepository;
+import com.example.edam.util.PageParams;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -181,7 +182,7 @@ public class AuditService {
         wrapper.orderByDesc(OperationLog::getTimestamp);
 
         Page<OperationLog> pageResult = operationLogRepository.selectPage(
-            new Page<>(page, pageSize), wrapper);
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(pageSize)), wrapper);
 
         // 收集 userId → batch 查 sys_user
         Set<Long> userIds = pageResult.getRecords().stream()
@@ -289,6 +290,14 @@ public class AuditService {
 
         Page<OperationLog> page = new Page<>(1, MAX_EXPORT_ROWS + 1);
         page.setSearchCount(false);
+        // **必须显式覆盖 maxLimit**（2026-11-11 审计第四轮 §1）：
+        // 分页插件的全局 maxLimit=1000 会把这次查询截断成 1000 行 ——
+        // 那样"超过 5 万行就报错"的保护就变成了"最多只能导出 1000 行，
+        // 而且还不报错"（静默截断，用户以为导全了）。
+        // Page.setMaxLimit 的优先级高于拦截器的全局值（实测：50001 时取到全部行）。
+        // 这样导出的内存占用也是有界的：最多 MAX_EXPORT_ROWS+1 行，
+        // 而不是"整个 operation_log 表"（插件缺失时就是这个行为）。
+        page.setMaxLimit((long) MAX_EXPORT_ROWS + 1);
         List<OperationLog> records = operationLogRepository.selectPage(page, wrapper).getRecords();
         if (records.size() > MAX_EXPORT_ROWS) {
             throw new IllegalArgumentException(

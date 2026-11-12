@@ -92,8 +92,7 @@ public class DocumentPreviewService {
         }
 
         String mime = doc.getMimeType() != null ? doc.getMimeType() : "application/octet-stream";
-        boolean inline = mime.startsWith("application/pdf") || mime.startsWith("image/")
-                || mime.startsWith("text/");
+        boolean inline = isInlineSafe(mime);
         String filename = doc.getTitle() != null ? doc.getTitle() : ("doc_" + docId);
 
         byte[] bytes;
@@ -148,6 +147,59 @@ public class DocumentPreviewService {
             .replace("+", "%20");
         return (inline ? "inline" : "attachment")
             + "; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded;
+    }
+
+    /**
+     * 判断这个 MIME 能不能**内联**（inline）渲染。
+     *
+     * <p><b>用精确枚举，不用"包含/前缀"匹配</b>
+     * （2026-11-11 代码审计第四轮 §3，high —— 存储型 XSS）：
+     *
+     * <p>原来的判定是：
+     * <pre>{@code
+     * boolean inline = mime.startsWith("application/pdf")
+     *                 || mime.startsWith("image/")
+     *                 || mime.startsWith("text/");
+     * }</pre>
+     *
+     * <p>两个问题：
+     * <ol>
+     *   <li>{@code image/} 前缀把 {@code image/svg+xml} 也放进来了 ——
+     *       SVG 是可执行 XML，浏览器会内联解析并执行其中的 {@code <script>}。</li>
+     *   <li>{@code text/} 更宽 —— {@code text/html} 也在里面，
+     *       那是**最经典的** XSS 载体。</li>
+     * </ol>
+     *
+     * <p>而 {@code X-Content-Type-Options: nosniff} 挡不住：
+     * 它只防"声明类型与实际内容不符"，
+     * 可这里声明的就是浏览器**确实会执行脚本**的类型。
+     *
+     * <p>⇒ 改成精确白名单：只有这几种**确定不含脚本**的类型才 inline，
+     * 其余一律 {@code attachment}（下载而不是渲染）。
+     *
+     * <p>public：让回归测试能直接断言这个判定
+     * —— 见 {@code com.example.edam.controller.DocumentSvgXssTest}。
+     */
+    public static boolean isInlineSafe(String mime) {
+        if (mime == null) return false;
+        // 去掉参数（charset=...）再比对
+        String base = mime.toLowerCase(java.util.Locale.ROOT);
+        int semi = base.indexOf(';');
+        if (semi >= 0) {
+            base = base.substring(0, semi).trim();
+        }
+        switch (base) {
+            case "application/pdf":
+            case "image/png":
+            case "image/jpeg":
+            case "image/gif":
+            case "image/webp":
+            case "image/bmp":
+                return true;
+            default:
+                // image/svg+xml / text/html / 其它一律不 inline
+                return false;
+        }
     }
 
     /**

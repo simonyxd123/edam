@@ -167,17 +167,70 @@ public class DocumentController {
         return ResponseEntity.ok(resp);
     }
 
+    /**
+     * 文件类型白名单。
+     *
+     * <p><b>为什么 SVG 必须被单独排除</b>（2026-11-11 代码审计第四轮 §3，
+     * 定级 high —— 存储型 XSS，落在持有 JWT 的认证域上）：
+     *
+     * <p>SVG 不是图片，是**可执行 XML 文档**。它能带 {@code <script>}、
+     * {@code onload=}、{@code <foreignObject>} 等 —— 浏览器拿到
+     * {@code Content-Type: image/svg+xml} 会**内联解析并执行**其中的脚本。
+     *
+     * <p>原来的白名单用 {@code c.contains("image/")} 匹配 MIME ——
+     * {@code image/svg+xml} 正好命中 ⇒ SVG 被当成普通图片放行。
+     * 于是：上传 SVG（带脚本）→ 分享给同事 → 同事打开预览
+     * → 脚本在后端域名下执行 → 偷走 localStorage 里的
+     * {@code access_token} / {@code refresh_token}。
+     *
+     * <p>而且 {@code X-Content-Type-Options: nosniff} **挡不住**：
+     * 它只防"声明类型与实际内容不符"，
+     * 而 SVG 的声明类型（image/svg+xml）**就是**浏览器会执行脚本的类型。
+     *
+     * <p>⇒ SVG 一律拒收（既不进 MIME 分支，也不进后缀分支）。
+     * 需要矢量图请用 PDF。
+     *
+     * <p><b>为什么后缀检查放在最前面</b>：下面的 MIME 分支一旦命中就
+     * {@code return true}，后缀分支根本没机会执行 ——
+     * 于是 {@code Content-Type: image/png} + 文件名 {@code payload.svg}
+     * 就能混进来（客户端完全可以谎报 Content-Type）。
+     * ⇒ <b>危险的信号先判</b>，再走放行逻辑。
+     */
     private boolean isAllowedDocumentType(String contentType, String filename) {
-        // MIME 白名单
+        // ① 先按**后缀**判危险类型 —— 不依赖客户端声明的 Content-Type
+        if (filename != null) {
+            String f = filename.toLowerCase();
+            // SVG / SVGZ：可执行 XML，见方法注释
+            // .svg 本身不在白名单里，但显式拒掉更保险：
+            // 将来有人往白名单里加后缀时，这一行能挡住"顺手把 .svg 也加进去"。
+            if (f.endsWith(".svg") || f.endsWith(".svgz")) {
+                return false;
+            }
+            // HTML 家族：text/html 是最经典的 XSS 载体
+            if (f.endsWith(".html") || f.endsWith(".htm") || f.endsWith(".xhtml")) {
+                return false;
+            }
+        }
+
+        // ② MIME 白名单
         if (contentType != null) {
             String c = contentType.toLowerCase();
+            // SVG 排除（见方法注释）
+            if (c.contains("svg")) {
+                return false;
+            }
+            // text/* 一律排除（text/html 是 XSS 载体；text/plain 也没必要 inline）
+            if (c.startsWith("text/")) {
+                return false;
+            }
             if (c.contains("officedocument") || c.contains("pdf") ||
                 c.contains("image/") || c.contains("msword") ||
                 c.contains("excel") || c.contains("powerpoint")) {
                 return true;
             }
         }
-        // 文件后缀白名单（兜底）
+
+        // ③ 文件后缀白名单（兜底）
         if (filename != null) {
             String f = filename.toLowerCase();
             if (f.endsWith(".pdf") || f.endsWith(".docx") || f.endsWith(".doc") ||
@@ -186,7 +239,7 @@ public class DocumentController {
                 f.endsWith(".png") || f.endsWith(".jpg") || f.endsWith(".jpeg") ||
                 f.endsWith(".gif") || f.endsWith(".bmp")) {
                 return true;
-        }
+            }
         }
         return false;
     }

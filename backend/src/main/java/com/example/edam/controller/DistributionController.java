@@ -15,6 +15,7 @@ import com.example.edam.service.DocPermissionService;
 import com.example.edam.service.DocumentService;
 import com.example.edam.security.CurrentUser;
 import com.example.edam.security.CurrentUserId;
+import com.example.edam.util.PageParams;
 import lombok.Data;
 import com.example.edam.audit.AuditOp;
 import com.example.edam.audit.AuditOpType;
@@ -114,7 +115,8 @@ public class DistributionController {
             wrapper.eq(DistributionApproval::getApplicantId, currentUserId);
         }
         wrapper.orderByDesc(DistributionApproval::getCreatedAt);
-        Page<DistributionApproval> result = approvalRepository.selectPage(new Page<>(page, page_size), wrapper);
+        Page<DistributionApproval> result = approvalRepository.selectPage(
+            new Page<>(PageParams.clampPage(page), PageParams.clampSize(page_size)), wrapper);
         return toPaginationResponse(result);
     }
 

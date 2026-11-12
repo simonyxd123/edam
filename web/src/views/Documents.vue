@@ -6,6 +6,7 @@ import { documentApi, type Document } from '@/api/document';
 import ShareDialog from '@/components/ShareDialog.vue';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
 import { isDialogDismissed } from '@/utils/dialog';
+import { canPreviewInline, safePreviewMime } from '@/utils/previewMime';
 
 const loading = ref(false);
 const documents = ref<Document[]>([]);
@@ -53,10 +54,21 @@ let previewLoadSeq = 0;
 /** 兜底回收定时器句柄（关弹窗 / 组件卸载时要清掉） */
 let previewRevokeTimer: number | undefined;
 
-function canPreviewInline(mime: string | undefined): boolean {
-  if (!mime) return false;
-  return mime.startsWith('application/pdf') || mime.startsWith('image/') || mime.startsWith('text/');
-}
+/**
+ * 预览 MIME 白名单 —— 逻辑抽到 {@code @/utils/previewMime}。
+ *
+ * <p>为什么要抽出去：这个判断是**安全边界**（能不能把文档塞进 iframe），
+ * 必须有单元测试守着。而 SFC 里的局部函数测不了
+ * —— 抽成纯函数模块后，`previewMime.spec.ts` 才能直接断言它。
+ *
+ * <p>详细说明（含 SVG 为什么会变成存储型 XSS）见该模块的注释。
+ */
+
+/**
+ * 可内联渲染的 MIME 白名单 —— 定义在 {@code @/utils/previewMime}。
+ *
+ * <p>只有**确定不含脚本**的类型才进 iframe。
+ */
 
 async function loadData(page = 1) {
   loading.value = true;
@@ -176,8 +188,9 @@ async function handlePreview(doc: Document) {
       return;
     }
 
-    // 给 Blob 套上对应的 MIME，否则部分浏览器会用通用 octet-stream 处理
-    const typed = doc.mime_type ? blob.slice(0, blob.size, doc.mime_type) : blob;
+    // 给 Blob 套上 MIME —— 但**只用白名单里的值**（见 safePreviewMime 的注释）：
+    // Blob URL 继承本站 origin，SVG 之类的东西在里面执行脚本就等于把 JWT 交出去。
+    const typed = blob.slice(0, blob.size, safePreviewMime(doc.mime_type));
     previewBlobUrl = URL.createObjectURL(typed);
     previewSrc.value = previewBlobUrl;
     // 兜底回收：1 小时后回收（即使弹窗异常没走到 closePreview）
@@ -247,6 +260,13 @@ function openInNewTab() {
   // 直接 window.open 即可，不必再 fetch 一次
   if (!previewBlobUrl) {
     ElMessage.warning('请等待预览加载完成');
+    return;
+  }
+  // 只有白名单里的类型才允许在新标签页**渲染**。
+  // 其余类型（SVG / HTML / 未知）让用户下载 —— 见 safePreviewInline 的注释：
+  // Blob URL 继承本站 origin，在新标签页里渲染等于把 JWT 摆在脚本面前。
+  if (!canPreviewInline(previewMime.value)) {
+    ElMessage.warning('该格式不能直接预览，请下载后查看');
     return;
   }
   // 复制一份 blob URL 给新窗口，避免当前弹窗关掉时 revoke 影响对方
