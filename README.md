@@ -483,6 +483,7 @@ Worker 自带自检端点（`/health/live` / `/health/ready` / `/health/worker`�
 | 文档处理回调 | **已闭环**（v3.4.1）：Worker 处理完文档会回调 `PATCH /documents/{id}/status`，水印与预览两个状态分开报，`preview_path` / `watermark_path` 一并回写 |
 | **外发链接** | **没有这个端点**（v3.4.2 查清）：外发审批只做**审批**（同意 / 驳回 / 撤销 / 决策留痕），**不签发**任何能给外部接收方用的下载链接 —— 没有 `/external/*` 路由，`external_doc_view_log` 表也没有写入方。`max_open_count` / `current_open_count` 字段存在但恒为初值。早先的管理员手册把它写成可用功能，现已按代码更正 |
 | **权限码 ≠ 权限** | 权限目录 46 条里只有 **25 条**真正挂在端点上（`@PreAuthorize`），另 21 条（`mfa:manage` / `system:manage` / `leak:manage` / `sso:manage` / `document:download` / `document:print` / `video:download` / `report:*` / `notification:manage` …）**没有任何端点读取** —— 在「角色权限」页勾它们**不会**让角色多出对应能力。实际生效的门以 `doc/openapi.yaml` 的 `x-required-permission` 为准 |
+| **转授不能放大授权** | v3.4.3 修（第三轮审计 §1，critical）：`canDistribute()` 此前**只**检查"持有 distribute 位"，`grant()` 对要授出去的位只校验"是不是合法位" ⇒ **拿着 `view\|distribute`（17）的人能授出 `ACTION_ALL`（63）**，权限被放大 3.7 倍（C 拿到 L3 文档的下载/编辑/删除/打印权，而 A 从头到尾只给过 B"看 + 转发"）。现在要授出的权限**不得超过授权人自己持有的权限**（位掩码 + 有效期两个维度），越权 ⇒ 403。管理员与上传者本人不受限。详见 `modify/2026-11-13-越权转授整改-转授不得放大授权.md` |
 | **access_token 不能即时吊销** | 紧急吊销（`POST /users/{id}/revoke-keys`，v3.4.2 已从空实现改成真吊销）能**立即**作废该用户全部 refresh_token ⇒ 续期通道当场断掉；但**已签发**的 access_token 是无状态 JWT、服务端无黑名单，最多再存活一个 TTL（默认 10 分钟）。这是 JWT 无状态的固有代价 |
 | **系统配置不可持久化** | 没有配置持久化端点。「设置 → 系统配置」Tab 里的值是后端 `application.yml` 的当前值，点「保存配置」会明确提示要走配置文件 + 重启 |
 | **外发审批的前端字段曾对不上** | v3.4.2 修：请求 DTO 缺 `@JsonProperty`，前端发的 `doc_id` / `external_recipient` / `valid_hours` 全绑不上 ⇒ 「发起外发审批」在界面上从来就没成功过（恒 400）。现已逐个标注 |

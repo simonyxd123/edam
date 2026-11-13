@@ -9,8 +9,10 @@ import com.example.edam.repository.DocPermissionRepository;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.CurrentUser;
+import com.example.edam.security.GrantScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -57,6 +59,11 @@ public class DocPermissionService {
     public static final int ACTION_ALL =
         ACTION_VIEW | ACTION_DOWNLOAD | ACTION_EDIT | ACTION_DELETE | ACTION_DISTRIBUTE | ACTION_PRINT;
 
+    /** 各位的名字（按下标对应）—— 用于拼出用户看得懂的错误信息 */
+    private static final String[] BIT_NAMES = {
+        "查看", "下载", "编辑", "删除", "再分享", "打印"
+    };
+
     /** L3：同部门可见 */
     private static final int LEVEL_L3 = 3;
 
@@ -94,6 +101,8 @@ public class DocPermissionService {
                 + "（合法位：1=view 2=download 4=edit 8=delete 16=distribute 32=print）");
         }
 
+        assertGrantScope(doc, actions, expireAt, grantedBy);
+
         int written = 0;
         for (Long userId : userIds) {
             if (userId == null) {
@@ -123,6 +132,97 @@ public class DocPermissionService {
         log.info("doc_permission_granted, doc_id={}, granted_by={}, actions={}, expire_at={}, count={}",
             docId, grantedBy, actions, expireAt, written);
         return written;
+    }
+
+    /**
+     * 转授时的权限上限校验（**防"越权转授"**）。
+     *
+     * <p><b>这个漏洞是什么</b>（2026-11-11 代码审计第三轮 §1，定级 critical）：
+     *
+     * <p>{@link #canDistribute} 只检查一个条件：<b>持有 distribute 位</b>。
+     * 而 {@code grant()} 对<b>要授出去的位</b>只校验"是不是合法位"，
+     * <b>完全不校验授权人自己有没有这些位</b>。
+     *
+     * <p>于是：上传者 A 给同事 B 授权 {@code view|distribute}（17）——
+     * 这是"允许 B 转发"的常规操作。B 拿着这 17 去调
+     * {@code POST /documents/batch-permission}，body 写
+     * {@code actions=63}（= {@code ACTION_ALL}）。
+     * 后端放行（B 有 distribute 位）、写库（63 是合法位）⇒
+     * <b>C 拿到了这份 L3 文档的下载、编辑、删除、打印权</b> ——
+     * 而 A 从头到尾只给过 B "看 + 转发"。
+     *
+     * <p><b>B 的权限被放大了 3.7 倍。</b> 这正是方案书 §5.4
+     * 「越权分享自动阻断」要防的事：<b>不能拿着别人的授权去扩大授权范围</b>。
+     *
+     * <p><b>规则</b>：要授出的权限不得超过授权人自己持有的权限
+     * （位掩码 + 有效期两个维度，见 {@link GrantScope}）。
+     *
+     * <p><b>例外</b>：管理员与上传者本人不受限制 ——
+     * 上传者对**自己上传的文档**天然全权（见 {@link #canView} 的判定顺序），
+     * 管理员则本来就是全权。限制他们反而会让"上传者忘了先给自己授权"
+     * 这种死锁无解。
+     */
+    private void assertGrantScope(DocResource doc, int actions,
+                                  OffsetDateTime expireAt, Long grantedBy) {
+        if (grantedBy == null) {
+            throw new AccessDeniedException("无法识别授权人");
+        }
+        // 管理员 / 上传者本人 —— 不受限
+        if (CurrentUser.isAdmin() || grantedBy.equals(doc.getUploaderId())) {
+            return;
+        }
+
+        // 纵深防御：授权人自己必须持有 distribute 位。
+        //
+        // Controller 里已经查过 canDistribute，但**规则要落在写入点**
+        // —— {@code grant()} 是权限写入的唯一入口，
+        // 将来多一个调用方（或有人注释掉 Controller 的检查）时，这道闸还在。
+        if (!canDistribute(doc, grantedBy)) {
+            throw new AccessDeniedException("无权分享该文档（需要持有再分享授权）");
+        }
+
+        // 授权人自己持有的权限位（显式授权位 ∪ 密级兜底位）
+        int ownBits = ownActionBits(doc, grantedBy);
+        // 授权人自己那份额权的到期时间（null = 永不过期）
+        OffsetDateTime ownExpireAt = ownExpireAt(doc, grantedBy);
+
+        GrantScope.assertCanGrant(ownBits, ownExpireAt, actions, expireAt,
+            BIT_NAMES, "文档 " + doc.getId());
+    }
+
+    /**
+     * 授权人自己在这份文档上**实际持有**的权限位。
+     *
+     * <p>不只是显式授权位 —— 还要算上密级兜底：
+     * <ul>
+     *   <li>L1/L2：任何登录用户都能看（{@link #canView}）⇒ 至少有 view 位</li>
+     *   <li>L1：公开资源允许下载（方案书 5.6.1【例外】）⇒ 还有 download 位</li>
+     * </ul>
+     *
+     * <p>为什么必须算上：**否则会出现"能转发却不能转授 view"这种自相矛盾** ——
+     * 一个持有 distribute 位的 L2 文档被授权人，转手授出去时
+     * 连对方"看"都不行（而对方本来就能看，因为 L2 谁都能看）。
+     */
+    private int ownActionBits(DocResource doc, Long userId) {
+        int bits = effectiveActions(doc.getId(), userId);
+        if (canView(doc, userId)) {
+            bits |= ACTION_VIEW;
+        }
+        if (canDownload(doc, userId)) {
+            bits |= ACTION_DOWNLOAD;
+        }
+        return bits;
+    }
+
+    /**
+     * 授权人自己那份额权的到期时间（null = 永不过期 / 没有显式授权）。
+     */
+    private OffsetDateTime ownExpireAt(DocResource doc, Long userId) {
+        DocPermission row = findRow(doc.getId(), userId);
+        if (row == null || isExpired(row)) {
+            return null;
+        }
+        return row.getExpireAt();
     }
 
     /**

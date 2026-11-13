@@ -141,7 +141,15 @@ class ApiClient {
           handleSessionInvalid(`client:${status ?? 'network'}`);
         } else if (status === 403) {
           // 权限不足 —— 不是会话问题，别把人登出
-          ElMessage.error('没有权限执行该操作');
+          //
+          // 优先显示后端给的 detail（它说清了"为什么"），
+          // 没有才退回通用文案。
+          //
+          // 为什么必须显示 detail：403 的后端 detail 往往是**可操作的**信息 ——
+          // 例如"不能授出自己没有的权限：下载、打印（只能转授自己持有的权限）"，
+          // 用户一看就知道该勾哪些权限。统一成"没有权限执行该操作"的话，
+          // 用户只知道失败了，不知道该怎么改。
+          ElMessage.error(data?.detail || '没有权限执行该操作');
         } else if (status === 423) {
           ElMessage.error('账号已锁定');
         } else if (status === 429) {

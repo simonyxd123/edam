@@ -13,6 +13,56 @@
 
 ### 修复
 
+#### 越权转授 —— 拿着 distribute 位就能发 download 位
+
+**这是仓库里最严重的一个权限缺陷**（第三轮代码审计 §1，critical）。
+
+`canDistribute()` 只检查一个条件：**持有 distribute 位**。
+而 `grant()` 对**要授出去的位掩码**只校验"是不是合法位"，
+**完全不校验授权人自己有没有这些位**。
+
+攻击路径：上传者 A 给同事 B 授权 `view|distribute`（17）——
+这是"允许 B 转发"的常规操作。B 拿着这 17 去调
+`POST /documents/batch-permission`，body 写 `actions=63`（= `ACTION_ALL`）。
+后端放行（B 有 distribute 位）、写库（63 是合法位）⇒
+**C 拿到了这份 L3 文档的下载、编辑、删除、打印权** ——
+而 A 从头到尾只给过 B "看 + 转发"。
+
+**B 的权限被放大了 3.7 倍。** 视频侧完全同构。
+
+| 位 | 后果 |
+| --- | --- |
+| download | 拿到原文 —— L3 文档原文出了系统就是一次实打实的泄密事件 |
+| delete | 销毁证据 —— 审计链上留下的是"C 删的" |
+| distribute | 传播链可以拉长（`ACTION_ALL` 里有这一位） |
+
+方案书 §5.4「越权分享自动阻断」要防的就是这件事 ——
+`DocPermissionService` 自己的注释里也写着"不能拿着别人的授权去扩大授权范围"，
+**但代码只挡住了"完全没有 distribute 位的人"**。
+
+整改：
+
+- **规则**：要授出的权限不得超过授权人自己持有的权限。两个维度都卡：
+  - **位掩码**：`actions & ~own_bits == 0`
+  - **有效期**：`expire_at` 不得晚于授权人自己那份额权的到期时间
+    （这一条报告没提，但它是同一个漏洞的另一个面 ——
+    授权人自己那份 30 天后到期，却能授出"永不过期"）
+- `own_bits` = 显式授权位 ∪ **密级兜底位**（L1/L2 有 view、L1 还有 download）
+  —— 不算上的话会出现"能转发却不能转授 view"这种自相矛盾
+- **例外**：管理员与上传者本人不受限（上传者对自己上传的文档天然全权）
+- 规则落在**写入点**（`grant()`），不是 Controller ——
+  Controller 已经查过 `canDistribute`，但规则要保证将来多一个调用方也不漏
+- 新增 `security/GrantScope`，文档侧与视频侧**共用一份**（不各写一遍）
+- 新增 `PrivilegeEscalationTest`（11 条，服务层）
+  与 `PrivilegeEscalationEndpointTest`（2 条，**端点层接真实 service**）
+  —— 后者是因为原有的 `DocPermissionControllerTest` 把 service mock 掉了，
+  **根本测不到这个漏洞**
+- 验证：摘掉校验后 6 条变红，端点从 403 变 **200**（越权真的成功了）
+
+顺带修：前端 403 提示原本统一成"没有权限执行该操作"，
+把后端可操作的 detail（"不能授出自己没有的权限：下载、打印"）丢掉了；
+ShareDialog 同一条消息弹两遍。
+
 #### MyBatis-Plus 分页插件从未注册 —— 10 个列表端点返回全表
 
 分页插件**从未被注册过**。MyBatis-Plus 的 `selectPage(IPage, Wrapper)`

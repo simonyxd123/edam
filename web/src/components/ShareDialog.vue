@@ -177,8 +177,16 @@ async function submit() {
     emit('saved');
   } catch (e: any) {
     // 403 = 没有再分享的资格（不是上传者/管理员/持 distribute 位）
-    const detail = e?.response?.data?.detail;
-    ElMessage.error(detail ? String(detail) : '授权失败');
+    //      或是"授出了自己没有的权限位"（转授越权）
+    //
+    // 拦截器（api/client.ts）已经弹过提示了 —— 它现在会优先显示后端的 detail，
+    // 也就是这里想给用户看的那句话。所以这里**不要再弹一次**
+    // （否则同一条消息弹两遍）。
+    // `__handled` 是拦截器打的标记，见 client.ts 的错误处理分支。
+    if (!e?.__handled) {
+      const detail = e?.response?.data?.detail;
+      ElMessage.error(detail ? String(detail) : '授权失败');
+    }
   } finally {
     saving.value = false;
   }
@@ -193,8 +201,11 @@ async function revoke(userId: number) {
     ElMessage.success(`已撤销 ${res.revoked_count} 条授权`);
     await loadGrants();
   } catch (e: any) {
-    const detail = e?.response?.data?.detail;
-    ElMessage.error(detail ? String(detail) : '撤销失败');
+    // 同上：拦截器已经弹过提示了，别弹两遍
+    if (!e?.__handled) {
+      const detail = e?.response?.data?.detail;
+      ElMessage.error(detail ? String(detail) : '撤销失败');
+    }
   }
 }
 </script>
