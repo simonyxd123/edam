@@ -172,11 +172,11 @@ async function handlePreview(doc: Document) {
     // 先把上一个 blob URL 释放，避免连续打开多个预览时内存泄漏
     releasePreviewBlob();
     const token = localStorage.getItem('access_token');
-    const userId = localStorage.getItem('user_id');
     const r = await fetch(`${apiBase}/documents/${doc.id}/preview`, {
       headers: {
         Authorization: 'Bearer ' + (token || ''),
-        'X-User-Id': userId || '',
+        // 不要加 X-User-Id —— 后端不读它（身份取自 JWT），
+        // 留着只会让人误以为可以用它冒充用户（见 api/client.ts 的说明）
       },
     });
     if (!r.ok) {

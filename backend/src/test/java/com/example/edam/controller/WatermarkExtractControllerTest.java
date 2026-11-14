@@ -5,6 +5,7 @@ import com.example.edam.model.SysUser;
 import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.service.WatermarkExtractClient;
+import com.example.edam.service.WatermarkRegistryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,6 +43,7 @@ class WatermarkExtractControllerTest {
     private WatermarkExtractClient extractClient;
     private DocResourceRepository docResourceRepository;
     private SysUserRepository sysUserRepository;
+    private WatermarkRegistryService registryService;
     private WatermarkController controller;
 
     @BeforeEach
@@ -49,8 +51,12 @@ class WatermarkExtractControllerTest {
         extractClient = mock(WatermarkExtractClient.class);
         docResourceRepository = mock(DocResourceRepository.class);
         sysUserRepository = mock(SysUserRepository.class);
+        registryService = mock(WatermarkRegistryService.class);
+        // 默认：没有登记记录（历史文档）⇒ 走老逻辑
+        when(registryService.verify(any(), any()))
+            .thenReturn(WatermarkRegistryService.Verdict.UNKNOWN);
         controller = new WatermarkController(
-            extractClient, docResourceRepository, sysUserRepository);
+            extractClient, docResourceRepository, sysUserRepository, registryService);
     }
 
     @Test
@@ -87,6 +93,62 @@ class WatermarkExtractControllerTest {
             (Map<String, Object>) resp.get("extracted");
         assertEquals(1.0, extracted.get("confidence"));
         assertEquals("E000010", extracted.get("employee_no"));
+    }
+
+    @Test
+    @DisplayName("指纹与登记值不一致 ⇒ 判定为伪造，不给出匹配用户")
+    void forgedFingerprintYieldsNoMatchedUser() {
+        // 提取到的指纹与"当初实际嵌入的那串"对不上 ⇒ 说明文件里的指纹被改写过
+        when(extractClient.extract(any(byte[].class), anyString()))
+            .thenReturn(new WatermarkExtractClient.ExtractResult(true, "10|7|2020-01-01T00:00:00Z"));
+        when(registryService.verify(any(), any()))
+            .thenReturn(WatermarkRegistryService.Verdict.MISMATCHED);
+
+        DocResource doc = new DocResource();
+        doc.setId(7L);
+        doc.setTitle("年度薪酬方案.pdf");
+        doc.setUploaderId(10L);
+        when(docResourceRepository.selectById(7L)).thenReturn(doc);
+
+        SysUser uploader = new SysUser();
+        uploader.setId(10L);
+        uploader.setEmployeeNo("E000010");
+        when(sysUserRepository.selectById(10L)).thenReturn(uploader);
+
+        Map<String, Object> resp = controller.extract(file("pdf"), "pdf", 1L).getBody();
+
+        assertNotNull(resp);
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> matched =
+            (java.util.List<Map<String, Object>>) resp.get("matched_users");
+        // 关键：伪造的指纹**不能**指认任何人
+        assertTrue(matched.isEmpty(),
+            "伪造指纹不得给出匹配用户 —— 否则就是在冤枉人");
+    }
+
+    @Test
+    @DisplayName("指纹与登记值一致 ⇒ 正常出结论")
+    void registeredFingerprintStillMatches() {
+        when(extractClient.extract(any(byte[].class), anyString()))
+            .thenReturn(new WatermarkExtractClient.ExtractResult(true, "10|7|2026-11-14T10:00:00Z"));
+        when(registryService.verify(any(), any()))
+            .thenReturn(WatermarkRegistryService.Verdict.MATCHED);
+
+        DocResource doc = new DocResource();
+        doc.setId(7L);
+        doc.setUploaderId(10L);
+        when(docResourceRepository.selectById(7L)).thenReturn(doc);
+        SysUser uploader = new SysUser();
+        uploader.setId(10L);
+        uploader.setEmployeeNo("E000010");
+        when(sysUserRepository.selectById(10L)).thenReturn(uploader);
+
+        Map<String, Object> resp = controller.extract(file("pdf"), "pdf", 1L).getBody();
+        assertNotNull(resp);
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> matched =
+            (java.util.List<Map<String, Object>>) resp.get("matched_users");
+        assertEquals(1, matched.size());
     }
 
     @Test

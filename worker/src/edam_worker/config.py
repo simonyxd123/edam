@@ -99,6 +99,29 @@ class Settings:
         default_factory=lambda: _env("WORKER_CALLBACK_RETRY_BACKOFF_SEC", 2.0))
 
     # ----------------------------------------------------------------
+    # 盲水印密码（embed 与 extract 共用）
+    #
+    # blind-watermark 的 password_wm 决定 DCT 系数带的选取/打乱方式，
+    # 它不是"密钥"而是"算法参数" —— 但它同时是**提取的门槛**：
+    # 没有正确的密码就提取不出水印。
+    #
+    # 2026-11-14 代码审计第六轮：此前三处（embed_image / embed_pdf 走的水印、
+    # _extract_image、以及 DocWatermarkService）**全部硬编码 1**。
+    # ⇒ 任何拿到开源 blind-watermark 库的人都能：
+    #   - 从泄露文件里提取出指纹（直接知道是谁传的）
+    #   - 自己往文件里嵌入任意指纹（伪造溯源）
+    #   - 用错误指纹覆盖掉真指纹（抹除溯源）
+    # 门槛为零 = 这层"水印"只挡不懂行的人。
+    #
+    # 取值范围：整数 1..999（blind-watermark 的约束）。
+    # 默认值仍是 1 —— **为了兼容本功能上线前已经嵌入的水印**；
+    # 提取时会同时尝试"配置的密码"与"1"，两者都取不到才算提取失败。
+    # 生产环境应当通过环境变量注入一个非默认值。
+    # ----------------------------------------------------------------
+    EDAM_WATERMARK_PASSWORD: int = field(
+        default_factory=lambda: _env("EDAM_WATERMARK_PASSWORD", 1))
+
+    # ----------------------------------------------------------------
     # 外部子进程的超时（FFmpeg / ffprobe）
     #
     # 为什么必须有：这两个子进程原先是**裸 await proc.communicate()**，

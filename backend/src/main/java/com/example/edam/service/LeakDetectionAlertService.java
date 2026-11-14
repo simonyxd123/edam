@@ -85,18 +85,34 @@ public class LeakDetectionAlertService {
         String message = String.format(
             "🚨 [EDAM 泄露告警] 检测到疑似泄露视频\n" +
             "检测 ID: %s\n" +
-            "疑似用户: %d\n" +
-            "匹配置信度: %.1f%%\n" +
-            "匹配帧数: %d/%d\n" +
+            "疑似用户: %s\n" +
+            "匹配置信度: %s%%\n" +
+            "匹配帧数: %s/%s\n" +
             "请立即审查并启动溯源流程",
             detection.getDetectionId(),
-            detection.getMatchedUserId(),
-            detection.getMatchScore() * 100,
-            detection.getMatchedFrames(),
-            detection.getTotalFrames()
+            num(detection.getMatchedUserId()),
+            num(detection.getMatchScore() == null ? null
+                : Math.round(detection.getMatchScore() * 100)),
+            num(detection.getMatchedFrames()),
+            num(detection.getTotalFrames())
         );
         // 实际生产：通过 HTTP POST 发送
         log.info("security_alert_sent message={}", message.replace("\n", " | "));
+    }
+
+    /**
+     * 安全整数转字符串 —— <b>可空</b>。
+     *
+     * <p><b>为什么不能直接用 {@code String.format("%d", …)}</b>（2026-11-14 第六轮）：
+     * {@code leak_detection.matched_user_id} 这一列<b>是可空的</b>
+     * （"检测到泄露但匹配不到具体观看者"是合法情形），
+     * 而 {@code String.format("%d", null)} 会抛
+     * {@code IllegalFormatConversionException} ——
+     * 告警链路在这里就断了，{@code broadcastLeakAlert} 不会执行，
+     * 管理员<b>收不到实时告警</b>，异常还会继续上抛给调用方。
+     */
+    private static String num(Object v) {
+        return v == null ? "未知" : String.valueOf(v);
     }
 
     /**

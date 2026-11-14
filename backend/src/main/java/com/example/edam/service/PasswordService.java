@@ -89,7 +89,19 @@ public class PasswordService {
     }
 
     /**
-     * 管理员重置密码
+     * 管理员重置密码。
+     *
+     * <p><b>顺带解锁"被自动锁定"的账号</b>（2026-11-14 代码审计第六轮）：
+     * 此前这里只改密码，<b>完全不动锁定状态</b> ⇒
+     * 一个连续输错 5 次被自动锁住的账号，管理员给它重置了密码，
+     * 它<b>依然登不进去</b>（{@code assertLoginAllowed} 照旧抛
+     * {@code AccountLockedException}）—— 管理员看到"重置成功"，
+     * 用户却还是进不去，只能再来找管理员。
+     *
+     * <p>解的是**自动锁定**（{@code locked_until} 非空 = 有到期时间）。
+     * 管理员<b>手动</b>锁定的账号（{@code locked_until} 为空 = 不自动解锁）
+     * <b>不在这里解锁</b> —— 那是管理员刻意为之（疑似泄密调查中等），
+     * 要放人请走 {@code PUT /users/{id}} 把状态改回 active。
      */
     @Transactional
     public String resetPassword(Long userId, Long operatorId) {
@@ -105,6 +117,10 @@ public class PasswordService {
         user.setPasswordHash(newHash);
         user.setPasswordChangedAt(OffsetDateTime.now());
         user.setMustChangePassword(true);  // 强制下次登录修改
+
+        // 解锁（仅自动锁定）+ 失败计数归零
+        unlockAutoLocked(user);
+
         userRepository.updateById(user);
 
         SysPasswordHistory history = new SysPasswordHistory();
@@ -118,6 +134,24 @@ public class PasswordService {
             userId, operatorId);
 
         return tempPassword;
+    }
+
+    /**
+     * 解锁"被自动锁定"的账号，并把失败计数归零。
+     *
+     * <p><b>只解自动锁定</b>：{@code locked_until != null} 说明这是"连错几次"
+     * 触发的、有到期时间的自动锁定。{@code locked_until == null} 说明是管理员
+     * 手动锁的（第五轮引入的语义：{@code NULL = 不自动解锁}）—— 那种不动。
+     *
+     * <p>{@code status == 2}（禁用）也不动 —— 禁用是管理员的决定，不是锁定的副作用。
+     */
+    private void unlockAutoLocked(SysUser user) {
+        if (user.getStatus() != null && user.getStatus() == 3 && user.getLockedUntil() != null) {
+            user.setStatus(1);
+            log.info("account_unlocked_by_password_reset, user_id={}", user.getId());
+        }
+        user.setFailedLoginCount(0);
+        user.setLockedUntil(null);
     }
 
     /**

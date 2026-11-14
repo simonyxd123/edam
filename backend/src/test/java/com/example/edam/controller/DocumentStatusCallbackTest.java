@@ -52,7 +52,8 @@ class DocumentStatusCallbackTest {
             mock(DocPermissionService.class),
             mock(SysUserRepository.class),
             workerTokenVerifier
-        );
+        ,
+            mock(com.example.edam.service.WatermarkRegistryService.class));
 
         DocResource doc = new DocResource();
         doc.setId(7L);

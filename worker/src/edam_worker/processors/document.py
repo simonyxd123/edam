@@ -69,6 +69,8 @@ class DocumentProcessor:
         preview_status = 0
         watermark_path: Optional[str] = None
         preview_path: Optional[str] = None
+        # 实际嵌入的指纹文本（回写给后端做登记 —— 见 _notify_backend_status）
+        watermark_fingerprint: Optional[str] = None
         failed = False
 
         try:
@@ -80,7 +82,7 @@ class DocumentProcessor:
 
             # 2. 频域盲水印 / 隐写（如启用）
             if enable_watermark:
-                watermarked_path = await self._watermark(
+                watermarked_path, watermark_fingerprint = await self._watermark(
                     local_path, doc_id, file_type, payload
                 )
             else:
@@ -142,7 +144,7 @@ class DocumentProcessor:
             try:
                 await self._notify_backend_status(
                     doc_id, watermark_status, preview_status,
-                    watermark_path, preview_path,
+                    watermark_path, preview_path, watermark_fingerprint,
                 )
             except Exception as cb_error:
                 # 回调失败不能顶替掉原始异常 —— 但必须让任务被记成失败，
@@ -162,6 +164,7 @@ class DocumentProcessor:
         preview_status: int,
         watermark_path: Optional[str],
         preview_path: Optional[str],
+        watermark_fingerprint: Optional[str] = None,
     ) -> None:
         """回调后端更新文档处理状态。
 
@@ -170,6 +173,10 @@ class DocumentProcessor:
         - 401/403 → PermanentWorkerError（配置问题，重试无意义）
         - 其它 4xx → PermanentWorkerError（请求本身有问题）
         - 5xx / 网络异常 → 指数退避重试，耗尽后抛普通异常让外层重跑任务
+
+        watermark_fingerprint（2026-11-14 代码审计第六轮新增）：
+        **实际嵌入的那串指纹文本**。后端把它登记进 watermark_cache，
+        提取时拿提取结果与登记值比对 ⇒ 对不上就是被改写过的伪造指纹。
         """
         url = backend_api_url(f"documents/{doc_id}/status")
         payload: Dict[str, Any] = {
@@ -180,6 +187,8 @@ class DocumentProcessor:
             payload["watermark_path"] = watermark_path
         if preview_path:
             payload["preview_path"] = preview_path
+        if watermark_fingerprint:
+            payload["watermark_fingerprint"] = watermark_fingerprint
 
         headers = {}
         if settings.WORKER_TOKEN:
@@ -235,13 +244,17 @@ class DocumentProcessor:
         return tmp
 
     async def _watermark(self, local_path: str, doc_id: int,
-                        file_type: str, payload: Dict[str, Any]) -> str:
+                        file_type: str, payload: Dict[str, Any]) -> tuple:
         """
         频域盲水印 / 隐写
         参考方案书 5.3 节：
         - 图片：DCT 频域水印（blind-watermark）
         - PDF：双轨（增量更新指纹 + word spacing 隐写）
         - Word/Excel：隐写（空白字符 / 字体间距）
+
+        :return: (产物路径, 实际嵌入的指纹文本)
+            指纹文本要回写给后端做登记（2026-11-14 第六轮）——
+            提取时拿提取结果与登记值比对，对不上就是被改写过的伪造指纹。
         """
         uploader_id = str(payload.get("uploader_id", ""))
         # 指纹的第三段是**嵌入时刻**（ISO-8601 UTC）。
@@ -278,8 +291,9 @@ class DocumentProcessor:
         else:
             # 其他类型：跳过水印
             output_path = local_path
+            watermark_text = None
 
-        return output_path
+        return output_path, watermark_text
 
     async def _convert_to_preview(self, local_path: str, doc_id: int, file_type: str) -> str:
         """

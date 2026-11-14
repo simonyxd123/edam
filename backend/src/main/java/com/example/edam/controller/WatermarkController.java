@@ -6,6 +6,7 @@ import com.example.edam.repository.DocResourceRepository;
 import com.example.edam.repository.SysUserRepository;
 import com.example.edam.security.CurrentUserId;
 import com.example.edam.service.WatermarkExtractClient;
+import com.example.edam.service.WatermarkRegistryService;
 import lombok.Data;
 import com.example.edam.audit.AuditOp;
 import com.example.edam.audit.AuditOpType;
@@ -37,6 +38,7 @@ public class WatermarkController {
     private final WatermarkExtractClient extractClient;
     private final DocResourceRepository docResourceRepository;
     private final SysUserRepository sysUserRepository;
+    private final WatermarkRegistryService registryService;
 
     /**
      * 单次提取的体积上限 —— 与 Worker 侧的限制一致（50MB）。
@@ -212,6 +214,24 @@ public class WatermarkController {
             return matched;
         }
 
+        // 登记比对（2026-11-14 代码审计第六轮）：指纹必须与"当初实际嵌入的那串文本"一致。
+        //
+        // 上一条一致性校验只能挡住"随手伪造一个指针"；知道目标 doc_id 与
+        // uploader_id 的人**仍能伪造出一致的指纹**（第五轮 §3.3 的残留缺口）。
+        // 有了登记值就能识破：伪造者写进去的文本与登记值对不上。
+        // PDF / Excel 的指纹是写在文档属性里的**明文**，本来就能随手改 ——
+        // 这一层正是把那种伪造挡在门外的东西。
+        WatermarkRegistryService.Verdict verdict = registryService.verify(docId, fingerprint);
+        if (verdict == WatermarkRegistryService.Verdict.MISMATCHED) {
+            log.warn("watermark_fingerprint_forged, doc_id={} —— 提取到的指纹与登记值不一致，"
+                + "判定为伪造，不给出匹配用户", docId);
+            return matched;
+        }
+        if (verdict == WatermarkRegistryService.Verdict.UNKNOWN) {
+            // 本功能上线前处理过的历史文档没有登记记录 —— 照常按老逻辑出结论
+            log.info("watermark_registry_no_entry, doc_id={} —— 该文档无指纹登记记录", docId);
+        }
+
         Long uploaderId = doc.getUploaderId();
         SysUser uploader = uploaderId == null ? null : sysUserRepository.selectById(uploaderId);
         if (uploader == null) {
@@ -231,7 +251,12 @@ public class WatermarkController {
     }
 
     /**
-     * 水印缓存查询
+     * 水印指纹登记查询。
+     *
+     * <p><b>2026-11-14 代码审计第六轮</b>：此前这里恒返回空列表，
+     * 注释写着"缓存表没有写入方"。本轮给 {@code watermark_cache} 接上了写入方
+     * （Worker 嵌入时回写实际指纹），于是这个端点终于能返回真实数据 ——
+     * 顺带也成为运维核查"这份文档登记的指纹是什么"的入口。
      */
     @GetMapping("/cache")
     @AuditOp(op = AuditOpType.LIST, resourceType = "watermark_cache")
@@ -239,9 +264,22 @@ public class WatermarkController {
         @RequestParam("resource_id") Long resourceId,
         @RequestParam("resource_type") String resourceType
     ) {
-        // 水印缓存表（watermark_cache）在本仓库没有任何写入方 ——
-        // 缓存命中不了，返回空列表是**准确**的，不是 mock
-        return List.of();
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (com.example.edam.model.WatermarkCache row
+                : registryService.listByResource(resourceId, resourceType)) {
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", row.getId());
+            item.put("resource_id", row.getResourceId());
+            item.put("resource_type", row.getResourceType());
+            item.put("user_id_hash", row.getUserIdHash());
+            item.put("fingerprint", row.getFingerprint());
+            item.put("minio_path", row.getMinioPath());
+            item.put("created_at", row.getCreatedAt());
+            item.put("ttl_sec", row.getTtlSec());
+            item.put("hit_count", row.getHitCount());
+            items.add(item);
+        }
+        return items;
     }
 
     /**

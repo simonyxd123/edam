@@ -848,7 +848,15 @@ paths:
   /watermarks/cache:
     get:
       tags: [watermarks]
-      summary: 水印缓存查询
+      summary: 水印指纹登记查询
+      description: |
+        返回该资源**登记在案的水印指纹**（`watermark_cache` 表）。
+
+        2026-11-14 代码审计第六轮：这张表此前**没有任何写入方**，
+        端点恒返回空数组。本轮 Worker 嵌入水印时会把**实际嵌入的文本**
+        回写登记，提取时拿提取结果与登记值比对 ——
+        对不上即判定为伪造（`POST /watermarks/extract` 不给出匹配用户）。
+        于是这个端点同时也是运维核查"这份文档登记的指纹是什么"的入口。
       parameters:
         - in: query
           name: resource_id
@@ -2492,6 +2500,12 @@ paths:
         一刀切报一个状态会把已经做完的那半也标成失败。
 
         状态码：0=pending 1=processing 2=ready 3=failed 4=skipped
+
+        **watermark_fingerprint**（2026-11-14 代码审计第六轮新增）：
+        Worker **实际嵌入**的那串指纹文本（`{uploader_id}|{doc_id}|{timestamp}`）。
+        后端把它登记进 `watermark_cache`，提取时拿提取结果与登记值比对 ——
+        对不上就说明文件里的指纹被改写过（伪造），此时**不给出匹配用户**。
+        没有这份登记，指纹就是可伪造的（谁都能自己往文件里写一串）。
       parameters:
         - name: doc_id
           in: path
@@ -2512,6 +2526,7 @@ paths:
                 preview_status: { type: integer }
                 watermark_path: { type: string }
                 preview_path: { type: string }
+                watermark_fingerprint: { type: string }
       responses:
         '200':
           description: 更新后的状态

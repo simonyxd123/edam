@@ -56,7 +56,8 @@ class DocPermissionControllerTest {
             mock(com.example.edam.service.DocumentPreviewService.class),
             docPermissionService,
             mock(com.example.edam.repository.SysUserRepository.class),
-            mock(com.example.edam.security.WorkerTokenVerifier.class));
+            mock(com.example.edam.security.WorkerTokenVerifier.class),
+            mock(com.example.edam.service.WatermarkRegistryService.class));
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .setCustomArgumentResolvers(new CurrentUserArgumentResolver())

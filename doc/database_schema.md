@@ -525,7 +525,18 @@ sso:manage, mfa:manage
 
 ---
 
-### 4.3 watermark_cache（水印缓存表）
+### 4.3 watermark_cache（水印指纹登记表）
+
+> **2026-11-14 代码审计第六轮**：本表此前**没有任何写入方**（建表后一直空着）。
+> 现已接入 —— Worker 嵌入水印时把**实际嵌入的那串文本**回写登记，
+> 提取时拿提取结果与登记值比对，**对不上即判定为伪造**（不给出匹配用户）。
+> 这堵住了第五轮 §3.3 的残留缺口："知道目标 doc_id 与 uploader_id 的人
+> 仍能伪造出一致的指纹"。
+>
+> ⚠️ `ttl_sec` 的**实际写入值不再是默认的 86400（1 天）**：
+> 这里存的是**取证证据**，泄露文件可能在几个月后才被发现，
+> 按"缓存"的 TTL 保留会让溯源能力随时间静默衰减
+> ⇒ 写入时显式给 10 年（`WatermarkRegistryService.REGISTRY_TTL_SEC`）。
 
 | 字段 | 类型 | 约束 | 默认值 | 说明 |
 |---|---|---|---|---|
@@ -533,11 +544,11 @@ sso:manage, mfa:manage
 | resource_id | BIGINT UNSIGNED | NOT NULL | | |
 | resource_type | TINYINT | NOT NULL | | 1=video 2=document |
 | user_id_hash | CHAR(64) | NOT NULL | | SHA-256(user_id + salt) |
-| fingerprint | TEXT | NOT NULL | | 嵌入的水印/指纹内容 |
+| fingerprint | TEXT | NOT NULL | | **实际嵌入**的水印/指纹内容（登记比对用） |
 | minio_path | VARCHAR(512) | NOT NULL | | MinIO 中的水印副本路径 |
 | created_at | DATETIME(3) | NOT NULL | | |
-| ttl_sec | INT UNSIGNED | NOT NULL | 86400 | 默认 24 小时 |
-| hit_count | INT UNSIGNED | NOT NULL DEFAULT 0 | | 缓存命中次数 |
+| ttl_sec | INT UNSIGNED | NOT NULL | 86400 | 实际写入 10 年（见上） |
+| hit_count | INT UNSIGNED | NOT NULL DEFAULT 0 | | 提取比对命中次数 |
 
 **索引**：
 - PRIMARY KEY (id)

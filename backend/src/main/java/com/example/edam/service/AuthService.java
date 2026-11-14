@@ -91,6 +91,19 @@ public class AuthService {
             loginAttemptService.recordFailure(user, MAX_FAILED_ATTEMPTS);
         }
         passwordService.changePassword(userId, oldPassword, newPassword);
+
+        // 改密成功 ⇒ 吊销该用户全部 refresh_token（2026-11-14 代码审计第六轮）。
+        //
+        // 为什么必须：改密的典型动机就是"**密码可能已经泄露了**"。
+        // 而 refresh_token 的有效期是 7 天 —— 偷到 refresh_token 的人，
+        // 在用户改完密码之后**照样能一直换出新的 access_token**，
+        // 改密码这个动作对攻击者毫无影响。
+        //
+        // 代价：用户自己当前的会话也失效了（access_token 还能用到过期，
+        // 之后必须用新密码重新登录）—— 这是安全上正确的取舍。
+        int revoked = tokenIssuanceService.revokeAllForUser(userId);
+        log.warn("password_changed_tokens_revoked, user_id={}, revoked_refresh_tokens={}",
+            userId, revoked);
     }
 
     /**
@@ -229,8 +242,23 @@ public class AuthService {
      * 审计日志由 Controller 层的 @AuditOp 注解 + 审计切面自动写
      */
     public void logout(String refreshToken) {
-        if (refreshToken != null) {
-            redisTemplate.delete("refresh:" + refreshToken);
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return;
+        }
+        // 先查出这张卡属于谁 —— 下面要把它从"用户 → token 列表"的索引里摘掉
+        String userId = redisTemplate.opsForValue().get("refresh:" + refreshToken);
+        redisTemplate.delete("refresh:" + refreshToken);
+        // 索引成员也要摘（2026-11-14 代码审计第六轮）：
+        // 此前只删了 "refresh:<token>" 这一个键，"refresh:user:<id>" 集合里的
+        // 成员**留着不走** ⇒ 集合只增不减（Redis 内存缓慢泄漏），
+        // 而且紧急吊销时要把这一堆早已失效的 token 挨个删一遍。
+        if (userId != null) {
+            try {
+                redisTemplate.opsForSet().remove("refresh:user:" + userId, refreshToken);
+            } catch (Exception e) {
+                // 索引清理失败不影响登出的主效果（token 已经删掉了）
+                log.warn("logout_index_cleanup_failed, user_id={}", userId);
+            }
         }
     }
 

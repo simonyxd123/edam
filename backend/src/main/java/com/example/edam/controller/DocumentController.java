@@ -62,6 +62,7 @@ public class DocumentController {
     private final com.example.edam.service.DocPermissionService docPermissionService;
     private final SysUserRepository sysUserRepository;
     private final WorkerTokenVerifier workerTokenVerifier;
+    private final com.example.edam.service.WatermarkRegistryService watermarkRegistryService;
 
     @Value("${minio.bucket.documents}")
     private String documentsBucket;
@@ -160,6 +161,23 @@ public class DocumentController {
         );
 
         DocResource updated = documentService.getById(docId);
+
+        // 登记"这份文档实际嵌入了哪串指纹"（2026-11-14 代码审计第六轮）。
+        //
+        // 没有这份登记，指纹就是**可伪造**的：指纹是文件内容的一部分，谁都能
+        // 自己写进去，而提取端只按 doc_id 反查 ⇒ 能让系统把无辜的人指认为泄密者。
+        // 第五轮加的一致性校验只挡住了"随手伪造一个指针"；知道目标 doc_id 与
+        // uploader_id 的人仍能伪造出一致的指纹 —— 登记值就是用来识破这一种的。
+        if (request.getWatermarkFingerprint() != null
+            && !request.getWatermarkFingerprint().isBlank()
+            && request.getWatermarkStatus() != null
+            && request.getWatermarkStatus() == 2) {
+            watermarkRegistryService.register(
+                docId,
+                updated.getUploaderId(),
+                request.getWatermarkFingerprint(),
+                request.getWatermarkPath());
+        }
         Map<String, Object> resp = new HashMap<>();
         resp.put("doc_id", updated.getId());
         resp.put("watermark_status", ResourceEnums.processStatus(updated.getWatermarkStatus()));
@@ -529,6 +547,13 @@ public class DocumentController {
         private Integer previewStatus;
         /** 水印产物在 MinIO 里的对象名 */
         private String watermarkPath;
+        /**
+         * Worker <b>实际嵌入</b>的指纹文本（{@code uploader_id|doc_id|timestamp}）。
+         *
+         * <p>2026-11-14 代码审计第六轮新增：这是"这份文档当初嵌的是哪串文本"的
+         * 登记来源 —— 提取时拿它比对，对不上就说明指纹被改写过（伪造）。
+         */
+        private String watermarkFingerprint;
         /** 预览产物在 MinIO 里的对象名 */
         private String previewPath;
     }

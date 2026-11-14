@@ -51,13 +51,19 @@ class ApiClient {
     // 请求拦截：注入 JWT
     this.instance.interceptors.request.use((config) => {
       const token = localStorage.getItem('access_token');
-      const userId = localStorage.getItem('user_id');
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
-      if (userId) {
-        config.headers['X-User-Id'] = userId;
-      }
+      // ⚠️ **不要**再发 `X-User-Id`（2026-11-14 代码审计第六轮删除）。
+      //
+      // 后端早就改成从 **JWT principal** 取当前用户
+      // （`@CurrentUserId` → `CurrentUserArgumentResolver`），
+      // 这个头**后端一个地方都不读** —— 发过去只是给人"它有用"的错觉。
+      //
+      // 而它是个**陷阱**：任何时候有人照着旧代码写一个
+      // `@RequestHeader("X-User-Id") Long userId`，
+      // 客户端就能随便改这个头冒充任意用户 —— 那就是现成的越权。
+      // 留着一个"看起来能用"的可伪造身份头，比不发它危险得多。
       return config;
     });
 

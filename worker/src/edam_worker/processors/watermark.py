@@ -10,6 +10,9 @@ import structlog
 import numpy as np
 from PIL import Image
 
+from ..config import settings
+from ..errors import PermanentWorkerError
+
 log = structlog.get_logger()
 
 
@@ -36,7 +39,10 @@ class WatermarkProcessor:
         """
         try:
             from blind_watermark import WaterMark
-            bwm = WaterMark(password_wm=1, password_img=1)
+            # 密码来自部署配置（2026-11-14 第六轮）—— 此前硬编码 1，
+            # 等于把提取/伪造/抹除的门槛设成零。
+            bwm = WaterMark(password_wm=settings.EDAM_WATERMARK_PASSWORD,
+                            password_img=settings.EDAM_WATERMARK_PASSWORD)
             # 文本转 bit 数组
             wm = text.encode("utf-8")
             bwm.read_img(input_path)
@@ -45,14 +51,33 @@ class WatermarkProcessor:
             log.info("image_watermark_embedded", output=output_path, length=len(wm))
         except ImportError:
             # fallback：使用 LSB 隐写（简化版）
+            # ⚠️ LSB 极脆弱：裁掉顶部 1~2 行就能抹掉 —— 它只挡"完全不懂行"的人。
+            # 但没有它，blind-watermark 没装时图片就完全不带指纹了。
             log.warning("blind_watermark_not_available, using fallback LSB")
             self._lsb_embed(input_path, output_path, text)
 
     def embed_pdf(self, input_path: str, output_path: str, text: str) -> None:
         """
-        PDF 双轨水印
-        - 轨道 A：增量更新注入指纹
-        - 轨道 B：word spacing 隐写
+        PDF 指纹写入。
+
+        ⚠️ **这不是盲水印**（2026-11-14 代码审计第六轮 §2）：
+        指纹被**明文**写进 PDF 的文档属性（{@code /Title}、{@code /Producer}）。
+        收件人打开"文件 → 属性"就能直接看到
+        {@code 上传者ID|文档ID|时间戳} ⇒
+        - 溯源信息**主动泄露**给了每一个拿到文件的人；
+        - 指纹可以被**随手改写**（伪造）或**直接删掉**（抹除）。
+
+        真正要堵住这两点，需要的是"登记值比对"（后端已实现，见
+        {@code WatermarkRegistryService}）与"非明文信道"，本函数解决不了后者。
+        这里至少保证：**写不进去就报错，绝不产出"看起来处理好了、其实没指纹"的原件**。
+
+        <p>失败处理（2026-11-14 第六轮改动）：
+        此前是 {@code except: shutil.copy(原文件)} ——
+        嵌入失败时**原文照常流转、完全没有指纹**，
+        而流水线仍把 {@code watermark_status} 报成 {@code 2 (ready)}
+        ⇒ 系统认定"已加水印"，溯源链**静默断裂**，监控上什么都看不到。
+        现在失败一律抛 {@link PermanentWorkerError}：
+        文档处理失败、状态报 3 (failed)、任务记 failed_permanent。
         """
         try:
             from PyPDF2 import PdfReader, PdfWriter
@@ -74,9 +99,9 @@ class WatermarkProcessor:
             log.info("pdf_watermark_embedded", output=output_path)
         except Exception as e:
             log.error("pdf_watermark_failed", error=str(e))
-            # 失败则复制原文件
-            import shutil
-            shutil.copy(input_path, output_path)
+            raise PermanentWorkerError(
+                f"PDF 指纹写入失败，文档不予放行（避免无指纹原件流出去）: {e}"
+            ) from e
 
     def embed_office(self, input_path: str, output_path: str,
                      text: str, file_type: str) -> None:
@@ -110,8 +135,10 @@ class WatermarkProcessor:
             log.info("docx_watermark_embedded", output=output_path)
         except Exception as e:
             log.error("docx_watermark_failed", error=str(e))
-            import shutil
-            shutil.copy(input_path, output_path)
+            # 失败则复制原文件 → 文档照常流转、却完全没有指纹（第六轮修掉）
+            raise PermanentWorkerError(
+                f"Word 隐写失败，文档不予放行: {e}"
+            ) from e
 
     def _xlsx_steganography(self, input_path: str, output_path: str, text: str) -> None:
         """Excel 自定义属性隐写"""
@@ -124,8 +151,10 @@ class WatermarkProcessor:
             log.info("xlsx_watermark_embedded", output=output_path)
         except Exception as e:
             log.error("xlsx_watermark_failed", error=str(e))
-            import shutil
-            shutil.copy(input_path, output_path)
+            # 失败则复制原文件 → 文档照常流转、却完全没有指纹（第六轮修掉）
+            raise PermanentWorkerError(
+                f"Excel 隐写失败，文档不予放行: {e}"
+            ) from e
 
     def _lsb_embed(self, input_path: str, output_path: str, text: str) -> None:
         """LSB fallback 水印"""
@@ -156,11 +185,32 @@ class WatermarkProcessor:
             return ""
 
     def _extract_image(self, file_path: str) -> str:
+        """
+        提取图片盲水印。
+
+        <p>依次尝试"配置里的密码"与"历史硬编码的 1"——
+        后者是**兼容**：本功能上线前嵌入的水印用的就是 1，
+        直接换密码会让那些文件从此提取不出来。
+        """
         try:
             from blind_watermark import WaterMark
-            bwm = WaterMark(password_wm=1, password_img=1)
-            wm = bwm.extract(file_path, mode="bytes")
-            return wm.decode("utf-8", errors="ignore")
+            candidates = []
+            configured = settings.EDAM_WATERMARK_PASSWORD
+            if configured != 1:
+                candidates.append(configured)
+            candidates.append(1)
+            last_error = None
+            for password in candidates:
+                try:
+                    bwm = WaterMark(password_wm=password, password_img=password)
+                    wm = bwm.extract(file_path, mode="bytes")
+                    if wm:
+                        return wm.decode("utf-8", errors="ignore")
+                except Exception as e:  # 密码不对 / 文件不是带水印的图片
+                    last_error = e
+                    continue
+            log.error("image_watermark_extract_failed", error=str(last_error))
+            return ""
         except Exception as e:
             log.error("image_watermark_extract_failed", error=str(e))
             return ""

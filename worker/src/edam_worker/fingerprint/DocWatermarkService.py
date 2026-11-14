@@ -68,9 +68,11 @@ class DocWatermarkService:
             input_path: 原图路径
             output_path: 输出路径
             watermark_text: 水印文本（如 "USER_SA0001_20260827"）
-            password_wm: 水印密码（默认 1）—— 保留参数只为兼容旧调用；
-                底层 blind-watermark 的密码是固定的 1
-            password_img: 图像密码（默认 1）—— 同上
+            password_wm: 水印密码 —— **本参数已不再生效**（只为兼容旧调用）。
+                真实密码来自部署配置 {@code EDAM_WATERMARK_PASSWORD}
+                （2026-11-14 代码审计第六轮改：此前硬编码 1，等于把
+                提取/伪造/抹除的门槛设成零）
+            password_img: 图像密码 —— 同上，已不再生效
         """
         start = time.time()
 
@@ -122,7 +124,7 @@ class DocWatermarkService:
 
         Args:
             image_path: 待检测图片路径
-            password_wm/p_img: 保留兼容；底层密码固定为 1
+            password_wm/p_img: 保留兼容；真实密码来自部署配置 EDAM_WATERMARK_PASSWORD
             expected_length: 已废弃 —— bytes 模式长度自描述，不需要它
         """
         try:

@@ -188,6 +188,12 @@ public class UserController {
         //   - 置 must_change_password（强制用户下次登录改密）
         // 原来这里只查 length < 6，且从不写历史 → 历史密码表永远是空的
         String tempPassword = passwordService.resetPassword(userId, operatorId);
+        // 吊销该用户全部 refresh_token（2026-11-14 代码审计第六轮）。
+        // 重置密码的典型动机是"密码可能泄露了" —— 而偷到 refresh_token 的人
+        // 在重置之后照样能续期 7 天，不吊销等于白改。
+        int revoked = authService.revokeAllForUser(userId, "密码重置 by operator " + operatorId);
+        log.info("user_password_reset_tokens_revoked, user_id={}, revoked_refresh_tokens={}",
+            userId, revoked);
         // 注意：临时密码**不写进审计 detail** —— 审计表是可被审计员读到的，
         // 密码落库等于二次泄露。原始密码通过响应体返回给管理员（一次性）。
         log.info("user_password_reset, user_id={}, operator_id={}, temp_password_issued=true",

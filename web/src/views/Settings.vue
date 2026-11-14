@@ -98,7 +98,11 @@ async function changePassword() {
       old_password: passwordForm.value.old_password,
       new_password: passwordForm.value.new_password,
     });
-    show('success', '密码已修改，下次登录生效');
+    // 改密成功 ⇒ 后端已吊销该用户全部 refresh_token（第六轮）。
+    // 所以**必须立刻重新登录** —— 否则当前 access_token 到期（≤10 分钟）
+    // 之后刷新失败，用户会被莫名其妙地踢回登录页，还不知道是自己改密造成的。
+    userStore.logout();
+    show('success', '密码已修改成功，请用新密码重新登录');
     passwordForm.value = { old_password: '', new_password: '', confirm_password: '' };
   } catch (e: any) {
     show('error', e?.response?.data?.message || '密码修改失败');

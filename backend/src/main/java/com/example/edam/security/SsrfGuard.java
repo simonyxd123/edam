@@ -30,6 +30,10 @@ import java.util.Arrays;
  * 彻底解决要自己实现 DNS 解析 + 直连目标 IP（本仓库不做）。
  * 缓解办法：{@link #assertPublicUrl} 在**投递前**也会再查一次
  * （见 {@code WebhookDeliveryService}），把窗口压到最小。
+ *
+ * <p>2026-11-14 第六轮补：{@code 100.64.0.0/10}（CGNAT 段，Tailscale
+ * 与部分云厂商的内网地址）此前不在私网表里 —— 用它当回调地址可以打到
+ * 企业自己的组网内部。
  */
 @Slf4j
 public final class SsrfGuard {
@@ -172,6 +176,7 @@ public final class SsrfGuard {
         if (a == 0) return true;                        // 0/8
         if (a == 169 && b == 254) return true;          // 169.254/16 链路本地（含云元数据）
         if (a == 172 && b >= 16 && b <= 31) return true;// 172.16/12
+        if (a == 100 && b >= 64 && b <= 127) return true; // 100.64/10 CGNAT（Tailscale / 部分云内网）
         if (a == 192 && b == 168) return true;          // 192.168/16
         if (a == 192 && b == 0) return true;            // 192.0/24
         if (a == 198 && (b == 18 || b == 19)) return true; // 198.18/15 基准测试段
