@@ -67,7 +67,8 @@ class SecurityConfigAuthStatusTest {
             // 占位签名密钥 —— 只为满足最小长度校验，不是凭据
             return new JwtAuthenticationFilter(
                 new JwtTokenProvider(
-                    "placeholder-signing-key-for-unit-tests-only-not-a-credential")) {
+                    "placeholder-signing-key-for-unit-tests-only-not-a-credential"),
+                new ClientIpResolver("")) {
                 @Override
                 protected void doFilterInternal(HttpServletRequest request,
                                                 HttpServletResponse response,

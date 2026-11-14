@@ -84,7 +84,8 @@ class AuditAspectIntegrationTest {
 
         @Bean
         AuditHelper auditHelper() {
-            return new AuditHelper();
+            return new AuditHelper(mock(AuditService.class),
+                new com.example.edam.security.ClientIpResolver("127.0.0.1/32"));
         }
 
         @Bean

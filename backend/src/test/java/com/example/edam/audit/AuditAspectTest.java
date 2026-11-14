@@ -56,8 +56,11 @@ class AuditAspectTest {
     @BeforeEach
     void setUp() {
         auditService = mock(AuditService.class);
-        // AuditHelper 只做 IP / UA 提取，这里用真对象（它是纯函数式的，无副作用）
-        aspect = new AuditAspect(auditService, new com.example.edam.util.AuditHelper());
+        // AuditHelper 只做 IP / UA 提取，这里用真对象（它是纯函数式的，无副作用）。
+        // 受信代理名单覆盖测试里的对端地址（10.0.0.9），这样转发头才会被采信。
+        aspect = new AuditAspect(auditService, new com.example.edam.util.AuditHelper(
+            mock(AuditService.class),
+            new com.example.edam.security.ClientIpResolver("10.0.0.0/8")));
 
         pjp = mock(ProceedingJoinPoint.class);
         signature = mock(MethodSignature.class);
@@ -193,7 +196,7 @@ class AuditAspectTest {
     }
 
     @Test
-    @DisplayName("真实客户端 IP 取 X-Forwarded-For 的第一个（反代后面拿到的都是代理 IP）")
+    @DisplayName("真实客户端 IP 从 X-Forwarded-For 里往左找（跳过中间那几跳代理）")
     void clientIpPrefersForwardedFor() throws Throwable {
         request.addHeader("X-Forwarded-For", "203.0.113.7, 10.0.0.1");
         givenMethod("success");
@@ -201,6 +204,28 @@ class AuditAspectTest {
         aspect.around(pjp);
 
         assertEquals("203.0.113.7", capturedIp());
+    }
+
+    @Test
+    @DisplayName("客户端自己伪造的 XFF 前缀不作数（代理追加的那一段才是真的）")
+    void clientIpIgnoresForgedForwardedForPrefix() throws Throwable {
+        request.addHeader("X-Forwarded-For", "1.2.3.4, 203.0.113.7");
+        givenMethod("success");
+
+        aspect.around(pjp);
+
+        assertEquals("203.0.113.7", capturedIp());
+    }
+
+    @Test
+    @DisplayName("超长的伪造 XFF 不会进审计（否则整条记录写不进 VARCHAR(45)）")
+    void clientIpDropsOversizedForwardedFor() throws Throwable {
+        request.addHeader("X-Forwarded-For", "9".repeat(500));
+        givenMethod("success");
+
+        aspect.around(pjp);
+
+        assertEquals("10.0.0.9", capturedIp());
     }
 
     @Test

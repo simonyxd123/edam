@@ -1,44 +1,46 @@
 package com.example.edam.util;
 
+import com.example.edam.security.ClientIpResolver;
 import com.example.edam.service.AuditService;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
  * 审计日志辅助（v3.2 V-1 RBAC）
  *
- * 解决反向代理 / FRP / nginx 场景下 request.getRemoteAddr() 返回 127.0.0.1 的问题：
- * 优先读 X-Forwarded-For 第一个 IP（用户真实地址），再退化到 X-Real-IP / RemoteAddr。
+ * 解决反向代理 / FRP / nginx 场景下 request.getRemoteAddr() 返回 127.0.0.1 的问题。
+ *
+ * <p><b>取 IP 的口径只有一份</b>：{@link ClientIpResolver}。
+ * 此前这里自己抄了一份"取 XFF 第一个"的实现，而限流那边用的是带白名单的
+ * {@code ClientIpResolver} —— 两套口径必然对不上：
+ * <ul>
+ *   <li>审计侧无条件采信 XFF ⇒ 客户端可以伪造审计里的 IP；</li>
+ *   <li>且不校验合法性 ⇒ 一个超长字符串就能让整条审计记录写不进
+ *       {@code VARCHAR(45)} 的列（审计被静默吞掉）。</li>
+ * </ul>
+ * 现在两边统一走白名单 + 合法性校验的解析器。
  *
  * Controller 里统一调 logAudit(...) 即可。
  */
 @Component
 public class AuditHelper {
 
-    @Autowired
-    private AuditService auditService;
+    private final AuditService auditService;
+    /** 真实 IP 的**唯一**取法 */
+    private final ClientIpResolver clientIpResolver;
+
+    public AuditHelper(AuditService auditService, ClientIpResolver clientIpResolver) {
+        this.auditService = auditService;
+        this.clientIpResolver = clientIpResolver;
+    }
 
     /**
-     * 提取真实客户端 IP
-     * 顺序：X-Forwarded-For 第一个 → X-Real-IP → RemoteAddr
+     * 提取真实客户端 IP。
+     *
+     * @see ClientIpResolver#resolve(HttpServletRequest)
      */
     public String extractClientIp(HttpServletRequest request) {
-        if (request == null) return "unknown";
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            // X-Forwarded-For 可能是 "client, proxy1, proxy2" → 取第一个
-            int comma = xff.indexOf(',');
-            String first = (comma > 0 ? xff.substring(0, comma) : xff).trim();
-            if (!first.isEmpty() && !"unknown".equalsIgnoreCase(first)) {
-                return first;
-            }
-        }
-        String xri = request.getHeader("X-Real-IP");
-        if (xri != null && !xri.isBlank()) {
-            return xri.trim();
-        }
-        return request.getRemoteAddr();
+        return clientIpResolver.resolve(request);
     }
 
     /**

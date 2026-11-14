@@ -62,6 +62,17 @@ backend:
     # 初始管理员：production 不配 ADMIN_INITIAL_PASSWORD 就不建任何账号
     ADMIN_INITIAL_PASSWORD: ""
     CREATE_DEFAULT_ADMIN: "false"
+    # 受信反向代理网段（审计 / 限流取真实客户端 IP 时用）。
+    #
+    # 集群里的链路是 ingress → nginx 网关 → 后端：
+    #   - 后端看到的对端是 nginx 网关 Pod；
+    #   - X-Forwarded-For 的最后一段是 ingress Pod 的地址。
+    # 两者都要在名单里，解析器才能一路往左找到**用户**的地址。
+    #
+    # 这里给的是内网整段（覆盖绝大多数集群的 Pod 网段）。
+    # ⚠️ 副作用：内网地址的客户端会被当成"代理"跳过 ⇒ 审计里记成网关 IP。
+    # 生产建议收窄成实际的 Pod CIDR（如 "10.42.0.0/16,10.43.0.0/16"）。
+    TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12"
   probes:
     liveness:
       enabled: true

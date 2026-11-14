@@ -2,6 +2,7 @@ package com.example.edam.controller;
 
 import com.example.edam.model.VideoResource;
 import io.jsonwebtoken.Claims;
+import com.example.edam.security.ClientIpResolver;
 import com.example.edam.security.JwtTokenProvider;
 import com.example.edam.audit.AuditAspect;
 import com.example.edam.audit.AuditOp;
@@ -43,6 +44,8 @@ public class PlaybackController {
     private final JwtTokenProvider jwtTokenProvider;
     private final MinioClient minioClient;
     private final com.example.edam.service.PlayLogService playLogService;
+    /** 真实客户端 IP 的唯一取法（与审计、限流同源） */
+    private final ClientIpResolver clientIpResolver;
 
     @Value("${minio.bucket.videos}")
     private String videosBucket;
@@ -533,24 +536,14 @@ public class PlaybackController {
         return ResponseEntity.noContent().build();
     }
 
-    /** 真实客户端 IP（X-Forwarded-For → X-Real-IP → RemoteAddr） */
+    /**
+     * 真实客户端 IP。
+     *
+     * <p>此前这里自己抄了一份"取 XFF 第一个"的实现 —— 与审计侧、限流侧
+     * 各说各话（见 {@link ClientIpResolver} 的类注释）。现在统一走同一个解析器。
+     */
     private String clientIpOf(HttpServletRequest request) {
-        if (request == null) {
-            return "unknown";
-        }
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            int comma = xff.indexOf(',');
-            String first = (comma > 0 ? xff.substring(0, comma) : xff).trim();
-            if (!first.isEmpty() && !"unknown".equalsIgnoreCase(first)) {
-                return first;
-            }
-        }
-        String xri = request.getHeader("X-Real-IP");
-        if (xri != null && !xri.isBlank()) {
-            return xri.trim();
-        }
-        return request.getRemoteAddr();
+        return clientIpResolver.resolve(request);
     }
 
     /** User-Agent（截断到 200 字符） */

@@ -31,14 +31,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # (Markdown 源, PDF 目标, 标题, 副标题, 适用角色)
+#
+# 'key' 是 --only 的取值。**不能拿文件名去做匹配** —— 文件名是中文的，
+# 拿 'admin' 去 in 文件名永远为假 ⇒ `--only admin` 会一本都不渲染，
+# 而且退出码还是 0（看起来"成功"了，实际上什么也没干）。
 MANUALS = [
     {
+        'key': 'employee',
         'md': 'modify/2026-11-05-普通员工使用手册.md',
         'pdf': 'doc/2026-11-05-普通员工使用手册.pdf',
         'title': 'EDAM 普通员工使用手册',
         'subtitle': 'employee / dept_manager / auditor',
     },
     {
+        'key': 'admin',
         'md': 'modify/2026-11-05-管理员使用手册.md',
         'pdf': 'doc/2026-11-05-管理员使用手册.pdf',
         'title': 'EDAM 管理员使用手册',
@@ -221,7 +227,10 @@ def main():
         return 1
 
     selected = [m for m in MANUALS
-                if not args.only or args.only in m['md']]
+                if not args.only or args.only == m['key']]
+    if not selected:
+        print(f'ERROR: 没有匹配的手册（--only {args.only}）')
+        return 1
 
     for m in selected:
         md_path = ROOT / m['md']

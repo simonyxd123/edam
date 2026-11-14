@@ -9,9 +9,18 @@ server:
     max-threads: 400
     accept-count: 200
     connection-timeout: 20s
-  # v3.2 V-1 RBAC：让 Spring 自动从反向代理头解析真实 IP
-  # 需要反向代理至少传 X-Forwarded-For / X-Real-IP 之一
-  forward-headers-strategy: framework
+  # 反向代理的真实 IP **不走 Spring 的机制**，统一由
+  # com.example.edam.security.ClientIpResolver 处理（见 edam.security.trusted-proxies）。
+  #
+  # 为什么不能写 framework：Spring 的 ForwardedHeaderFilter 会**无条件**采信
+  # X-Forwarded-For，并把 request.getRemoteAddr() 改成里面的值。
+  # 那样一来"这个请求是不是来自受信代理"的判断就变成了"攻击者自己说了算" ——
+  # 只要伪造一个 X-Forwarded-For: 10.42.0.1，getRemoteAddr() 就变成 10.42.0.1，
+  # 白名单形同虚设，审计里的 IP 可以随便写。
+  #
+  # 设为 none ⇒ getRemoteAddr() 始终是 TCP 对端地址（不可伪造），
+  # 转发头只在"对端在受信名单里"时才被采信。
+  forward-headers-strategy: none
 
 spring:
   application:
@@ -152,9 +161,12 @@ edam:
   security:
     # 受信反向代理（IP 或 CIDR，逗号分隔）。
     # 只有来自这些地址的请求才采信 X-Forwarded-For / X-Real-IP；
-    # 留空 = 不信任任何代理（fail-closed）。
-    # K8s 必须配 ingress 的 CIDR，否则所有请求会被记为 ingress pod IP。
-    trusted-proxies: ${TRUSTED_PROXIES:}
+    # 留空 = 不信任任何代理（fail-closed，一律用 socket 真实 IP）。
+    #
+    # 默认只信回环 —— 开发期 vite dev server 做代理，peer 就是 127.0.0.1。
+    # 生产必须改成 ingress / nginx 网关的 Pod 网段（helm values 里已给默认值），
+    # 否则审计里记的是网关 Pod 的 IP，而不是用户的地址。
+    trusted-proxies: ${TRUSTED_PROXIES:127.0.0.1/32,::1/128}
   websocket:
     # 允许的跨域来源，逗号分隔。留空 = 只允许同源。
     # 不要用 "*" —— WebSocket 的 Origin 头必须服务端自己校验。

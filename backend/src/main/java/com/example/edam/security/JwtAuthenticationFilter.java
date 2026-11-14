@@ -39,9 +39,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * 于是即便签发端切到国密，验签端也不认 —— 两边必须一起改才行。
      */
     private final JwtTokenProvider jwtTokenProvider;
+    /** 真实客户端 IP（反代后面 getRemoteAddr() 只是代理 IP） */
+    private final ClientIpResolver clientIpResolver;
 
-    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider,
+                                    ClientIpResolver clientIpResolver) {
         this.jwtTokenProvider = jwtTokenProvider;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @Override
@@ -78,7 +82,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 // 把 hash 挂到 details 里供审计 / 日志使用，不污染 principal
                 authentication.setDetails(Map.of(
-                    "remoteAddress", request.getRemoteAddr(),
+                    // 真实客户端 IP（不是代理 IP）—— 与审计表里记的是同一个口径
+                    "remoteAddress", clientIpResolver.resolve(request),
                     "sessionId", sessionId == null ? "" : sessionId,
                     "userIdHash", userIdHash == null ? "" : userIdHash
                 ));

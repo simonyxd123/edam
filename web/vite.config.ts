@@ -36,10 +36,20 @@ export default defineConfig({
         //   VITE_API_BASE_URL=http://your.host:port  npm run dev
         target: process.env.VITE_API_BASE_URL || 'http://localhost:8092',
         changeOrigin: true,
+        // xfwd: 代理时补上 X-Forwarded-For（http-proxy 的 x-forwarded-for）。
+        //
+        // 不开这个，dev server 对后端来说就是"客户端"（peer = 127.0.0.1），
+        // 后端拿不到浏览器的地址 ⇒ **审计日志里所有 IP 都是 127.0.0.1**，
+        // 登录限流也会把所有人算成同一个 IP。
+        //
+        // http-proxy 是**追加**到已有的 XFF 末尾（客户端伪造的值在前、真实值在后），
+        // 与 nginx 的 $proxy_add_x_forwarded_for 行为一致 ⇒ 后端统一从右往左取。
+        xfwd: true,
       },
       '/ws': {
         target: process.env.VITE_WS_BASE_URL || 'ws://localhost:8092',
         ws: true,
+        xfwd: true,
       },
     },
   },
