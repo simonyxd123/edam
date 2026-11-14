@@ -1,5 +1,7 @@
 package com.example.edam.controller;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.example.edam.dto.PaginationResponses;
 import com.example.edam.exception.GlobalExceptionHandler;
 import com.example.edam.model.DistributionApproval;
@@ -14,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -27,9 +30,11 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -70,6 +75,13 @@ class DistributionControllerTest {
 
     @BeforeEach
  void setUp() {
+        // LambdaUpdateWrapper 解析方法引用时需要实体的 TableInfo ——
+        // 生产环境由 MyBatis 初始化 mapper 时建好，单测里 mapper 是 mock 的，
+        // 得手动初始化一次，否则会抛 "can not find lambda cache for this entity"。
+        TableInfoHelper.initTableInfo(
+            new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+            DistributionApproval.class);
+
         approvalRepository = mock(DistributionApprovalRepository.class);
         decisionRepository = mock(DistributionApprovalDecisionRepository.class);
         documentService = mock(DocumentService.class);
@@ -232,6 +244,8 @@ class DistributionControllerTest {
     void decideWritesDecisionRecord() throws Exception {
         authenticate(APPROVER, "distribution:read", "distribution:approve");
         when(approvalRepository.selectById(APPROVAL_ID)).thenReturn(approval(0));
+        // 条件更新命中（影响 1 行）
+        when(approvalRepository.update(any(), any())).thenReturn(1);
 
         mockMvc.perform(post("/distribution/approvals/{id}/decide", APPROVAL_ID)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -308,6 +322,23 @@ class DistributionControllerTest {
         verify(decisionRepository, never()).insert(any(DistributionApprovalDecision.class));
     }
 
+    @Test
+    @DisplayName("decide 并发：条件更新影响 0 行（已被别人处理）⇒ 409，且不写决策流水")
+    void decideConflictWithConcurrentApprovalIs409() throws Exception {
+        authenticate(APPROVER, "distribution:read", "distribution:approve");
+        when(approvalRepository.selectById(APPROVAL_ID)).thenReturn(approval(0));
+        // 读到的还是 pending，但落库时 WHERE 条件已经不成立（被别人抢先改了）
+        when(approvalRepository.update(any(), any())).thenReturn(0);
+
+        mockMvc.perform(post("/distribution/approvals/{id}/decide", APPROVAL_ID)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("decision", "approve"))))
+            .andExpect(status().isConflict());
+
+        // 关键：不能留下第二条互相矛盾的决策流水
+        verify(decisionRepository, never()).insert(any(DistributionApprovalDecision.class));
+    }
+
     // ==================================================================
     // 撤销
     // ==================================================================
@@ -325,9 +356,22 @@ class DistributionControllerTest {
     }
 
     @Test
+    @DisplayName("revoke 并发：条件更新影响 0 行（状态已被改）⇒ 409")
+    void revokeConflictWithConcurrentDecisionIs409() throws Exception {
+        authenticate(APPROVER, "distribution:read", "distribution:approve");
+        when(approvalRepository.selectById(APPROVAL_ID)).thenReturn(approval(1));
+        when(approvalRepository.update(any(), any())).thenReturn(0);
+
+        mockMvc.perform(post("/distribution/approvals/{id}/revoke", APPROVAL_ID))
+            .andExpect(status().isConflict());
+    }
+
+    @Test
     @DisplayName("revoke 已批准的单子 ⇒ 204，并把原因写进去")
     void revokeApprovedIs204() throws Exception {
         authenticate(APPROVER, "distribution:read", "distribution:approve");
+        // 条件更新命中（影响 1 行）
+        when(approvalRepository.update(any(), any())).thenReturn(1);
         when(approvalRepository.selectById(APPROVAL_ID)).thenReturn(approval(1));  // approved
 
         mockMvc.perform(post("/distribution/approvals/{id}/revoke", APPROVAL_ID)
@@ -335,12 +379,21 @@ class DistributionControllerTest {
                 .content(mapper.writeValueAsString(Map.of("reason", "接收方信息有误"))))
             .andExpect(status().isNoContent());
 
-        ArgumentCaptor<DistributionApproval> captor =
-            ArgumentCaptor.forClass(DistributionApproval.class);
-        verify(approvalRepository).updateById(captor.capture());
-        assertEquals(4, captor.getValue().getStatus());
-        assertEquals("接收方信息有误", captor.getValue().getRevokeReason());
-        assertEquals(APPROVER, captor.getValue().getRevokedBy());
+        // 现在是**条件更新**（UPDATE ... WHERE id=? AND status IN (pending, approved)），
+        // 不再是 updateById —— 所以断言的对象是 wrapper 本身。
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DistributionApproval>>
+            captor = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+        verify(approvalRepository).update(isNull(), captor.capture());
+        com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DistributionApproval> w =
+            captor.getValue();
+        java.util.Map<String, Object> params = w.getParamNameValuePairs();
+        assertTrue(params.containsValue(4), "撤销后状态应为 4（revoked），实际参数：" + params);
+        assertTrue(params.containsValue(APPROVER), "应记录撤销人，实际参数：" + params);
+        assertTrue(params.containsValue("接收方信息有误"), "应记录撤销原因，实际参数：" + params);
+        // WHERE 里必须带上"当前仍是 pending/approved"这个守卫
+        assertTrue(w.getSqlSegment().contains("status"),
+            "条件更新的 WHERE 必须带状态守卫，实际：" + w.getSqlSegment());
     }
 
     // ==================================================================

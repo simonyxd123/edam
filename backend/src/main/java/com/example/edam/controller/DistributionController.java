@@ -289,9 +289,32 @@ public class DistributionController {
         }
 
         int newStatus = "approve".equals(decision) ? STATUS_APPROVED : STATUS_REJECTED;
+        OffsetDateTime decidedAt = OffsetDateTime.now();
+        // 条件更新（2026-11-14 代码审计第五轮）：
+        //
+        // 上面那段"读状态 → 判状态 → updateById"是典型的 **check-then-act**：
+        // 两个审批人同时点"批准/驳回"，两边都读到 pending、都通过校验、
+        // 都写一条决策流水 —— 后写的覆盖先写的状态，
+        // 而**流水表里留下两条互相矛盾的决策**（一条 approve 一条 reject）。
+        // 审批流水是"谁批的、批了什么"的**唯一证据链**，对不上账就等于没有证据。
+        //
+        // ⇒ 把"当前仍是 pending"写进 UPDATE 的 WHERE 条件里，
+        //   由数据库保证只有一个并发者能改成功（影响行数 = 1）；
+        //   另一个影响行数 = 0 ⇒ 409，与串行重复审批的表现一致。
+        int rows = approvalRepository.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DistributionApproval>()
+                .eq(DistributionApproval::getId, approvalId)
+                .eq(DistributionApproval::getStatus, STATUS_PENDING)
+                .set(DistributionApproval::getStatus, newStatus)
+                .set(DistributionApproval::getFinalDecisionAt, decidedAt));
+        if (rows == 0) {
+            log.warn("distribution_decide_conflict, approval_id={}, approver_id={}",
+                approvalId, approverId);
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "该申请已被其他人处理，请刷新后重试");
+        }
         approval.setStatus(newStatus);
-        approval.setFinalDecisionAt(OffsetDateTime.now());
-        approvalRepository.updateById(approval);
+        approval.setFinalDecisionAt(decidedAt);
 
         // 决策流水 —— 审批是"把资产送到公司外面"这道闸，
         // 闸门每次开合都必须留痕（谁 / 何时 / 批语）。
@@ -335,15 +358,35 @@ public class DistributionController {
         }
 
         // 4=revoked
-        approval.setStatus(STATUS_REVOKED);
-        approval.setRevokedBy(operatorId);
-        approval.setRevokedAt(OffsetDateTime.now());
+        //
+        // 同样用**条件更新**（2026-11-14 代码审计第五轮）：
+        // "读状态 → 判状态 → 写状态"是 check-then-act，
+        // 与另一个审批人并发时会出现"撤销覆盖批准"、且两边都以为自己成功了。
+        // 把"当前仍是 pending/approved"写进 WHERE，影响行数 0 ⇒ 409。
+        OffsetDateTime revokedAt = OffsetDateTime.now();
         String reason = (request != null && request.getReason() != null
             && !request.getReason().isBlank())
             ? request.getReason().trim()
             : ("紧急撤销 by operator " + operatorId);
+
+        int rows = approvalRepository.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DistributionApproval>()
+                .eq(DistributionApproval::getId, approvalId)
+                .in(DistributionApproval::getStatus, STATUS_PENDING, STATUS_APPROVED)
+                .set(DistributionApproval::getStatus, STATUS_REVOKED)
+                .set(DistributionApproval::getRevokedBy, operatorId)
+                .set(DistributionApproval::getRevokedAt, revokedAt)
+                .set(DistributionApproval::getRevokeReason, reason));
+        if (rows == 0) {
+            log.warn("distribution_revoke_conflict, approval_id={}, operator_id={}",
+                approvalId, operatorId);
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "该申请状态已变化（可能刚被审批或撤销），请刷新后重试");
+        }
+        approval.setStatus(STATUS_REVOKED);
+        approval.setRevokedBy(operatorId);
+        approval.setRevokedAt(revokedAt);
         approval.setRevokeReason(reason);
-        approvalRepository.updateById(approval);
 
         log.warn("approval_revoked, approval_id={}, operator_id={}", approvalId, operatorId);
         return ResponseEntity.noContent().build();

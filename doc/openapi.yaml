@@ -427,15 +427,30 @@ paths:
 
         **鉴权要求**（v3.1 加强）：
         - 必须携带 JWT（继承全局 security）
-        - 服务端校验：JWT 中的 user_id_hash 与 session_id 必须匹配 active session
+        - **必须带播放 token**（`?token=`）：就是 `POST /playback/{id}/token`
+          签发的那张，服务端校验四件事 ——
+          ① token 有效且绑定到本视频；
+          ② token 的 subject 就是当前用户（不能用别人的 token 冒名上报）；
+          ③ 请求体里的 `session_id` 与 token 里的 `session_id` 一致；
+          ④ 该用户此刻仍看得到这个视频（授权被撤销也要挡住）。
         - 频率限制：每用户每分钟 60 次（429 拒绝）
         - 失败重试：客户端使用指数退避，避免雪崩
         - **安全警示**：此接口是溯源系统的审计通道，未授权或异常请求将触发告警
+
+        > 2026-11-14 代码审计第五轮：此前服务端只校验"session_id 非空"，
+        > 其余（session_id / event / progress_sec）全部由客户端提供 ⇒
+        > `play_log`（溯源链最后一环，留 365 天）是一张可以随手伪造的表。
+        > 契约里"session_id 必须匹配 active session"这句话当时**只存在于本文档里**。
       parameters:
         - in: path
           name: video_id
           required: true
           schema: { type: integer }
+        - in: query
+          name: token
+          required: true
+          description: 播放 token（`POST /playback/{video_id}/token` 签发，10 分钟有效）
+          schema: { type: string }
       requestBody:
         required: true
         content:

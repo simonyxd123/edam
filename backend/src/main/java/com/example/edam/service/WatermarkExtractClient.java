@@ -66,8 +66,15 @@ public class WatermarkExtractClient {
                 "未配置 edam.worker.token，无法调用 Worker 提取盲水印");
         }
 
+        // file_type 拼进 query —— 必须转义。
+        // 调用方（WatermarkController）已经把它限死在 {image, pdf}，
+        // 但这一层不能依赖"上游一定会检查"：
+        // 未转义的原始字符串能让调用方往 query 里塞 & / # 之类的东西，
+        // 也可能让 URI.create 直接抛 IllegalArgumentException（500）。
         String url = workerBaseUrl.replaceAll("/+$", "")
-                + "/internal/watermark/extract?file_type=" + fileType;
+                + "/internal/watermark/extract?file_type="
+                + java.net.URLEncoder.encode(fileType == null ? "" : fileType,
+                    StandardCharsets.UTF_8);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))

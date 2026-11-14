@@ -56,6 +56,9 @@ public class PreviewController {
             return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("X-Watermark-Enabled", "true")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("X-Frame-Options", "SAMEORIGIN")
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
                 .body(java.util.Map.of(
                     "doc_id", docId,
                     "mime", content.mime(),
@@ -66,11 +69,22 @@ public class PreviewController {
         }
 
         // html：直接内联返回文档内容（PDF / 图片 / 文本）
+        //
+        // 安全响应头与 /documents/{id}/preview 保持一致
+        // （2026-11-14 代码审计第五轮）：此前只有那一个端点设了
+        // nosniff / X-Frame-Options / Cache-Control，这一个**漏了** ——
+        // 同一份 service、两个端点，安全头却不一样（典型的行为漂移）。
+        //   - nosniff：不让浏览器猜类型（防 MIME 嗅探）
+        //   - SAMEORIGIN：防 iframe 劫持（点击劫持）
+        //   - private：防代理缓存把机密文档存到中间节点
         return ResponseEntity.ok()
             .contentType(MediaType.parseMediaType(content.mime()))
             .header(HttpHeaders.CONTENT_DISPOSITION,
                 DocumentPreviewService.contentDisposition(content.inline(), content.filename()))
             .header("X-Watermark-Enabled", "true")
+            .header("X-Content-Type-Options", "nosniff")
+            .header("X-Frame-Options", "SAMEORIGIN")
+            .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
             .body(content.bytes());
     }
 
@@ -97,6 +111,9 @@ public class PreviewController {
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
             .header(HttpHeaders.CONTENT_DISPOSITION,
                 DocumentPreviewService.contentDisposition(false, content.filename()))
+            .header("X-Content-Type-Options", "nosniff")
+            .header("X-Frame-Options", "SAMEORIGIN")
+            .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
             .body(resource);
     }
 }

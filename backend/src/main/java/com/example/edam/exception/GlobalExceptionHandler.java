@@ -95,17 +95,27 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AccountLockedException.class)
     public ResponseEntity<Map<String, Object>> handleAccountLocked(AccountLockedException ex) {
+        // detail 与 retry_after 都取**真实**状态：
+        // 此前这里写死"已锁定 30 分钟"，而系统压根没有到期解锁机制 ——
+        // 等 30 分钟并不会好，等的是管理员手工改库。
+        // 现在自动锁定会报真实剩余秒数；管理员手动锁定则报"需联系管理员"。
         Map<String, Object> body = Map.of(
             "type", URI.create("about:blank"),
             "title", "Account Locked",
             "status", HttpStatus.LOCKED.value(),
-            "detail", "连续登录失败过多，账号已被锁定 30 分钟",
+            "detail", ex.getMessage(),
             "code", "AUTH_ACCOUNT_LOCKED",
+            "permanent", ex.isPermanent(),
             "retry_after_seconds", ex.getRemainingLockSeconds(),
             "trace_id", getOrCreateTraceId(),
             "timestamp", OffsetDateTime.now().toString()
         );
-        return ResponseEntity.status(HttpStatus.LOCKED).body(body);
+        if (ex.isPermanent()) {
+            return ResponseEntity.status(HttpStatus.LOCKED).body(body);
+        }
+        return ResponseEntity.status(HttpStatus.LOCKED)
+            .header("Retry-After", String.valueOf(ex.getRemainingLockSeconds()))
+            .body(body);
     }
 
     /**

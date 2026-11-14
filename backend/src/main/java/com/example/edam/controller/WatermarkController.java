@@ -39,6 +39,29 @@ public class WatermarkController {
     private final SysUserRepository sysUserRepository;
 
     /**
+     * 单次提取的体积上限 —— 与 Worker 侧的限制一致（50MB）。
+     *
+     * <p><b>为什么必须有（2026-11-14 代码审计第五轮）</b>：
+     * 全局 multipart 上限是 8GB（视频需要），而本端点此前直接
+     * {@code file.getBytes()} —— <b>把整个文件读进 JVM 堆</b>。
+     * 而 {@code watermark:read} 在<b>普通员工</b>的白名单里
+     * （见 {@code EmployeePermissions.READ_ONLY}）⇒
+     * 任何一个普通员工都能上传一个 1GB 的文件把后端 OOM 掉，
+     * Pod 被杀 ⇒ 全站不可用。Worker 那边有 50MB 限制，
+     * 但后端是<b>先读进堆、再转发</b>的，Worker 的限制根本来不及生效。
+     */
+    public static final long MAX_EXTRACT_BYTES = 50L * 1024 * 1024;
+
+    /**
+     * 支持提取的文件类型 —— 与 Worker 的 {@code internal.py} 保持一致。
+     *
+     * <p>Office 的水印是隐写，提取算法未实现（Worker 会明确报 400）。
+     * 在**后端**就挡住，一是省一次无谓的往返，二是避免把
+     * Worker 的 400 变成后端的 503（客户端错误被当成服务端故障）。
+     */
+    private static final java.util.Set<String> SUPPORTED_TYPES = java.util.Set.of("image", "pdf");
+
+    /**
      * 提取水印/指纹。
      *
      * <p><b>此前这里返回的是一个假的"没查到泄露"</b>：
@@ -71,11 +94,25 @@ public class WatermarkController {
         if (file.isEmpty()) {
             throw new IllegalArgumentException("文件为空");
         }
+        // 类型白名单 —— 在**读进堆之前**就拒掉不支持的类型
+        String normalizedType = type == null ? "" : type.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!SUPPORTED_TYPES.contains(normalizedType)) {
+            throw new IllegalArgumentException(
+                "暂不支持从 " + type + " 提取水印；当前支持 " + SUPPORTED_TYPES
+                + "（Office 的水印是隐写，提取算法未实现）");
+        }
+        // 体积上限 —— 必须在 getBytes() 之前判。
+        // 没有这条，普通员工一个 1GB 的上传就能把后端 OOM 掉。
+        if (file.getSize() > MAX_EXTRACT_BYTES) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                "文件过大（" + file.getSize() + " 字节），提取上限 "
+                    + MAX_EXTRACT_BYTES + " 字节");
+        }
 
         WatermarkExtractClient.ExtractResult result;
         try {
             byte[] content = file.getBytes();
-            result = extractClient.extract(content, type);
+            result = extractClient.extract(content, normalizedType);
         } catch (WatermarkExtractClient.WorkerUnavailableException e) {
             // 提取失败 ≠ 没有水印 —— 必须让调用方知道这是系统故障
             log.error("watermark_extract_failed, operator_id={}, error={}",
@@ -109,7 +146,7 @@ public class WatermarkController {
         extracted.put("extract_time", java.time.OffsetDateTime.now().toString());
 
         Map<String, Object> response = new HashMap<>();
-        response.put("type", type);
+        response.put("type", normalizedType);
         response.put("extracted", extracted);
         response.put("matched_users", matchedUsers);
 
@@ -121,6 +158,21 @@ public class WatermarkController {
      *
      * <p>水印文本格式（见 {@code worker/src/edam_worker/processors/document.py}）：
      * {@code {uploader_id}|{doc_id}|{timestamp}}。
+     *
+     * <p><b>一致性校验（2026-11-14 代码审计第五轮）</b>：
+     * 指纹里的 {@code uploader_id} 必须与库里该文档的上传者<b>一致</b>，
+     * 否则**不给匹配用户**。
+     *
+     * <p>为什么：指纹是**文件内容的一部分**，任何人都能自己写进去。
+     * 此前这里只按 {@code doc_id} 反查 —— 于是任何人都能用开源的
+     * blind-watermark 库往一张图里嵌入"{同事ID}|{同事的文档ID}|…}"，
+     * 提取时就会得出"**这位同事**外泄了这份文件"的结论。
+     * 在一个用于追责的系统里，这是能拿来**冤枉人**的。
+     *
+     * <p>校验之后仍残留的缺口（要彻底堵住需要另做登记，详见
+     * {@code modify/2026-11-14-代码审计第五轮.md} §3.3）：
+     * 知道目标 {@code doc_id} 与 {@code uploader_id} 的人仍可伪造出一致的指纹 ——
+     * 因为系统里**没有"这份文档当初嵌的是哪串文本"的登记**。
      */
     private List<Map<String, Object>> matchUsers(String fingerprint) {
         List<Map<String, Object>> matched = new ArrayList<>();
@@ -136,10 +188,27 @@ public class WatermarkController {
             log.warn("watermark_text_doc_id_invalid fingerprint={}", fingerprint);
             return matched;
         }
+        // 指纹里的 uploader_id（parts[0]）必须能解析 —— 解析不了说明指纹不是
+        // 本系统嵌入的格式（系统嵌入时 uploader_id 一定来自登录用户，不会为空）
+        Long watermarkUploaderId = null;
+        try {
+            watermarkUploaderId = Long.valueOf(parts[0].trim());
+        } catch (NumberFormatException e) {
+            log.warn("watermark_text_uploader_id_invalid fingerprint={}", fingerprint);
+            return matched;
+        }
 
         DocResource doc = docResourceRepository.selectById(docId);
         if (doc == null) {
             log.warn("watermark_doc_not_found doc_id={}", docId);
+            return matched;
+        }
+
+        // 一致性校验：指纹声称的上传者必须就是这份文档的上传者
+        if (doc.getUploaderId() == null || !doc.getUploaderId().equals(watermarkUploaderId)) {
+            log.warn("watermark_fingerprint_inconsistent, doc_id={}, fingerprint_uploader_id={}, "
+                    + "doc_uploader_id={} —— 指纹与库内记录不符，不给出匹配用户",
+                docId, watermarkUploaderId, doc.getUploaderId());
             return matched;
         }
 

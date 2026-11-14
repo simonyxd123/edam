@@ -217,6 +217,25 @@ nginx:
       http {
         include /etc/nginx/mime.types;
         client_max_body_size {{ .Values.nginx.config.clientMaxBodySize }};
+        # ----------------------------------------------------------------
+        # 访问日志：**不记 query string**
+        # ----------------------------------------------------------------
+        # 播放链路的凭据是走 query 传的（?token=<播放 JWT>）——
+        # m3u8 / segment / key / log 四个端点都是。
+        # nginx 默认的 `combined` 格式记的是 $request（含完整 URI + query），
+        # ⇒ **播放 token 会原样进访问日志**，
+        # 而那张 token 10 分钟内可以直接换到该视频的 AES 解密密钥。
+        #
+        # 这与项目约定「日志中不得打印 token 本身」直接冲突：
+        # 后端不打印，但网关打印了 —— 凭据照样落到日志采集系统里。
+        #
+        # ⇒ 自定义 log_format：用 $uri（不含 args）代替 $request。
+        #   访问分析需要的"哪个路径、什么方法、什么状态码"全都在，
+        #   丢掉的只有 query string —— 那正是唯一不该落盘的部分。
+        log_format edam_no_query '$remote_addr - $remote_user [$time_local] '
+                                 '"$request_method $uri $server_protocol" $status $body_bytes_sent '
+                                 '"$http_referer" "$http_user_agent"';
+        access_log /var/log/nginx/access.log edam_no_query;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;

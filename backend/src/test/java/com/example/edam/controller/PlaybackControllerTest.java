@@ -62,6 +62,7 @@ class PlaybackControllerTest {
     private JwtTokenProvider jwtTokenProvider;
     private VideoService videoService;
     private VideoPermissionService videoPermissionService;
+    private com.example.edam.service.PlayLogService playLogService;
 
     @BeforeEach
     void setUp() {
@@ -69,8 +70,7 @@ class PlaybackControllerTest {
         videoPermissionService = mock(VideoPermissionService.class);
         jwtTokenProvider = mock(JwtTokenProvider.class);
         minioClient = mock(MinioClient.class);
-        com.example.edam.service.PlayLogService playLogService =
-            mock(com.example.edam.service.PlayLogService.class);
+        playLogService = mock(com.example.edam.service.PlayLogService.class);
         controller = new PlaybackController(videoService, videoPermissionService,
             jwtTokenProvider, minioClient, playLogService,
             new com.example.edam.security.ClientIpResolver("127.0.0.1/32"));
@@ -481,5 +481,103 @@ class PlaybackControllerTest {
         assertTrue(m3u8Url.contains("token=playback-tok"),
             "m3u8_url 必须带上播放 token —— playlist/segment/key 三个端点是 "
                 + "permitAll，只靠 query token 鉴权。实际：" + m3u8Url);
+    }
+
+    // ==================================================================
+    // 播放日志（2026-11-14 代码审计第五轮）
+    //
+    // play_log 是**溯源链的最后一环**（方案书 §7.1，留 365 天）。
+    // 此前上报只校验"session_id 非空"，其余全是客户端说了算
+    // ⇒ 任何登录用户都能往这张表里写任意内容。
+    // 现在上报必须绑定到一次**服务端签发的播放会话**。
+    // ==================================================================
+
+    /** 造一张"服务端签发的播放 token"：subject=用户，session_id=会话，绑定 video_id */
+    private io.jsonwebtoken.Claims playbackClaims(String userId, String sessionId) {
+        io.jsonwebtoken.Claims claims = mock(io.jsonwebtoken.Claims.class);
+        when(claims.getSubject()).thenReturn(userId);
+        when(claims.get("session_id")).thenReturn(sessionId);
+        return claims;
+    }
+
+    private PlaybackController.PlaybackLogRequest logRequest(String sessionId) {
+        PlaybackController.PlaybackLogRequest req = new PlaybackController.PlaybackLogRequest();
+        req.setSessionId(sessionId);
+        req.setEvent("start");
+        req.setProgressSec(12);
+        return req;
+    }
+
+    @Test
+    @DisplayName("播放日志：token / 用户 / 会话三者对得上 ⇒ 落库")
+    void playLogRecordedWhenEverythingMatches() {
+        io.jsonwebtoken.Claims c = playbackClaims("7", "sess-1");
+        when(jwtTokenProvider.parseAndValidate("tok")).thenReturn(c);
+        VideoResource video = new VideoResource();
+        video.setId(1L);
+        when(videoService.getById(1L)).thenReturn(video);
+        when(videoPermissionService.canView(video, 7L)).thenReturn(true);
+
+        ResponseEntity<Void> resp =
+            controller.reportLog(1L, "tok", logRequest("sess-1"), 7L, request());
+
+        assertEquals(HttpStatus.NO_CONTENT, resp.getStatusCode());
+        verify(playLogService).record(any(), org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq("sess-1"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放日志：token 无效 ⇒ 401，不落库")
+    void playLogWithInvalidTokenRejected() {
+        when(jwtTokenProvider.parseAndValidate("bad")).thenThrow(new IllegalArgumentException("bad"));
+
+        ResponseEntity<Void> resp =
+            controller.reportLog(1L, "bad", logRequest("sess-1"), 7L, request());
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+        verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放日志：拿别人的 token 冒名上报 ⇒ 403")
+    void playLogWithSomeoneElsesTokenRejected() {
+        io.jsonwebtoken.Claims c = playbackClaims("99", "sess-1");
+        when(jwtTokenProvider.parseAndValidate("tok")).thenReturn(c);
+
+        ResponseEntity<Void> resp =
+            controller.reportLog(1L, "tok", logRequest("sess-1"), 7L, request());
+
+        assertEquals(HttpStatus.FORBIDDEN, resp.getStatusCode());
+        verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放日志：session_id 与 token 里的不一致 ⇒ 403（session 不能由客户端编）")
+    void playLogWithMismatchedSessionRejected() {
+        io.jsonwebtoken.Claims c = playbackClaims("7", "sess-real");
+        when(jwtTokenProvider.parseAndValidate("tok")).thenReturn(c);
+
+        ResponseEntity<Void> resp =
+            controller.reportLog(1L, "tok", logRequest("sess-forged"), 7L, request());
+
+        assertEquals(HttpStatus.FORBIDDEN, resp.getStatusCode());
+        verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放日志：拿 token 之后授权被撤销 ⇒ 403（可见性要复核）")
+    void playLogAfterPermissionRevokedRejected() {
+        io.jsonwebtoken.Claims c = playbackClaims("7", "sess-1");
+        when(jwtTokenProvider.parseAndValidate("tok")).thenReturn(c);
+        VideoResource video = new VideoResource();
+        video.setId(1L);
+        when(videoService.getById(1L)).thenReturn(video);
+        when(videoPermissionService.canView(video, 7L)).thenReturn(false);
+
+        ResponseEntity<Void> resp =
+            controller.reportLog(1L, "tok", logRequest("sess-1"), 7L, request());
+
+        assertEquals(HttpStatus.FORBIDDEN, resp.getStatusCode());
+        verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
     }
 }

@@ -4,6 +4,7 @@
 - 格式转换（如 Word → PDF 预览）
 """
 import asyncio
+import datetime
 import os
 import tempfile
 from typing import Any, Dict, Optional
@@ -18,6 +19,16 @@ from ..errors import PermanentWorkerError
 from .watermark import WatermarkProcessor
 
 log = structlog.get_logger()
+
+
+def _utc_now_iso() -> str:
+    """当前 UTC 时刻（ISO-8601，秒精度，带 Z 后缀）。
+
+    指纹的第三段用它 —— 必须是**真实**时刻，不能是写死的常量。
+    """
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 class DocumentProcessor:
@@ -233,7 +244,13 @@ class DocumentProcessor:
         - Word/Excel：隐写（空白字符 / 字体间距）
         """
         uploader_id = str(payload.get("uploader_id", ""))
-        watermark_text = f"{uploader_id}|{doc_id}|2026-08-12T14:00:00Z"
+        # 指纹的第三段是**嵌入时刻**（ISO-8601 UTC）。
+        #
+        # 2026-11-14 代码审计第五轮：此前这里写的是一个**硬编码常量**
+        # "2026-08-12T14:00:00Z" —— 所有文档的指纹第三段完全一样，
+        # 指纹因此**不携带任何时间信息**：溯源时既看不出文件何时入库，
+        # 也无法用时间佐证"这份样本是从哪一批文件里流出来的"。
+        watermark_text = f"{uploader_id}|{doc_id}|{_utc_now_iso()}"
 
         # 用 splitext 换扩展名，不要用字符串拼接 —— 拼接会得到
         # "xxx.docx.wm"，LibreOffice 认不出这个扩展名，转换必然失败

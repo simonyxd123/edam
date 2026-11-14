@@ -96,6 +96,7 @@ grep -rhoiE "CREATE TABLE (IF NOT EXISTS )?[\`a-z_]+" \
 | last_login_at | DATETIME(3) | | NULL | 最后登录时间 |
 | last_login_ip | VARCHAR(45) | | NULL | 最后登录 IP（IPv6 兼容） |
 | failed_login_count | TINYINT UNSIGNED | NOT NULL | 0 | 连续失败次数（5 次锁定） |
+| locked_until | DATETIME(3) | | NULL | 锁定到期时间（NULL = 管理员手动锁定，不自动解锁）。2026-11-14 第五轮新增 |
 | created_at | DATETIME(3) | NOT NULL | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updated_at | DATETIME(3) | NOT NULL, ON UPDATE | CURRENT_TIMESTAMP(3) | 更新时间 |
 | deleted_at | DATETIME(3) | NULL | NULL | 软删除时间 |

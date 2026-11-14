@@ -507,18 +507,71 @@ public class PlaybackController {
 
     /**
      * 上报播放日志
+     *
+     * <p><b>2026-11-14 代码审计第五轮：上报必须绑定到一次真实的播放</b>
+     *
+     * <p>此前这个端点只检查"session_id 非空"，其余（session_id / event /
+     * progress_sec）**全部由客户端提供，服务端零校验** ⇒
+     * 任何登录用户都能往 {@code play_log} 里写任意内容：
+     * 编一个别人的 session、声称自己"看完了某个机密视频"、
+     * 或者给自己造一堆"正在播放"的记录。
+     *
+     * <p>而 {@code play_log} 是**溯源链的最后一环**
+     * （方案书 §7.1，保留 365 天，比操作日志还长）——
+     * 一张能被随手伪造的表，作为追责证据是站不住的。
+     *
+     * <p>现在要求带**播放 token**（就是 {@code POST /playback/{id}/token}
+     * 签发的那张），并校验四件事：
+     * <ol>
+     *   <li>token 有效且**绑定到本视频**；</li>
+     *   <li>token 的 subject 就是当前用户（不能用别人的 token 冒名上报）；</li>
+     *   <li>请求里的 session_id 与 token 里的 session_id **一致**
+     *       （session 由服务端签发，不是客户端编的）；</li>
+     *   <li>该用户<b>此刻</b>仍然看得到这个视频
+     *       （拿 token 之后授权被撤销的，也要挡住）。</li>
+     * </ol>
      */
     @PostMapping("/{video_id}/log")
     @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
         detail = "event=#request.event, progress_sec=#request.progressSec")
     public ResponseEntity<Void> reportLog(
         @PathVariable("video_id") Long videoId,
+        @RequestParam("token") String token,
         @RequestBody PlaybackLogRequest request,
         @CurrentUserId Long userId,
         HttpServletRequest httpRequest
     ) {
-        // 验证 session
-        if (request.getSessionId() == null || request.getSessionId().isEmpty()) {
+        // 1. token 必须有效、且是**本视频**的播放 token
+        Claims claims;
+        try {
+            claims = jwtTokenProvider.parseAndValidate(token);
+        } catch (Exception e) {
+            log.warn("play_log_token_invalid, video_id={}, user_id={}, error={}",
+                videoId, userId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (!jwtTokenProvider.isPlaybackTokenFor(claims, videoId)) {
+            log.warn("play_log_token_not_for_this_video, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        // 2. token 必须是**当前用户**的（不能拿同事的 token 冒名上报）
+        String subject = subjectOf(claims);
+        if (userId == null || subject == null || !String.valueOf(userId).equals(subject)) {
+            log.warn("play_log_token_user_mismatch, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        // 3. session_id 必须是服务端签发的那一个
+        Object tokenSession = claims.get("session_id");
+        if (tokenSession == null
+            || request.getSessionId() == null
+            || !String.valueOf(tokenSession).equals(request.getSessionId())) {
+            log.warn("play_log_session_mismatch, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        // 4. 可见性复核 —— 授权可能在拿到 token 之后被撤销
+        VideoResource video = videoService.getById(videoId);
+        if (!videoPermissionService.canView(video, userId)) {
+            log.warn("play_log_denied, video_id={}, user_id={}", videoId, userId);
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 

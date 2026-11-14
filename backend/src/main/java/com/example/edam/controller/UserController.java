@@ -151,7 +151,20 @@ public class UserController {
         if (request.getRealName() != null) user.setRealName(request.getRealName());
         if (request.getEmail() != null) user.setEmail(request.getEmail());
         if (request.getDeptId() != null) user.setDeptId(request.getDeptId());
-        if (request.getStatus() != null) user.setStatus(parseStatus(request.getStatus()));
+        if (request.getStatus() != null) {
+            Integer status = parseStatus(request.getStatus());
+            user.setStatus(status);
+            // locked_until 与 status 必须配套维护（2026-11-14 审计第五轮）：
+            //   - 管理员手动锁定 ⇒ locked_until 置空 ⇒ **不自动解锁**（要人工恢复）；
+            //   - 管理员把账号改回 active ⇒ 清掉 locked_until，
+            //     否则下次再被自动锁定时会残留一个旧的到期时间。
+            if (status == 3) {
+                user.setLockedUntil(null);
+            } else if (status == 1) {
+                user.setLockedUntil(null);
+                user.setFailedLoginCount(0);
+            }
+        }
         userRepository.updateById(user);
 
         return SysUserView.from(user);

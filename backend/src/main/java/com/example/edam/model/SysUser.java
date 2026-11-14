@@ -34,6 +34,20 @@ public class SysUser {
     private String lastLoginIp;
     private Integer failedLoginCount;
 
+    /**
+     * 账号锁定到期时间（2026-11-14 代码审计第五轮）。
+     *
+     * <p>此前"锁定"只有 {@code status=3} 一个状态位，**没有到期时间**，
+     * 于是"连续 5 次密码错误 → 锁定 30 分钟"实际上锁到管理员手工改库为止。
+     *
+     * <p>语义：
+     * <ul>
+     *   <li>非空 ⇒ 到期自动解锁（连续失败触发的自动锁定）</li>
+     *   <li>为 null 且 status=3 ⇒ 管理员手动锁定，**不自动解锁**</li>
+     * </ul>
+     */
+    private OffsetDateTime lockedUntil;
+
     /** 密码最近修改时间（v3.3 W-1 G-5 密码轮转策略） */
     private OffsetDateTime passwordChangedAt;
 

@@ -360,7 +360,16 @@ function reportPlaybackEvent(event: string) {
   const el = videoEl.value;
   const progress = el ? Math.floor(el.currentTime || 0) : 0;
   // 不 await：上报不该挡住 UI；silent：失败也不弹提示（旁路调用不该打扰用户）
-  api.post(`/playback/${videoId.value}/log`, {
+  //
+  // ⚠️ 必须带上**播放 token**（2026-11-14 代码审计第五轮）：
+  // 后端现在要求上报绑定到一次真实的播放 —— token 证明
+  // 「这是服务端签给这个用户、这个视频的一次播放会话」，
+  // 并且请求里的 session_id 必须与 token 里的 session 一致。
+  // 此前 session_id / event / progress_sec 全是客户端说了算，
+  // play_log（溯源链最后一环、留 365 天）等于一张可以随手伪造的表。
+  const tk = token.value;
+  if (!tk) return;
+  api.post(`/playback/${videoId.value}/log?token=${encodeURIComponent(tk)}`, {
     session_id: sessionId,
     event,
     progress_sec: progress,

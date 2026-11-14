@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -146,6 +148,84 @@ class WatermarkExtractControllerTest {
     void unrecognizedWatermarkTextYieldsNoMatch() {
         when(extractClient.extract(any(byte[].class), anyString()))
             .thenReturn(new WatermarkExtractClient.ExtractResult(true, "garbage"));
+
+        Map<String, Object> resp = controller.extract(file("pdf"), "pdf", 1L).getBody();
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> matched =
+            (java.util.List<Map<String, Object>>) resp.get("matched_users");
+        assertTrue(matched.isEmpty());
+    }
+
+    // ==================================================================
+    // 2026-11-14 代码审计第五轮
+    // ==================================================================
+
+    @Test
+    @DisplayName("超大文件 → 413（在读进堆之前就拒掉，否则普通员工能把后端 OOM 掉）")
+    void oversizedFileRejectedBeforeReadingIntoHeap() {
+        // 伪造一个"看起来很大"的文件：内容只有几字节，但 getSize() 报 100MB
+        MockMultipartFile huge = new MockMultipartFile(
+            "file", "big.pdf", "application/pdf", "x".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public long getSize() {
+                return 100L * 1024 * 1024;
+            }
+        };
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+            () -> controller.extract(huge, "pdf", 1L));
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, ex.getStatusCode());
+        // 关键：**根本没调 Worker**（没进内存、没占 Worker）
+        verify(extractClient, never()).extract(any(byte[].class), anyString());
+    }
+
+    @Test
+    @DisplayName("不支持的类型 → 400（Office 的隐写提取算法未实现，别去打扰 Worker）")
+    void unsupportedTypeRejected() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> controller.extract(file("docx"), "docx", 1L));
+        assertTrue(ex.getMessage().contains("docx"));
+        verify(extractClient, never()).extract(any(byte[].class), anyString());
+    }
+
+    @Test
+    @DisplayName("指纹里的上传者与文档的上传者不一致 → 不给出匹配用户（防伪造归属）")
+    void fingerprintUploaderMismatchYieldsNoMatch() {
+        // 指纹声称是 99 号用户，但文档 7 的上传者是 10 号
+        // —— 说明这串指纹是**被人为写进文件**的，不能据此指认 10 号用户
+        when(extractClient.extract(any(byte[].class), anyString()))
+            .thenReturn(new WatermarkExtractClient.ExtractResult(true, "99|7|2026-11-14T10:00:00Z"));
+
+        DocResource doc = new DocResource();
+        doc.setId(7L);
+        doc.setTitle("年度薪酬方案.pdf");
+        doc.setUploaderId(10L);
+        when(docResourceRepository.selectById(7L)).thenReturn(doc);
+
+        SysUser uploader = new SysUser();
+        uploader.setId(10L);
+        uploader.setEmployeeNo("E000010");
+        when(sysUserRepository.selectById(10L)).thenReturn(uploader);
+
+        Map<String, Object> resp = controller.extract(file("pdf"), "pdf", 1L).getBody();
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> matched =
+            (java.util.List<Map<String, Object>>) resp.get("matched_users");
+        assertTrue(matched.isEmpty(), "指纹与库内记录不符时不得指认任何人");
+    }
+
+    @Test
+    @DisplayName("指纹里的 uploader_id 不是数字 → 格式不可信 → 不给出匹配用户")
+    void malformedUploaderIdYieldsNoMatch() {
+        when(extractClient.extract(any(byte[].class), anyString()))
+            .thenReturn(new WatermarkExtractClient.ExtractResult(true, "abc|7|ts"));
+
+        DocResource doc = new DocResource();
+        doc.setId(7L);
+        doc.setUploaderId(10L);
+        when(docResourceRepository.selectById(7L)).thenReturn(doc);
 
         Map<String, Object> resp = controller.extract(file("pdf"), "pdf", 1L).getBody();
 
