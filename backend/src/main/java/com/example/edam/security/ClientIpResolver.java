@@ -58,8 +58,20 @@ import java.util.List;
  *   security:
  *     trusted-proxies: "127.0.0.1/32,::1/128"
  * </pre>
- * K8s（ingress → nginx 网关 → 后端）必须配网关 / ingress 的 Pod 网段，
- * 否则审计里记的是网关 Pod 的 IP。
+ *
+ * <h3>受信名单必须"精确"，否则内网用户会被记错</h3>
+ *
+ * <p>名单里的每一项都会被当成"我们自己的一跳代理"而<b>跳过</b>。
+ * 所以名单一旦画得太宽（比如图省事写 {@code 10.0.0.0/8,172.16.0.0/12}），
+ * <b>内网用户的地址也会被跳过</b> ⇒ 外网用户记对了、内网用户全记成网关 IP。
+ * 这种"一半对一半错"比全错更难查，所以名单要么精确，要么自动探测。
+ *
+ * <p>K8s 里 Pod 网段是<b>可以自己读出来的</b>（容器网卡上带着自己的地址和
+ * 前缀长度）⇒ 默认自动探测（{@code edam.security.auto-trust-pod-network=true}），
+ * 无需运维填任何东西，内网用户与外网用户就都能记准。
+ *
+ * <p>名单之外还有别的代理时（CDN / 云 LB）在前面补上，例如
+ * {@code "13.32.0.0/15,52.222.0.0/16"}。
  */
 @Component
 public class ClientIpResolver {
@@ -69,19 +81,56 @@ public class ClientIpResolver {
     /** 拿不到任何地址时的占位值（与库里其它"未知"写法保持一致） */
     public static final String UNKNOWN = "unknown";
 
-    /** 受信代理：IP 或 CIDR */
+    /**
+     * 自动探测 Pod 网段时，IPv4 网段最宽放宽到 /16。
+     *
+     * <p>为什么要放宽：不同 CNI 给容器网卡的前缀长度不一样 ——
+     * flannel / Calico / kind 给的是集群 Pod CIDR 的 /16（本来就够宽），
+     * 而 AWS VPC CNI 给的是**每个节点**的 /28 ⇒ 只按 /28 算的话，
+     * 别的节点上的 ingress Pod 就落在网段外 ⇒ 那一跳不会被跳过 ⇒
+     * 审计里记成 ingress Pod 的地址。
+     *
+     * <p>放宽到 /16 之后覆盖整个集群 Pod 网段（绝大多数集群的 Pod CIDR 都在
+     * 一个 /16 里），代价是"同 /16 的内网客户端"会被当成代理 ——
+     * 但那种情况下本来就有歧义（见类注释）。
+     */
+    public static final int AUTO_POD_NETWORK_MAX_PREFIX = 16;
+
+    /** 受信代理（显式配置的）：IP 或 CIDR */
     private final List<CidrBlock> trustedProxies;
 
+    /** 受信代理（自动探测到的 Pod 网段） */
+    private final List<CidrBlock> autoPodProxies;
+
+    @org.springframework.beans.factory.annotation.Autowired
     public ClientIpResolver(
-            @Value("${edam.security.trusted-proxies:}") String trustedProxiesConfig) {
+            @Value("${edam.security.trusted-proxies:}") String trustedProxiesConfig,
+            @Value("${edam.security.auto-trust-pod-network:true}") boolean autoTrustPodNetwork) {
+        this(trustedProxiesConfig, autoTrustPodNetwork ? detectPodNetwork() : List.of());
+    }
+
+    /**
+     * 测试用：直接指定"自动探测到的 Pod 网段"，不依赖运行环境。
+     */
+    ClientIpResolver(String trustedProxiesConfig, List<CidrBlock> autoPodProxies) {
         this.trustedProxies = parseCidrs(trustedProxiesConfig);
-        if (this.trustedProxies.isEmpty()) {
-            log.warn("edam.security.trusted-proxies 未配置 —— 客户端 IP 一律取自 socket，"
-                + "反向代理场景下所有请求会被记为代理 IP（限流也按代理聚合）。"
-                + "开发环境请配 127.0.0.1/32,::1/128，K8s 请配 ingress/网关的 Pod 网段。");
+        this.autoPodProxies = autoPodProxies == null ? List.of() : autoPodProxies;
+
+        if (this.trustedProxies.isEmpty() && this.autoPodProxies.isEmpty()) {
+            log.warn("edam.security.trusted-proxies 未配置，且未探测到 Pod 网段 —— "
+                + "客户端 IP 一律取自 socket，反向代理场景下所有请求会被记成代理 IP"
+                + "（限流也按代理聚合）。"
+                + "开发环境请配 127.0.0.1/32,::1/128；"
+                + "K8s 请确认 Pod 网段能被自动探测到，否则显式配 ingress/网关的网段。");
         } else {
-            log.info("trusted_proxies_configured, count={}", this.trustedProxies.size());
+            log.info("trusted_proxies_configured, configured={}, auto_pod_network={}",
+                this.trustedProxies.size(), describe(this.autoPodProxies));
         }
+    }
+
+    /** 测试用：不做自动探测 */
+    public ClientIpResolver(String trustedProxiesConfig) {
+        this(trustedProxiesConfig, List.of());
     }
 
     /**
@@ -112,16 +161,24 @@ public class ClientIpResolver {
         }
         // 对端不是受信代理 ⇒ 转发头一律不采信（它们是客户端可控的）
         if (!isTrustedProxy(peer)) {
+            log.debug("client_ip_resolved, peer={}, result={}, reason=对端不是受信代理",
+                peer, peer);
             return peer;
         }
         String viaXff = pickFromForwardedFor(xForwardedFor);
         if (viaXff != null) {
+            log.debug("client_ip_resolved, peer={}, xff={}, result={}, reason=XFF",
+                peer, xForwardedFor, viaXff);
             return viaXff;
         }
         String viaRealIp = IpAddresses.normalize(xRealIp);
         if (viaRealIp != null && !isTrustedProxy(viaRealIp)) {
+            log.debug("client_ip_resolved, peer={}, x_real_ip={}, result={}, reason=X-Real-IP",
+                peer, viaRealIp, viaRealIp);
             return viaRealIp;
         }
+        log.debug("client_ip_resolved, peer={}, xff={}, x_real_ip={}, result={}, reason=回退到对端地址",
+            peer, xForwardedFor, xRealIp, peer);
         return peer;
     }
 
@@ -156,18 +213,105 @@ public class ClientIpResolver {
     }
 
     /**
-     * 地址是否属于受信代理（IP 或 CIDR）。
+     * 地址是否属于受信代理（显式配置的名单 + 自动探测到的 Pod 网段）。
      */
     public boolean isTrustedProxy(String addr) {
         if (addr == null || addr.isBlank()) {
             return false;
         }
-        for (CidrBlock block : trustedProxies) {
+        return matches(trustedProxies, addr) || matches(autoPodProxies, addr);
+    }
+
+    private static boolean matches(List<CidrBlock> blocks, String addr) {
+        for (CidrBlock block : blocks) {
             if (block.contains(addr)) {
                 return true;
             }
         }
         return false;
+    }
+
+    // ==================================================================
+    // Pod 网段自动探测
+    // ==================================================================
+
+    /**
+     * 探测自己所在容器的网络 —— 也就是 K8s 的 Pod 网段。
+     *
+     * <p><b>为什么要探测，而不是让运维填</b>：受信名单必须是**精确**的。
+     * 如果图省事填"整个内网"（10.0.0.0/8、172.16.0.0/12），那么
+     * <b>内网用户的地址也会被当成"代理跳"跳过</b> ⇒ 审计里内网用户全部记成
+     * 网关 IP，而外网用户是对的 —— 这种"一半对一半错"比全错更难查。
+     *
+     * <p>Pod 网段是可以自己读出来的：容器网卡上带着自己的地址和前缀长度
+     * （{@code InterfaceAddress.getNetworkPrefixLength()}），
+     * 由它推出的网段就是 CNI 分配的 Pod CIDR。
+     *
+     * <p>只在 K8s 里做（靠 {@code KUBERNETES_SERVICE_HOST} 判断）——
+     * 裸机 / docker-compose 环境下容器网卡的前缀是**宿主机的局域网**，
+     * 那时候把局域网当"代理网段"会让内网客户端被跳过，正好搞反了。
+     */
+    static List<CidrBlock> detectPodNetwork() {
+        if (System.getenv("KUBERNETES_SERVICE_HOST") == null) {
+            return List.of();
+        }
+        List<CidrBlock> blocks = new ArrayList<>();
+        try {
+            for (java.net.NetworkInterface nic
+                    : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                for (java.net.InterfaceAddress ia : nic.getInterfaceAddresses()) {
+                    CidrBlock block = podNetworkOf(ia.getAddress(), ia.getNetworkPrefixLength());
+                    if (block != null) {
+                        blocks.add(block);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("pod_network_detect_failed, error={}", e.getMessage());
+            return List.of();
+        }
+        if (blocks.isEmpty()) {
+            log.warn("pod_network_detect_empty —— 未能在容器网卡上找到 Pod 地址，"
+                + "请显式配置 edam.security.trusted-proxies（ingress / 网关的网段）。");
+        }
+        return blocks;
+    }
+
+    /**
+     * 由容器自己的地址 + 前缀长度推出 Pod 网段。
+     *
+     * @return 推不出来（比如地址非法）时返回 {@code null}
+     */
+    static CidrBlock podNetworkOf(java.net.InetAddress address, int prefixLength) {
+        if (address == null || address.isLoopbackAddress() || address.isLinkLocalAddress()) {
+            return null;
+        }
+        byte[] bytes = address.getAddress();
+        int bits = bytes.length * 8;
+        int prefix = prefixLength;
+        if (prefix <= 0 || prefix > bits) {
+            // 前缀拿不到（有些环境返回 0 / -1）⇒ 按地址族取个保守值
+            prefix = bits;
+        }
+        if (bytes.length == 4) {
+            // IPv4：放宽到最多 /16（见 AUTO_POD_NETWORK_MAX_PREFIX 的注释）
+            prefix = Math.min(prefix, AUTO_POD_NETWORK_MAX_PREFIX);
+        }
+        return CidrBlock.fromBytes(bytes, prefix);
+    }
+
+    private static String describe(List<CidrBlock> blocks) {
+        if (blocks.isEmpty()) {
+            return "none";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (CidrBlock b : blocks) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(b);
+        }
+        return sb.toString();
     }
 
     private static List<CidrBlock> parseCidrs(String config) {
@@ -262,6 +406,36 @@ public class ClientIpResolver {
                 int mask = keep == 0 ? 0 : ((0xFF << (8 - keep)) & 0xFF);
                 bytes[i] = (byte) (bytes[i] & mask);
             }
+        }
+
+        /**
+         * 由字节数组直接建网段（自动探测 Pod 网段时用 —— 地址来自网卡，不是字符串）。
+         */
+        static CidrBlock fromBytes(byte[] bytes, int prefixBits) {
+            byte[] network = bytes.clone();
+            applyMask(network, prefixBits);
+            return new CidrBlock(network, prefixBits);
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder sb = new StringBuilder();
+            if (network.length == 4) {
+                for (int i = 0; i < 4; i++) {
+                    if (i > 0) {
+                        sb.append('.');
+                    }
+                    sb.append(network[i] & 0xFF);
+                }
+            } else {
+                for (int i = 0; i < 16; i += 2) {
+                    if (i > 0) {
+                        sb.append(':');
+                    }
+                    sb.append(String.format("%x", ((network[i] & 0xFF) << 8) | (network[i + 1] & 0xFF)));
+                }
+            }
+            return sb.append('/').append(prefixBits).toString();
         }
     }
 }

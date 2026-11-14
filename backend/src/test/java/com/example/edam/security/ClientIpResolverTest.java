@@ -5,8 +5,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -201,5 +204,95 @@ class ClientIpResolverTest {
         ClientIpResolver resolver = new ClientIpResolver("127.0.0.1/32,::1/128");
         assertEquals("192.168.1.20", resolver.resolve(req("127.0.0.1", "192.168.1.20", null)));
         assertEquals("::1", resolver.resolve(req("::1", null, null)));
+    }
+
+    // ==================================================================
+    // 内网用户 + 外网用户，都要记准
+    //
+    // 这组用例锁的是本轮最核心的一条约束：受信名单里的每一项都会被当成
+    // "我们自己的一跳代理"跳过 ⇒ 名单画得越宽，被跳过的用户就越多。
+    // ==================================================================
+
+    /** 模拟 K8s：Pod 网段 10.42.0.0/16，公司内网 10.20.0.0/16 */
+    private ClientIpResolver k8sResolver(String configured) {
+        return new ClientIpResolver(configured,
+            List.of(ClientIpResolver.CidrBlock.parse("10.42.0.0/16")));
+    }
+
+    @Test
+    @DisplayName("外网用户：公网地址原样记下来")
+    void externalUserRecordedAsIs() {
+        ClientIpResolver resolver = k8sResolver("");
+        // 对端 = nginx 网关 Pod；XFF 末尾 = ingress Pod
+        assertEquals("203.0.113.7",
+            resolver.resolve(req("10.42.1.5", "203.0.113.7, 10.42.1.4", null)));
+    }
+
+    @Test
+    @DisplayName("内网用户：内网地址也原样记下来（不会被当成代理跳跳过）")
+    void internalUserRecordedAsIs() {
+        ClientIpResolver resolver = k8sResolver("");
+        // 10.20.1.50 是公司内网的客户端，不是我们自己的代理
+        assertEquals("10.20.1.50",
+            resolver.resolve(req("10.42.1.5", "10.20.1.50, 10.42.1.4", null)));
+    }
+
+    @Test
+    @DisplayName("受信名单写成整个内网时，内网用户会被记成网关 IP（这正是要避免的）")
+    void broadTrustedRangeBreaksInternalUsers() {
+        // 图省事填 "10.0.0.0/8" ⇒ 内网用户的 10.20.1.50 被当成代理跳跳过
+        ClientIpResolver resolver = k8sResolver("10.0.0.0/8");
+        assertEquals("10.42.1.5",
+            resolver.resolve(req("10.42.1.5", "10.20.1.50, 10.42.1.4", null)));
+    }
+
+    @Test
+    @DisplayName("自动探测到的 Pod 网段本身就是受信代理（对端在网段里才采信转发头）")
+    void podNetworkIsTrusted() {
+        ClientIpResolver resolver = k8sResolver("");
+        assertTrue(resolver.isTrustedProxy("10.42.1.5"));
+        assertFalse(resolver.isTrustedProxy("10.20.1.50"));
+        assertFalse(resolver.isTrustedProxy("203.0.113.7"));
+    }
+
+    @Test
+    @DisplayName("客户端伪造的 XFF 前缀不影响内网用户的记录")
+    void forgedPrefixDoesNotBreakInternalUser() {
+        ClientIpResolver resolver = k8sResolver("");
+        assertEquals("10.20.1.50",
+            resolver.resolve(req("10.42.1.5", "1.2.3.4, 10.20.1.50, 10.42.1.4", null)));
+    }
+
+    // ==================================================================
+    // Pod 网段自动探测
+    // ==================================================================
+
+    @Test
+    @DisplayName("按容器网卡的前缀推出 Pod 网段")
+    void derivesPodNetworkFromPrefix() throws Exception {
+        var block = ClientIpResolver.podNetworkOf(
+            java.net.InetAddress.getByName("10.42.1.5"), 16);
+        assertTrue(block.contains("10.42.1.5"));
+        assertTrue(block.contains("10.42.99.7"));
+        assertFalse(block.contains("10.43.1.5"));
+    }
+
+    @Test
+    @DisplayName("前缀比 /16 更细时放宽到 /16（覆盖跨节点的 Pod）")
+    void widensNarrowPrefixTo16() throws Exception {
+        // AWS VPC CNI 给的是每个节点的 /28 ⇒ 只按 /28 算会漏掉别的节点上的 ingress
+        var block = ClientIpResolver.podNetworkOf(
+            java.net.InetAddress.getByName("172.20.1.5"), 28);
+        assertTrue(block.contains("172.20.9.9"));
+        assertFalse(block.contains("172.21.0.1"));
+    }
+
+    @Test
+    @DisplayName("回环 / 链路本地地址不参与 Pod 网段探测")
+    void skipsLoopbackAndLinkLocal() throws Exception {
+        assertNull(ClientIpResolver.podNetworkOf(
+            java.net.InetAddress.getByName("127.0.0.1"), 8));
+        assertNull(ClientIpResolver.podNetworkOf(
+            java.net.InetAddress.getByName("169.254.1.1"), 16));
     }
 }
