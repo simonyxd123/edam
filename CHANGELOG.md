@@ -63,6 +63,85 @@
 把后端可操作的 detail（"不能授出自己没有的权限：下载、打印"）丢掉了；
 ShareDialog 同一条消息弹两遍。
 
+#### 5 个 DB 校验脚本只挂在死掉的 GitLab 流水线上
+
+**端口一致性校验、模型↔表列对账、迁移合法性校验、FK 类型校验、MySQL 端口校验
+在真正会跑的 CI 里全部缺席**（第三轮代码审计 §5）。
+
+这 5 个脚本此前只在 `.gitlab-ci.yml` 里，而本仓库的 remote 是 github.com
+⇒ 那条流水线**根本不会跑**。CLAUDE.md 写着"仓库里有端口一致性校验"，
+但那个校验实际上没在跑。
+
+⇒ 全部接进 `.github/workflows/ci.yml` 的 `db-migration` job，**放在迁移之前**
+（静态校验不需要真库，能提前抓到 "Unknown column" 与 "Error 3780 are incompatible"）。
+
+顺带修：
+
+- **Docker 后端镜像的 HEALTHCHECK 探错端口**（§2，高）——
+  探的是 8080，而后端实际监听 **8092** ⇒ 直接 `docker run` 后端镜像时
+  healthcheck 永远失败 ⇒ 容器被标 unhealthy ⇒
+  `depends_on: service_healthy` 的编排永远等下去。
+  K8s 生产没事（探针走 helm 的 deployment.yaml，不看 Dockerfile）。
+- **端口校验脚本看不见 Dockerfile** ⇒ 这正是上面那个漂移能活到现在的原因
+  ⇒ 把 Dockerfile 的 HEALTHCHECK 与 EXPOSE 加进来源列表（9 处 → 11 处）。
+- **表数量阈值 20 → 35**（README / CLAUDE.md / database_schema.md 都承诺 35 张表）
+- **这 5 个脚本在 Windows 上跑不起来** —— 打印 ✅/❌ 时抛 `UnicodeEncodeError`，
+  **而且是在校验通过之后**（最后那行 print 崩掉）⇒ "校验通过"被报成"脚本报错"
+
+#### 前端把凭据打进浏览器控制台
+
+**每一个出错的前端请求，都会把登录 JWT 打进控制台**（第三轮代码审计 §6/§7 的延伸）。
+
+根因：axios 的错误对象里有 `config.headers`，而前端正是在那里塞登录 JWT
+（`api/client.ts:55`）⇒ `console.error('...', e)` 把整个错误对象打出去，
+**JWT 就在里面**。实测确认：
+
+```
+JSON.stringify(error) 里出现 SECRET 了吗： true
+error.config.headers.Authorization = Bearer SUPER_SECRET_LOGIN_JWT
+```
+
+前端有 **11 处**直接打错误对象。
+
+另有两处报告已记的：
+
+- `VideoDetail.vue` 打 m3u8 URL —— 里面带着 `?token=<播放 JWT>`
+  （10 分钟有效，可换取该视频的 m3u8 / 分片 / **AES 密钥**）
+- hls.js 的 key-loader 把**完整的密钥 URL** 嵌进了错误消息
+  （`new Error("Invalid key URI: \"" + uri + "\"")`）
+  ⇒ `data.error.message` 里带着可用的播放凭据，
+  而它会流进控制台**和**用户看到的错误文案 ⇒ 两处都泄
+
+修复：
+
+- 新增 `web/src/utils/safeLog.ts`：`safeError()` 只挑排障需要的字段
+  （状态码 / 方法 / URL / detail），**整个 headers、request、response 都不进摘要**
+- 11 处全部改用 `safeError(e)`
+- m3u8 URL 用已有的 `redactTokenFromUrl()` 打码
+- HLS 事件日志的签名从 `log(e, d?)` 改成 `log(e)` ——
+  **在类型层面就不给传对象的机会**（事件对象里带着分片/密钥 URL）
+- 新增 `redactTokenFromText()`：对**任意文本**打码
+  （hls.js 的消息里 token 不在 `?`/`&` 之后，原来的正则漏掉了）
+
+新增 `safeLog.spec.ts`（12 条）+ 扩充 `hlsError.spec.ts`（+5 条）。
+
+#### CI 里三个 job 引用不存在的文件或跑在错的目录
+
+第三轮代码审计 §4。逐条核对过 action 定义后修的：
+
+| job | 原问题 | 修法 |
+| --- | --- | --- |
+| SonarQube | 在**没有 pom.xml** 的仓库根目录跑 `mvn` ⇒ 必然失败 | 加 `working-directory: backend` + 新建 `backend/sonar-project.properties` |
+| Snyk ×3 | docker action 在根目录跑 `snyk` —— 根目录没有 pom/package/requirements ⇒ **扫了空气**（这三个 action 都**没有** `working-directory` 输入，已核对 action.yml） | 用 `args` 的 `--file=` 指定清单文件 |
+| ZAP | 扫 `localhost:8092` 但**没起任何服务**；且 `.zap/rules.tsv` **不存在** | 起 `dev/mock/server.py`（4010 端口，已验证 `/health/live` 返回 200）+ 去掉不存在的 rules 文件 |
+| Trivy | 扫 `openjdk:17-jdk-slim` —— **这个镜像仓库里根本不用** | 矩阵扫实际会发布的三个基底镜像（temurin / python-slim / nginx-alpine） |
+| SBOM | `cyclonedx/cyclonedx-maven-plugin@v2.7.9` —— 该仓库是 **Maven 插件，没有 action.yml**（已核对），tag 也不对 | 改成在 `backend/` 里跑 `mvn cyclonedx:makeBom`；Python 侧改用 `cyclonedx-py requirements`（worker 无 setup.py，`-e .` 跑不起来） |
+| 覆盖率 | `grep -oP`（PCRE）在部分 runner 上不可用；阈值 95 与**承诺的 100%** 不一致 | 改用 Python 解析；阈值提到 100 |
+
+另修第三轮 §9：**secret 没配时 job 直接失败**（不是跳过）⇒ workflow 长期红着
+⇒ 没人去修 ⇒ 安全扫描等于没有。⇒ 依赖 secret 的 job 加
+`if: secrets.X != ''`（配了就跑，没配就**跳过**）。
+
 #### MyBatis-Plus 分页插件从未注册 —— 10 个列表端点返回全表
 
 分页插件**从未被注册过**。MyBatis-Plus 的 `selectPage(IPage, Wrapper)`

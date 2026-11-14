@@ -3,7 +3,8 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
-import { describePlaybackError, formatPlaybackError } from '@/utils/hlsError';
+import { describePlaybackError, formatPlaybackError, redactTokenFromUrl } from '@/utils/hlsError';
+import { safeError } from '@/utils/safeLog';
 import Hls from 'hls.js';
 
 const route = useRoute();
@@ -109,7 +110,18 @@ async function loadVideo() {
     m3u8Url.value = fullUrl;
     token.value = tk.token;
     playbackSessionId.value = tk.session_id || '';
-    console.log('[VideoDetail] m3u8 URL:', fullUrl);
+    // ⚠️ **不能**打原始 fullUrl —— 它带着 `?token=<播放 JWT>`。
+    //
+    // 那个 token 由 POST /playback/{id}/token 签发，带 scope=playback +
+    // 绑定 video_id，**10 分钟有效**，可直接换取该视频的
+    // m3u8 / 分片 / **AES 解密密钥**。
+    //
+    // 打到浏览器控制台 = 把凭据交给任何能看控制台的人
+    // （包括录屏、截图、远程协助、以及浏览器扩展）。
+    //
+    // 项目硬性规则：**日志中不得打印 token 本身（连哈希都不打）**。
+    // 后端那一侧做得很好（只打 token_len），前端这里原本是漏网的。
+    console.log('[VideoDetail] m3u8 URL:', redactTokenFromUrl(fullUrl));
 
     // 3. HLS.js 播放
     console.log('[VideoDetail] checking videoEl.value=', !!videoEl.value, 'hls supported=', Hls.isSupported());
@@ -127,7 +139,7 @@ async function loadVideo() {
     }
     loading.value = false;
   } catch (e: any) {
-    console.error('[VideoDetail] load error:', e);
+    console.error('[VideoDetail] load error:', safeError(e));
     // 403 = 没有该视频的查看权限（密级 L3/L4 且未被授权）。
     // axios 的通用提示是"没有权限执行该操作"，看不出是哪个视频、什么原因，
     // 这里换成能直接指导下一步的说法。
@@ -183,7 +195,16 @@ function createPlayer(src: string) {
   hls.value = instance;
 
   // 监听全部生命周期事件，定位卡哪一步
-  const log = (e: string, d?: any) => console.log('[VideoDetail] HLS', e, d || '');
+  //
+  // ⚠️ **只打事件名，不打事件对象**（2026-11-13 修，第三轮审计 §6）。
+  //
+  // hls.js 的事件对象里带着**分片 URL / 密钥 URL**，
+  // 而这些 URL 后面跟着 `?token=<播放 JWT>` —— 打了就等于泄凭据。
+  //
+  // 原来的签名是 `log(e: string, d?: any)`，允许把整个事件对象打出来。
+  // 现在**在类型层面就不给传对象的机会** ——
+  // 参数只留事件名，将来谁想打对象也传不进来。
+  const log = (e: string) => console.log('[VideoDetail] HLS', e);
   [
     'MANIFEST_LOADING', 'MANIFEST_LOADED', 'MANIFEST_PARSED',
     'LEVEL_LOADING', 'LEVEL_LOADED', 'LEVEL_SWITCHED',
@@ -237,7 +258,11 @@ function createPlayer(src: string) {
     const errInfo = describePlaybackError(data);
     console.error('[VideoDetail] HLS error details:', JSON.stringify({
       type: data.type, details: data.details,
-      fatal: data.fatal, error: data.error?.message,
+      fatal: data.fatal,
+      // ⚠️ 必须打码 —— hls.js 的 key-loader 把完整的密钥 URL
+      // （带 ?token=<播放 JWT>）嵌在 message 里（"Invalid key URI: ..."）。
+      // errInfo.reason 已经是打码过的版本。
+      error: errInfo.reason,
       status: errInfo.status, stage: errInfo.stage,
       url: errInfo.url,
     }));
@@ -297,7 +322,7 @@ function createPlayer(src: string) {
       }
       console.warn('[VideoDetail] fell back to native <video src>');
     } catch (e) {
-      console.warn('[VideoDetail] native fallback failed:', e);
+      console.warn('[VideoDetail] native fallback failed:', safeError(e));
     }
   });
 

@@ -46,8 +46,22 @@ WORKDIR /app
 COPY --from=builder --chown=edam:edam /build/target/edam-backend.jar /app/edam-backend.jar
 
 # 健康检查
+#
+# 端口必须是 **8092**（全链路统一端口，见 backend/src/main/resources/application.yml
+# 的 `server.port: 8092`、CLAUDE.md「端口全链路统一 8092」）。
+#
+# 这里此前写的是 8080 ⇒ healthcheck **永远失败** ⇒ 容器被标 unhealthy
+# ⇒ `depends_on: condition: service_healthy` 的编排会永远等下去。
+#
+# 为什么 K8s 生产没事：K8s 用的是 helm/edam/templates/deployment.yaml 里的
+# livenessProbe/readinessProbe（走 backend.service.port，值是对的），
+# Dockerfile 的 HEALTHCHECK 在 K8s 下被忽略。
+# 但"直接 docker run 后端镜像"这条路会炸 —— 而 CI 的 docker-build job 正是干这个的。
+#
+# context-path 是 /api/v1（application.yml 的 server.servlet.context-path），
+# 所以健康检查路径带 /api/v1 前缀。
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \
-    CMD curl -fsS http://localhost:8080/api/v1/health/live || exit 1
+    CMD curl -fsS http://localhost:8092/api/v1/health/live || exit 1
 
 USER edam
 
@@ -62,7 +76,8 @@ ENV JAVA_OPTS="\
 -Duser.timezone=UTC \
 -Dfile.encoding=UTF-8"
 
-EXPOSE 8080
+# 对外端口 8092（与 server.port 一致，见上面 HEALTHCHECK 的说明）
+EXPOSE 8092
 
 # tini 正确处理信号
 ENTRYPOINT ["/usr/bin/tini", "--"]

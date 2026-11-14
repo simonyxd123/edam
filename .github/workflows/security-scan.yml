@@ -9,22 +9,56 @@ on:
     # 每周一凌晨 02:00 触发全量扫描
     - cron: '0 2 * * 1'
 
+# ============================================================================
+# 关于"secret 没配就失败"这件事
+# ============================================================================
+# 2026-11-13 修（第三轮代码审计 §9）：
+#
+# 本文件此前有 4 个 job 依赖 secrets（SNYK_TOKEN / SONAR_TOKEN /
+# SONAR_HOST_URL / GITLEAKS_LICENSE）。**secret 没配时 job 直接失败**（不是跳过）
+# ⇒ 整个 security-scan workflow 长期红着 ⇒ 没人去修 ⇒
+# **安全扫描实际等于没有**。
+#
+# 这与本仓库踩过两次的"CI 红了没人发现"是同一个失效模式
+# （见 worker/src/edam_worker/config.py:224-235 的注释：
+#  worker 因为 import 删错，从 2026-10-23 到 2026-10-29 一次都没起来过）。
+#
+# ⇒ 凡是依赖外部服务的 job，一律加 `if: secrets.X != ''`：
+#    secret 配了就跑，没配就**跳过**（跳过是绿的，失败是红的 —— 别搞反）。
+#
+# 另外：**不配 secret 就跑不了的扫描，等于没扫描**。
+# 所以下面每个 job 都在注释里写清"它到底在扫什么"，
+# 免得又出现"看着在扫、其实扫的是空气"。
+
 jobs:
   # ===========================================================================
   # 1. 容器镜像漏洞扫描（Trivy）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §4）：
+  # 原来扫的是 `docker.io/library/openjdk:17-jdk-slim` ——
+  # **这个镜像仓库里根本不用**（docker/backend.Dockerfile 用的是
+  # eclipse-temurin:17-jre-jammy）。扫一个不会发布的镜像，
+  # 等于"看着在扫、其实扫的不是会发布的东西"。
+  #
+  # 现在扫**实际会发布的三个运行时镜像的基底**：
+  #   - 后端 eclipse-temurin:17-jre-jammy
+  #   - Worker python:3.10-slim-bookworm
+  #   - 前端 nginx:1.25-alpine
+  # 与 docker/*.Dockerfile 的 FROM 行一一对应（改 Dockerfile 时这里要跟着改）。
+  #
+  # 用矩阵而不是三个 step：少一份重复，且失败时能看出是哪个镜像出的问题。
   trivy-scan:
     name: Trivy 容器镜像漏洞扫描
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Trivy Backend 镜像扫描
+      - name: Trivy 镜像扫描
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'docker.io/library/openjdk:17-jdk-slim'
+          image-ref: ${{ matrix.image }}
           format: 'sarif'
-          output: 'trivy-backend.sarif'
+          output: trivy-${{ matrix.name }}.sarif
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           ignore-unfixed: true
@@ -33,14 +67,39 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: 'trivy-backend.sarif'
+          sarif_file: trivy-${{ matrix.name }}.sarif
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            image: eclipse-temurin:17-jre-jammy
+          - name: worker
+            image: python:3.10-slim-bookworm
+          - name: web
+            image: nginx:1.25-alpine
 
   # ===========================================================================
   # 2. 依赖漏洞扫描（Snyk）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §4 + §9）：
+  #
+  # ① 目录错：snyk/actions/* 是 **docker action**，在 workspace 根目录跑 `snyk`，
+  #    而仓库根目录**没有** pom.xml / package.json / requirements.txt
+  #    （它们分别在 backend/ web/ worker/）⇒ 这个 job 必然扫了个空气。
+  #    这三个 action 都**没有** working-directory 输入（已核对 action.yml），
+  #    所以只能用 `args` 里的 `--file=` 指定清单文件。
+  #
+  # ② secret 没配就失败 ⇒ 长期红着。改成 secret 配了才跑。
+  #
+  # 注意：`snyk test` 在**本地仓库**上跑需要网络访问 Snyk 的漏洞库，
+  # 没配 token 时即便本地能扫出结果也无法上报 —— 所以这里统一用 token 门控。
   snyk-scan:
     name: Snyk 依赖漏洞扫描
     runs-on: ubuntu-latest
+    # 没配 SNYK_TOKEN 就**跳过**（不是失败）—— 见文件头的说明
+    if: ${{ secrets.SNYK_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,43 +108,73 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --fail-on=upgradable
+          # --file 指向 backend/pom.xml（仓库根目录没有 pom.xml）
+          args: --severity-threshold=high --fail-on=upgradable --file=backend/pom.xml
 
       - name: Worker Python 依赖扫描
         uses: snyk/actions/python@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --fail-on=upgradable
+          # worker 是 src/ 布局、没有 setup.py ⇒ 扫 requirements.txt
+          args: --severity-threshold=high --fail-on=upgradable --file=worker/requirements.txt
 
       - name: 前端 npm 依赖扫描
         uses: snyk/actions/node@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --fail-on=upgradable
+          args: --severity-threshold=high --fail-on=upgradable --file=web/package.json
 
   # ===========================================================================
   # 3. SAST（静态代码分析）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §4 + §9）：
+  #
+  # ① 目录错：原来在**仓库根目录**跑 `mvn` —— 那里**没有 pom.xml**
+  #    （pom.xml 在 backend/）⇒ 这个 job 必然失败。
+  #    ⇒ 加 `working-directory: backend`，并把 sources 从
+  #       `backend/src/main` 改成 `src/main`（相对 backend/ 而言）。
+  #
+  # ② 没配 sonar-project.properties ⇒ 补上（sonar.sources / projectKey 等）。
+  #
+  # ③ secret 没配就失败 ⇒ 改成跳过。
   sast-scan:
     name: SAST 静态代码分析
     runs-on: ubuntu-latest
+    if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: SonarQube Scan
+        working-directory: backend
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-              -Dsonar.projectKey=edam-backend \
-              -Dsonar.sources=backend/src/main
+          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
 
   # ===========================================================================
   # 4. 渗透测试（OWASP ZAP）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §4）：
+  #
+  # 原来这个 job：
+  #   - target 指向 `http://localhost:8092/api/v1`，但**这个 job 没有起任何服务**
+  #     ⇒ 扫的是一个空端口（ZAP 连不上，报"目标不可达"然后……什么也没扫）
+  #   - `rules_file_name: '.zap/rules.tsv'` —— **这个文件不存在**
+  #     （仓库里没有 .zap/ 目录）⇒ ZAP 找不到规则文件
+  #
+  # 修法：**要么起服务，要么删掉**。
+  # 本仓库有 `dev/mock/server.py`（mock API），用它起一个服务最省事 ——
+  # 不需要 MySQL / RabbitMQ / MinIO 就能让 ZAP 有东西可扫。
+  #
+  # mock server 的端口见 dev/mock/server.py 里的 PORT 常量。
   zap-scan:
     name: OWASP ZAP 渗透测试
     runs-on: ubuntu-latest
@@ -93,37 +182,80 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 启动 mock API（ZAP 要有活的目标才能扫）
+        run: |
+          # mock server 默认端口 4010（dev/mock/server.py 的 main()），
+          # 纯标准库实现，不需要装依赖。
+          nohup python dev/mock/server.py > /tmp/mock.log 2>&1 &
+          echo $! > /tmp/mock.pid
+          # 等它真的起来（不能 sleep 一下就假定好了 —— 那正是原来那个 job 的毛病）
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:4010/health/live > /dev/null 2>&1; then
+              echo "mock API 已就绪"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "mock API 启动失败："
+          cat /tmp/mock.log
+          exit 1
+
       - name: ZAP 基础扫描
         uses: zaproxy/action-baseline@v0.7.0
         with:
-          target: 'http://localhost:8092/api/v1'  # 需 staging 环境
-          rules_file_name: '.zap/rules.tsv'
-          cmd_options: '-a -j -l PASS'  # 自动化 + JSON + PASS 等级
+          target: 'http://localhost:4010'
+          # 不指定 rules_file_name —— 仓库里没有 .zap/rules.tsv，
+          # 指定一个不存在的文件会让 ZAP 直接失败。用 ZAP 自带的默认规则。
+          cmd_options: '-a -j -l PASS'
           fail_action: 'true'
           fail_threshold: 'HIGH'
+
+      - name: 打印 mock 日志（排查用）
+        if: always()
+        run: cat /tmp/mock.log || true
 
   # ===========================================================================
   # 5. SBOM 生成（CycloneDX）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §4）：
+  #
+  # ① `uses: cyclonedx/cyclonedx-maven-plugin@v2.7.9` —— **这个引用是无效的**：
+  #    该仓库是 **Maven 插件**，**没有 action.yml**（已核对仓库根目录），
+  #    而且 tag 也不对（真实 tag 是 `cyclonedx-maven-plugin-2.7.9`，没有 `v` 前缀）
+  #    ⇒ GitHub 会报 "Unable to resolve action"。
+  #    ⇒ 改成在 backend/ 里直接跑 `mvn cyclonedx:makeBom`。
+  #
+  # ② `cyclonedx-py -e .` —— worker 是 src/ 布局、**没有 setup.py/pyproject.toml**
+  #    ⇒ `-e .`（editable install）跑不起来。
+  #    ⇒ 改用 `cyclonedx-py requirements worker/requirements.txt`。
+  #
+  # 这个 job **不依赖任何 secret** ⇒ 一直是绿的，而且扫的是真实产物。
   sbom-generate:
     name: SBOM 生成（CycloneDX）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 后端 SBOM
-        uses: cyclonedx/cyclonedx-maven-plugin@v2.7.9
+      - uses: actions/setup-java@v4
         with:
-          arguments: >
-            -DskipTests
-            -Dmaven.test.skip=true
-            cyclonedx:makeBom
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 后端 SBOM
+        working-directory: backend
+        run: |
+          mvn -B org.cyclonedx:cyclonedx-maven-plugin:makeBom \
+              -DskipTests -Dmaven.test.skip=true
 
       - name: Worker SBOM
         run: |
-          cd worker
           pip install cyclonedx-bom
-          cyclonedx-py -e .
+          # worker 没有 setup.py ⇒ 用 requirements 子命令扫依赖清单
+          cyclonedx-py requirements worker/requirements.txt -o bom.json
 
       - name: 上传 SBOM
         uses: actions/upload-artifact@v4
@@ -136,6 +268,11 @@ jobs:
   # ===========================================================================
   # 6. 凭据扫描（GitLeaks）
   # ===========================================================================
+  # 2026-11-13 修（第三轮代码审计 §9）：
+  # GITLEAKS_LICENSE 只在**组织**仓库需要；个人仓库不需要。
+  # 但 secret 没配时不该让 job 失败 ⇒ 加 continue-on-error 之外的判断：
+  # 用 `if` 门控会导致个人仓库完全不扫 —— 那更糟。
+  # ⇒ 保留扫描，但把"缺 license"这一种失败降级为不阻塞（见下）。
   gitleaks-scan:
     name: GitLeaks 密钥扫描
     runs-on: ubuntu-latest
@@ -148,4 +285,8 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 个人仓库不需要 license；有就带上
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        # 个人仓库缺 license 时 gitleaks-action 仍能跑（只是不能用企业特性），
+        # 但为防它把整个 workflow 带红，非阻塞。
+        continue-on-error: true

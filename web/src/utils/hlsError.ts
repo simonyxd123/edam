@@ -138,6 +138,32 @@ export function redactTokenFromUrl(url?: string): string | undefined {
 }
 
 /**
+ * 从**任意文本**里抹掉 token 参数。
+ *
+ * <p>为什么 URL 版本不够（2026-11-13 修，第三轮审计 §6）：
+ *
+ * <p>hls.js 的错误消息里**嵌着完整的密钥 URL**。看它的 key-loader：
+ * <pre>{@code
+ * return Promise.reject(createKeyLoadError(
+ *   frag, ErrorDetails.KEY_LOAD_ERROR,
+ *   new Error("Invalid key URI: \"" + uri + "\"")));
+ * }</pre>
+ *
+ * <p>那个 {@code uri} 就是后端改写过的密钥地址
+ * （{@code /api/v1/playback/{id}/key?token=<播放 JWT>}）⇒
+ * {@code data.error.message} 里**带着可用的播放凭据**。
+ *
+ * <p>而这个 message 会经 {@code data.error?.message} 流进
+ * ①控制台日志 ②用户看到的错误文案 ⇒ 两处都会泄。
+ *
+ * <p>所以除了 URL 本身，**任何文本**都要过一遍打码。
+ */
+export function redactTokenFromText(text?: string): string | undefined {
+  if (!text) return undefined;
+  return text.replace(/([?&]token=)[^"'\s&]*/gi, '$1***');
+}
+
+/**
  * 把 hls.js 的 ERROR 事件翻译成可排查的中文信息。
  *
  * <p>注意：{@code data.response} 缺失**不代表**没有失败 ——
@@ -158,7 +184,10 @@ export function describePlaybackError(data: HlsErrorData): PlaybackErrorInfo {
 
   // hls.js 内部状态失步的特例：密钥请求**成功了**，问题不在后端也不在网络。
   // 这条必须单独说，否则运维会被引去查 key 端点/对象存储（方向全错）。
-  const reason = data.error?.message;
+  //
+  // ⚠️ reason 要**打码** —— hls.js 的 key-loader 把完整的密钥 URL
+  // （带 ?token=<播放 JWT>）嵌在错误消息里（"Invalid key URI: ..."）。
+  const reason = redactTokenFromText(data.error?.message);
   if (reason && reason.includes(KEY_STATE_DESYNC)) {
     hint = KEY_STATE_DESYNC_HINT;
   }

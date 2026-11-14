@@ -8,7 +8,12 @@
  *    原样打出去等于泄露凭据。
  */
 import { describe, it, expect } from 'vitest';
-import { describePlaybackError, formatPlaybackError, redactTokenFromUrl } from './hlsError';
+import {
+  describePlaybackError,
+  formatPlaybackError,
+  redactTokenFromUrl,
+  redactTokenFromText,
+} from './hlsError';
 
 describe('redactTokenFromUrl', () => {
   it('把 token 参数打码', () => {
@@ -28,6 +33,51 @@ describe('redactTokenFromUrl', () => {
   it('url 为空时返回 undefined', () => {
     expect(redactTokenFromUrl(undefined)).toBeUndefined();
     expect(redactTokenFromUrl('')).toBeUndefined();
+  });
+});
+
+describe('redactTokenFromText', () => {
+  /**
+   * hls.js 的 key-loader 把**完整的密钥 URL**（带 ?token=<播放 JWT>）
+   * 嵌进了错误消息：
+   *
+   *   new Error("Invalid key URI: \"" + uri + "\"")
+   *
+   * 而 uri 就是后端改写过的密钥地址 ⇒
+   * data.error.message 里带着**可用的播放凭据**。
+   * 这个 message 会流进控制台日志和用户看到的错误文案 ⇒ 两处都会泄。
+   */
+  it('打码 hls.js 的 "Invalid key URI" 消息里嵌的 token', () => {
+    const msg = 'Invalid key URI: "/api/v1/playback/7/key?token=abc.def.ghi"';
+    expect(redactTokenFromText(msg)).toBe('Invalid key URI: "/api/v1/playback/7/key?token=***"');
+    expect(redactTokenFromText(msg)).not.toContain('abc.def.ghi');
+  });
+
+  it('消息里没有 token 就原样返回', () => {
+    expect(redactTokenFromText('after key load, decryptdata unset or changed'))
+      .toBe('after key load, decryptdata unset or changed');
+  });
+
+  it('文本为空时返回 undefined', () => {
+    expect(redactTokenFromText(undefined)).toBeUndefined();
+    expect(redactTokenFromText('')).toBeUndefined();
+  });
+
+  it('describePlaybackError 返回的 reason 已打码（它进控制台和用户文案）', () => {
+    const info = describePlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'Invalid key URI: "/api/v1/playback/7/key?token=SECRETTOKEN"' },
+    });
+    expect(info.reason).not.toContain('SECRETTOKEN');
+    expect(info.reason).toContain('token=***');
+  });
+
+  it('formatPlaybackError 的文案里也没有 token', () => {
+    const text = formatPlaybackError({
+      details: 'keyLoadError',
+      error: { message: 'Invalid key URI: "/api/v1/playback/7/key?token=SECRETTOKEN"' },
+    });
+    expect(text).not.toContain('SECRETTOKEN');
   });
 });
 

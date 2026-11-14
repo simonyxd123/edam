@@ -15,6 +15,7 @@ import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ACTION, permissionApi, type PermissionGrant } from '@/api/permission';
 import { rbacApi, type User } from '@/api/rbac';
+import { safeError } from '@/utils/safeLog';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -105,7 +106,7 @@ async function loadUsers() {
     userOptions.value = page.items ?? [];
   } catch (e: any) {
     // 拿不到用户列表不该挡住整个对话框 —— 只是不能选人
-    console.error('[ShareDialog] load_users_failed:', e);
+    console.error('[ShareDialog] load_users_failed:', safeError(e));
     userOptions.value = [];
   } finally {
     loadingUsers.value = false;
@@ -124,7 +125,7 @@ async function loadGrants() {
     }
   } catch (e: any) {
     // 没有 list 权限（只有 share）时列不出来 —— 不影响授权本身
-    console.error('[ShareDialog] load_grants_failed:', e);
+    console.error('[ShareDialog] load_grants_failed:', safeError(e));
     existingGrants.value = [];
   } finally {
     loadingGrants.value = false;

@@ -9,6 +9,24 @@ import pathlib
 import re
 import sys
 
+def _force_utf8_stdout():
+    """让脚本在 GBK 控制台（Windows 默认）上也能跑。
+
+    这些脚本会打印 ✅ / ❌ 等符号。Windows 的默认编码是 GBK，
+    打印这些字符会抛 UnicodeEncodeError —— **而且是在校验通过之后**
+    （最后那行 print 崩掉），于是"校验通过"被报成"脚本报错"，
+    退出码非 0 ⇒ CI 变红、开发本地也跑不出结果。
+
+    reconfigure 只改 stdout 的编码，不影响脚本逻辑。
+    """
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass  # 老 Python 或已被重定向到不支持的对象
+
+
+_force_utf8_stdout()
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 APP_YML = ROOT / 'backend/src/main/resources/application.yml'
@@ -18,6 +36,7 @@ HELM_DEPLOY = ROOT / 'helm/edam/templates/deployment.yaml'
 WORKER_CFG = ROOT / 'worker/src/edam_worker/config.py'
 PROM_YML = ROOT / 'dev/monitoring/prometheus.yml'
 OPENAPI = ROOT / 'doc/openapi.yaml'
+DOCKERFILE = ROOT / 'docker/backend.Dockerfile'
 
 
 def read(p):
@@ -71,6 +90,22 @@ def main():
     find_port(read(OPENAPI),
               [r'-\s*url:\s*http://localhost:(\d+)/api/v1'],
               'openapi server url', ports)
+
+    # Dockerfile 的 HEALTHCHECK 与 EXPOSE。
+    #
+    # 2026-11-13 补（第三轮审计 §2）：这两处此前是 8080，而后端实际监听 8092
+    # ⇒ 直接 `docker run` 后端镜像时 healthcheck **永远失败**
+    # ⇒ 容器被标 unhealthy ⇒ `depends_on: service_healthy` 的编排永远等下去。
+    #
+    # 为什么一直没被发现：这个脚本原来列了 9 处端口来源，**唯独没有 Dockerfile**
+    # ⇒ 端口一致性校验**看不见**它。
+    find_port(read(DOCKERFILE),
+              [r'HEALTHCHECK[\s\S]*?CMD curl -fsS http://localhost:(\d+)'],
+              'dockerfile HEALTHCHECK probe port', ports)
+
+    find_port(read(DOCKERFILE),
+              [r'EXPOSE\s+(\d+)'],
+              'dockerfile EXPOSE port', ports)
 
     print('后端端口来源：')
     for label, p in ports:

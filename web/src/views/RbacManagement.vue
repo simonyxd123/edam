@@ -19,6 +19,7 @@ import {
 } from '@/api/rbac';
 import { useUserStore } from '@/stores/user';
 import { isDialogDismissed } from '@/utils/dialog';
+import { safeError } from '@/utils/safeLog';
 
 const userStore = useUserStore();
 
@@ -44,7 +45,7 @@ async function loadRoleMap() {
     // 这里**不能静默吞掉** —— 原来空 catch 导致 roleCodeToId 保持空，
     // 下面的 roleIds 全部为空 → Excel 导入时角色**静默不绑定**，
     // 用户以为绑上了。必须明确报错。
-    console.error('[Rbac] 角色列表加载失败:', e);
+    console.error('[Rbac] 角色列表加载失败:', safeError(e));
     ElMessage.error('角色列表加载失败，无法绑定角色：' + (e?.message || '未知错误'));
     throw e;
   }

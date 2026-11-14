@@ -7,6 +7,7 @@ import ShareDialog from '@/components/ShareDialog.vue';
 import { UploadFilled, Document as DocIcon } from '@element-plus/icons-vue';
 import { isDialogDismissed } from '@/utils/dialog';
 import { canPreviewInline, safePreviewMime } from '@/utils/previewMime';
+import { safeError } from '@/utils/safeLog';
 
 const loading = ref(false);
 const documents = ref<Document[]>([]);
@@ -199,7 +200,7 @@ async function handlePreview(doc: Document) {
     if (mySeq !== previewLoadSeq) {
       return;   // 已被更新的请求取代，别弹错误提示
     }
-    console.error('[Documents] preview_load_failed:', e);
+    console.error('[Documents] preview_load_failed:', safeError(e));
     ElMessage.error('预览加载失败：' + (e?.message || '未知错误'));
     previewSrc.value = '';
   } finally {

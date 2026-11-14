@@ -63,18 +63,36 @@ jobs:
 
       - name: 校验覆盖率必须 = 100%
         run: |
-          COVERAGE=$(grep -oP '已覆盖.*?\(\K[\d.]+(?=%)' modify/controller-coverage.md | head -1)
-          if [ -z "$COVERAGE" ]; then
-            echo "ERROR: 无法从 modify/controller-coverage.md 读取覆盖率"
-            exit 1
-          fi
-          echo "当前 OpenAPI Controller 覆盖率: ${COVERAGE}%"
-          # 检查是否为整数（允许浮点）
-          if [ "$(echo "$COVERAGE < 95" | bc -l)" = "1" ]; then
-            echo "ERROR: 覆盖率 ${COVERAGE}% 低于 95% 阈值"
-            echo "请运行 'python scripts/check_controller_coverage.py' 查看缺失端点"
-            exit 1
-          fi
+          # 2026-11-13 修（第三轮代码审计 §4）：
+          #
+          # ① 原来用 `grep -oP`（PCRE）提取覆盖率 —— **PCRE 不是所有 runner
+          #    镜像都有**（GNU grep 需编译时带 --enable-pcre），
+          #    没有的话这一步直接"读不到覆盖率"⇒ 报错 ⇒ CI 红。
+          #    ⇒ 改用 Python 解析（runner 上本来就有 python3）。
+          #
+          # ② 阈值原来写的是 `< 95`，而 README / CLAUDE.md / openapi.yaml
+          #    都承诺 **100%** ⇒ 95%~100% 之间掉下去 CI 是绿的，
+          #    承诺与门限不一致。⇒ 提到 100。
+          python3 - <<'PYEOF'
+          import re
+          import sys
+
+          # 报告里的行形如： | 已覆盖 | 99 (100.0%) |
+          text = open('modify/controller-coverage.md', encoding='utf-8').read()
+          m = re.search(r'已覆盖\s*\|\s*\d+\s*\(\s*([\d.]+)\s*%', text)
+          if not m:
+              print('ERROR: 无法从 modify/controller-coverage.md 读取覆盖率')
+              print('请运行 python scripts/check_controller_coverage.py 重新生成报告')
+              sys.exit(1)
+
+          coverage = float(m.group(1))
+          print(f'当前 OpenAPI Controller 覆盖率: {coverage}%')
+          if coverage < 100.0:
+              print(f'ERROR: 覆盖率 {coverage}% 低于 100% 阈值')
+              print('README / CLAUDE.md 承诺端点覆盖率 100% —— 门限必须与承诺一致')
+              print('请运行 python scripts/check_controller_coverage.py 查看缺失端点')
+              sys.exit(1)
+          PYEOF
 
       - name: 上传覆盖率报告
         uses: actions/upload-artifact@v4
@@ -105,6 +123,35 @@ jobs:
           sudo mv flyway-10.10.0 /opt/flyway
           echo "/opt/flyway" >> $GITHUB_PATH
 
+      # ---------------------------------------------------------------------
+      # 静态校验（不需要真库就能查）—— 2026-11-13 接进来
+      #
+      # 此前这 5 个校验**只挂在 .gitlab-ci.yml** 上，而本仓库的 remote 是
+      # github.com ⇒ 那条流水线**根本不会跑** ⇒
+      # 「端口一致性校验、模型↔表列对账、迁移合法性校验、FK 类型校验、
+      #   MySQL 端口校验」在真正会跑的 CI 里**全部缺席**。
+      # CLAUDE.md 写着"仓库里有端口一致性校验"，但那个校验实际上没在跑。
+      #
+      # 各自的用途：
+      #   1. _validate_model_schema.py —— model 字段 ↔ 运行时 schema 是否匹配
+      #      （能提前抓到 "Unknown column"）
+      #   2. _validate_migrations.py  —— 迁移链是否自洽（无悬空 ALTER / 重复版本）
+      #      （能提前抓到 "Error 3780 are incompatible"）
+      #   3. _validate_fk_types.py    —— 全新库上每条外键两端类型是否兼容
+      #   4. _validate_ports.py        —— 后端端口在 11 处来源里必须一致
+      #      （改一处忘另一处 = 前端全 502）
+      #   5. _validate_mysql_port.py   —— MySQL 端口：容器内 3306 / 对外 3307
+      #      （此前 compose 与 application.yml 用的不是一个端口 ⇒
+      #        诊断脚本看的是另一个库，排查时全是误导）
+      - name: 静态校验（model↔schema / 迁移链 / 外键类型 / 端口）
+        run: |
+          set -e
+          python dev/db/_validate_model_schema.py
+          python dev/db/_validate_migrations.py
+          python dev/db/_validate_fk_types.py
+          python dev/db/_validate_ports.py
+          python dev/db/_validate_mysql_port.py
+
       - name: 执行迁移
         run: |
           flyway -url=jdbc:mysql://127.0.0.1:3307/edam_test?allowPublicKeyRetrieval=true -user=root -password=test -locations=filesystem:backend/src/main/resources/db/migration migrate
@@ -115,9 +162,11 @@ jobs:
 
       - name: 校验表数量
         run: |
+          # 期望 35 张表（与 README / CLAUDE.md / doc/database_schema.md 一致）——
+          # 原来这里写的是 `-lt 20`，缺 15 张表也照样绿灯
           TABLES=$(mysql -h127.0.0.1 -uroot -ptest -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='edam_test'" 2>/dev/null)
-          if [ "$TABLES" -lt 20 ]; then
-            echo "ERROR: 期望至少 20 张表，实际 $TABLES"
+          if [ "$TABLES" -lt 35 ]; then
+            echo "ERROR: 期望至少 35 张表，实际 $TABLES"
             exit 1
           fi
           echo "数据库表数量: $TABLES OK"

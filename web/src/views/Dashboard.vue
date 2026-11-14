@@ -2,6 +2,7 @@
 import { ref, onMounted, reactive } from 'vue';
 import { api } from '@/api/client';
 import { useUserStore } from '@/stores/user';
+import { safeError } from '@/utils/safeLog';
 
 const userStore = useUserStore();
 
@@ -25,7 +26,7 @@ async function loadStats() {
     }>('/dashboard/stats');
     Object.assign(stats, data);
   } catch (e: any) {
-    console.error('load dashboard stats failed', e);
+    console.error('load dashboard stats failed', safeError(e));
   } finally {
     loading.value = false;
   }

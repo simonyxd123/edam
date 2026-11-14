@@ -5,6 +5,7 @@
 import axios, { type AxiosInstance, type AxiosError, type AxiosRequestConfig } from 'axios';
 import { ElMessage } from 'element-plus';
 import { handleSessionInvalid, isApiCall, isPublicEndpoint, beginSessionRecovery, endSessionRecovery } from '@/utils/session';
+import { safeError } from '@/utils/safeLog';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -136,7 +137,12 @@ class ApiClient {
         } else if (isCanceled) {
           // 用户主动取消（关弹窗 / 离开页面），不打扰
         } else if (isSessionInvalid) {
-          console.warn('[client] session invalid, status=', status, 'url=', error.config?.url);
+          // ⚠️ 用 safeError 而不是直接打 error ——
+          // axios 错误对象的 config.headers.Authorization 里就是**登录 JWT**，
+          // 直接 `console.warn(..., error)` 等于把凭据打进控制台。
+          // （error.config.url 只是相对路径、不含 query，本身不泄 token，
+          //  但同一条日志里既然要打，就统一走脱敏出口。）
+          console.warn('[client] session invalid:', safeError(error));
           // 统一走 utils/session 的处理（清 token + 提示 + 跳登录页）
           handleSessionInvalid(`client:${status ?? 'network'}`);
         } else if (status === 403) {
@@ -238,7 +244,7 @@ class ApiClient {
       }
       return true;
     } catch (e) {
-      console.warn('[client] refresh failed:', e);
+      console.warn('[client] refresh failed:', safeError(e));
       return false;
     }
   }

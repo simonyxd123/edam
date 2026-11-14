@@ -14,6 +14,24 @@ import pathlib
 import re
 import sys
 
+def _force_utf8_stdout():
+    """让脚本在 GBK 控制台（Windows 默认）上也能跑。
+
+    这些脚本会打印 ✅ / ❌ 等符号。Windows 的默认编码是 GBK，
+    打印这些字符会抛 UnicodeEncodeError —— **而且是在校验通过之后**
+    （最后那行 print 崩掉），于是"校验通过"被报成"脚本报错"，
+    退出码非 0 ⇒ CI 变红、开发本地也跑不出结果。
+
+    reconfigure 只改 stdout 的编码，不影响脚本逻辑。
+    """
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass  # 老 Python 或已被重定向到不支持的对象
+
+
+_force_utf8_stdout()
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIG_DIR = ROOT / 'backend/src/main/resources/db/migration'
 

@@ -3,6 +3,7 @@ import { ref, reactive } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useUserStore } from '@/stores/user';
+import { safeError } from '@/utils/safeLog';
 
 const router = useRouter();
 const route = useRoute();
@@ -41,7 +42,7 @@ async function handleLogin() {
       else localStorage.removeItem(REMEMBER_KEY);
     } catch (e) {
       // 记住账号失败（隐私模式 / localStorage 满）**不能**影响登录本身
-      console.warn('[Login] 记住账号失败（不影响登录）:', e);
+      console.warn('[Login] 记住账号失败（不影响登录）:', safeError(e));
     }
     ElMessage.success('登录成功');
     const redirect = (route.query.redirect as string) || '/';
