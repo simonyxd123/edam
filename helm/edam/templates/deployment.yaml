@@ -44,6 +44,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "edam.fullname" . }}-secret
                   key: db-password
+            # 库名/库用户也由 Vault 下来。
+            # 原来 ESO 写了 db-username 这个键，但**没有任何地方消费它** ——
+            # application.yml 里的 ${MYSQL_USER:edam} 一直在用硬编码默认值，
+            # 运维改了 Vault 里的用户名也不生效（而且悄无声息）。
+            # optional: true ⇒ 没配这个键时仍用默认值，不至于起不来。
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "edam.fullname" . }}-secret
+                  key: db-username
+                  optional: true
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -62,7 +73,7 @@ spec:
             - name: ADMIN_INITIAL_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "edam.fullname" . }}-secret
+                  name: {{ include "edam.fullname" . }}-admin-secret
                   key: admin-password
                   optional: true
           livenessProbe:

@@ -43,6 +43,24 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
         Pattern.compile("^/topic/notifications(/[a-zA-Z0-9_-]+)*$")
     );
 
+    /**
+     * 敏感 topic → 需要的权限码。
+     *
+     * <p><b>为什么光靠"形状白名单"不够</b>（2026-11-14 代码审计第七轮）：
+     * 原来的 {@code requireAllowedSubscription} 只检查目的地的**形状**
+     * （是不是 {@code /topic/notifications/...}），<b>不检查角色</b> ——
+     * 于是任何一个登录用户（包括只有 {@code notification:read} 的普通员工）
+     * 都能订阅 {@code /topic/notifications/leak}，
+     * 实时收到他人的疑似泄露用户 ID、泄露文件路径、匹配会话 ID 与置信度。
+     *
+     * <p>而这个广播是把整个 {@link com.example.edam.model.LeakDetection}
+     * 对象原样发出去的 —— 不是脱敏摘要。
+     */
+    private static final String LEAK_TOPIC_PREFIX = "/topic/notifications/leak";
+
+    /** 查看泄露检测所需的权限码（与 {@code sys_permission} 目录一致）。 */
+    private static final String LEAK_READ_AUTHORITY = "leak:read";
+
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
         StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(
@@ -100,15 +118,57 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
         if (destination == null) {
             return;
         }
+        boolean shapeAllowed = false;
         for (Pattern p : ALLOWED_SUBSCRIPTIONS) {
             Matcher m = p.matcher(destination);
             if (m.matches()) {
-                return;
+                shapeAllowed = true;
+                break;
             }
         }
-        log.warn("ws_subscribe_rejected, destination={}", destination);
+        if (!shapeAllowed) {
+            log.warn("ws_subscribe_rejected, destination={}", destination);
+            throw new org.springframework.security.access.AccessDeniedException(
+                "不允许订阅该 topic: " + destination);
+        }
+
+        // 敏感 topic 还要**权限** —— 形状对了不代表看得起内容。
+        if (destination.equals(LEAK_TOPIC_PREFIX) || destination.startsWith(LEAK_TOPIC_PREFIX + "/")) {
+            requireAuthority(accessor, LEAK_READ_AUTHORITY, destination);
+        }
+    }
+
+    /**
+     * 校验 token 里带的权限码（与前端 {@code hasPermission} 同一套通配口径：
+     * {@code *:*} 全通、{@code *:<action>} 该动作全通、否则精确匹配）。
+     *
+     * <p>权限码是签进 JWT claims 的（见 {@code JwtTokenProvider}），
+     * 所以这里**不需要查库**。
+     */
+    @SuppressWarnings("unchecked")
+    private void requireAuthority(StompHeaderAccessor accessor, String authority, String destination) {
+        String token = extractToken(accessor);
+        List<String> permissions = List.of();
+        if (token != null && !token.isBlank()) {
+            try {
+                Object raw = jwtTokenProvider.parseAndValidate(token).get("permissions");
+                if (raw instanceof List<?> list) {
+                    permissions = (List<String>) list;
+                }
+            } catch (Exception e) {
+                permissions = List.of();
+            }
+        }
+        boolean allowed = permissions.contains("*:*")
+            || permissions.contains("*" + authority.substring(authority.indexOf(':') + 1))
+            || permissions.contains(authority);
+        if (allowed) {
+            return;
+        }
+        log.warn("ws_subscribe_rejected, reason=missing_authority, destination={}, required={}",
+            destination, authority);
         throw new org.springframework.security.access.AccessDeniedException(
-            "不允许订阅该 topic: " + destination);
+            "无权订阅该 topic: " + destination);
     }
 
     private Long resolveUserId(StompHeaderAccessor accessor) {

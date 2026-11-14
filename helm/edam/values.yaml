@@ -371,3 +371,47 @@ secret:
   workerToken: "change-me-in-production"
   # 初始 admin 密码；留空则后端不创建任何默认账号（fail-closed）
   adminPassword: ""
+
+# ============================================================================
+# External Secrets（从 Vault 同步密钥）
+# ============================================================================
+# enabled=true 时：
+#   - helm **不再渲染** `<fullname>-secret`（那上面的值只是仓库里的占位符）
+#   - 改为由 External Secrets Operator 从 Vault 写入同名 Secret
+#   - `<fullname>-admin-secret` 仍由 helm 渲染（admin 初始密码不走 Vault）
+#
+# 为什么必须开：2026-11-14 代码审计第七轮发现，原来的 ExternalSecret 清单
+# （gitops/argocd/external-secrets.yaml）**从来没有被 ArgoCD 下发过** ——
+# 三个 Application 都不引用它，AppProject 的白名单里也没有 external-secrets.io。
+# ⇒ 生产实际用的就是 helm 渲染的公开占位符。
+#
+# 前置条件：集群装了 External Secrets Operator，且 Vault 里有对应的路径。
+# 没装的话 ArgoCD 同步会失败（no matches for kind ExternalSecret），
+# **不会**静默退回占位符 —— 这正是我们要的。
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  # Vault 认证用的 ServiceAccount（要在 Vault 里配好同名 role）
+  serviceAccount: edam-backend
+  vault:
+    server: "http://vault:8200"
+    path: "secret"
+    role: "edam-backend"
+  # 各密钥在 Vault 里的路径与属性名
+  keys:
+    dbPassword:
+      key: "edam/database"
+      property: "password"
+    dbUsername:
+      key: "edam/database"
+      property: "username"
+    jwtSecret:
+      key: "edam/jwt"
+      property: "secret"
+    vaultToken:
+      key: "edam/vault"
+      property: "token"
+    # Worker → Backend 回调共享密钥 —— 原来**根本没有**这一条
+    workerToken:
+      key: "edam/worker"
+      property: "token"

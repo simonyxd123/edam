@@ -42,7 +42,15 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - PrunePropagationPolicy=foreground
-    automated: {}  # 禁用自动同步，需手动
+    # ⚠️ `automated: {}` **不是**"禁用自动同步"——
+    # ArgoCD 里 `automated` 是个结构体，写成 {} 就是"开启自动同步、
+    # 用默认参数"（prune 默认 true、selfHeal 默认 false）。
+    # 真正禁用要写 `automated: null`（prod 就是这么写的）。
+    #
+    # 原来的注释写的是"禁用自动同步，需手动"，YAML 干的是另一回事：
+    # staging 每一次 main 分支推送都会**自动同步 + 自动 prune**。
+    # 这跟 README 里那张表写的"手工"也对不上 —— 两处都以为它是手工的。
+    automated: null  # 禁用自动同步，需手动
     retry:
       limit: 3
       backoff:

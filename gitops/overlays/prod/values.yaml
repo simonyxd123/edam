@@ -71,13 +71,27 @@ ingress:
 
 # 密钥（必须通过 External Secrets 从 Vault 同步）
 #
-# 重要：External Secrets Operator 会把 Vault 里的值写进
-# <fullname>-secret（edam-secret），覆盖 helm 模板里渲染的占位值。
+# externalSecrets.enabled=true ⇒ helm **不再渲染** <fullname>-secret，
+# 改由 External Secrets Operator 从 Vault 写入同名 Secret。
+# ExternalSecret 的定义在 helm/edam/templates/external-secret.yaml ——
+# 放进 chart 之后，ArgoCD 部署 chart 时会顺带把它部署到**本环境的命名空间**
+# （dev / staging / prod 各自的 namespace），而不是写死一个 namespace。
+#
+# 为什么必须开（2026-11-14 代码审计第七轮）：
+# 原来的 ExternalSecret 清单放在 gitops/argocd/external-secrets.yaml，
+# 而三个 ArgoCD Application **都不引用它** ⇒ 那套 External Secrets
+# 从来没有被下发到集群 ⇒ 实际生效的就是下面这些仓库里公开的占位符
+# （JWT 密钥公开 = 任何人都能伪造管理员 token；
+#   workerToken 公开 = 任何人都能伪造文档状态回调）。
+#
 # 这里的值只是"让 chart 能渲染出来"的占位，**不能**在生产用真值
 # （真值在 Git 里 = 泄密）。
 #
 # workerToken 同理 —— 它是 Worker → Backend 回调的共享密钥，
 # 两侧必须一致（后端读 edam.worker.token，worker 读 WORKER_TOKEN）。
+externalSecrets:
+  enabled: true
+
 secret:
   dbPassword: "REPLACE_FROM_VAULT"
   vaultToken: "REPLACE_FROM_VAULT"

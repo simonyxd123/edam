@@ -55,6 +55,15 @@ class JwtSecretGuardTest {
     }
 
     @Test
+    @DisplayName("staging 也按生产对待 —— 它连着真实依赖，不是开发环境")
+    void stagingIsTreatedAsProduction() {
+        // 原来只按"profile 名里含 prod"判定 ⇒ staging 只打一条 WARN 就放行，
+        // 于是 staging 拿着仓库里公开的密钥跑，任何人都能伪造管理员 token。
+        JwtSecretGuard guard = new JwtSecretGuard(envWith("staging"), "REPLACE_FROM_VAULT");
+        assertThrows(IllegalStateException.class, guard::validate);
+    }
+
+    @Test
     @DisplayName("开发 overlay 的公开密钥 ⇒ 生产环境拒绝，开发环境放行")
     void devOverlaySecretOnlyAllowedOutsideProduction() {
         assertThrows(IllegalStateException.class, () -> new JwtSecretGuard(

@@ -58,6 +58,14 @@ spec:
       kind: ServiceMonitor
     - group: 'monitoring.coreos.com'
       kind: PrometheusRule
+    # External Secrets（2026-11-14 代码审计第七轮）：
+    # 密钥从 Vault 同步靠的就是这两个 CRD，**不在白名单里 ArgoCD 就不许部署**。
+    # 之前这组完全缺失 ⇒ 即使把 ExternalSecret 清单接进 Application，
+    # ArgoCD 也会以 "resource not permitted in project" 拒绝同步。
+    - group: 'external-secrets.io'
+      kind: ExternalSecret
+    - group: 'external-secrets.io'
+      kind: SecretStore
 
   # 禁止的资源（防止误操作）
   clusterResourceBlacklist:

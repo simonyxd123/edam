@@ -4,8 +4,8 @@ import com.example.edam.config.RabbitConfig;
 import com.example.edam.model.WebhookDelivery;
 import com.example.edam.repository.WebhookDeliveryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,6 +23,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Webhook 投递服务（v3.2 V-6）
@@ -37,13 +41,30 @@ import java.util.Map;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class WebhookDeliveryService {
 
     private final RabbitTemplate rabbitTemplate;
     private final WebhookRetryPolicy retryPolicy;
     private final WebhookDeliveryRepository deliveryRepository;
     private final ObjectMapper objectMapper;
+
+    /**
+     * 读响应体用的独立线程池 —— 读 body 不受 {@code HttpRequest.timeout}
+     * 约束，必须自己兜超时（见 {@code AsyncExecutorConfig} 的说明）。
+     */
+    private final ExecutorService readExecutor;
+
+    public WebhookDeliveryService(RabbitTemplate rabbitTemplate,
+                                  WebhookRetryPolicy retryPolicy,
+                                  WebhookDeliveryRepository deliveryRepository,
+                                  ObjectMapper objectMapper,
+                                  @Qualifier("webhookReadExecutor") ExecutorService readExecutor) {
+        this.rabbitTemplate = rabbitTemplate;
+        this.retryPolicy = retryPolicy;
+        this.deliveryRepository = deliveryRepository;
+        this.objectMapper = objectMapper;
+        this.readExecutor = readExecutor;
+    }
 
     @Value("${edam.webhook.retry.exchange:edam.webhook.retry}")
     private String retryExchange;
@@ -63,6 +84,14 @@ public class WebhookDeliveryService {
 
     /** 回调响应体最多读这么多字节（超出部分直接丢弃）。 */
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
+
+    /**
+     * 读响应体的超时（秒）。
+     *
+     * <p>比请求本身的 30s 短 —— 响应头都到了还在磨蹭 body 的对端，
+     * 基本就是有问题。
+     */
+    private static final int RESPONSE_READ_TIMEOUT_SECONDS = 10;
 
     /**
      * 投递 webhook（带重试调度）
@@ -91,11 +120,23 @@ public class WebhookDeliveryService {
      */
     @Async("webhookExecutor")
     public void deliver(String url, String secret, String payload, Long webhookId, String event, int attempt) {
+        // 时间戳 —— **参与签名**（2026-11-14 代码审计第七轮）。
+        //
+        // 原来只对 payload 签名，X-EDAM-Timestamp 是个"装饰性"的头：
+        // 抓包拿到一次合法回调后可以**原样无限重放**，
+        // 而接收端没有任何办法判断这条是不是新事件
+        // （payload 里也没有 event_id / delivery_id 可供去重）。
+        //
+        // 把时间戳纳入签名后，接收端就能：
+        //   1) 验签时一并校验时间戳在允许窗口内（防重放）；
+        //   2) 用 (webhook_id, timestamp) 做幂等键。
+        long timestamp = System.currentTimeMillis() / 1000;
+
         // 签名
-        String signature = signHmacSha256(secret, payload);
+        String signature = signHmacSha256(secret, timestamp + "." + payload);
 
         // 投递
-        DeliveryResult result = doPost(url, payload, signature);
+        DeliveryResult result = doPost(url, payload, signature, timestamp);
 
         // 记录
         WebhookDelivery delivery = new WebhookDelivery();
@@ -184,7 +225,7 @@ public class WebhookDeliveryService {
     /**
      * 实际 HTTP POST
      */
-    private DeliveryResult doPost(String url, String payload, String signature) {
+    private DeliveryResult doPost(String url, String payload, String signature, long timestamp) {
         try {
             // 投递前**再查一次** SSRF（2026-11-08）。
             // 注册时查过一次，但中间可能过了很久；主机名也可能在注册后
@@ -197,7 +238,7 @@ public class WebhookDeliveryService {
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
                 .header("X-EDAM-Signature", "sha256=" + signature)
-                .header("X-EDAM-Timestamp", String.valueOf(System.currentTimeMillis() / 1000))
+                .header("X-EDAM-Timestamp", String.valueOf(timestamp))
                 .header("User-Agent", "EDAM-Webhook/3.2.0")
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
@@ -213,7 +254,7 @@ public class WebhookDeliveryService {
             boolean success = code >= 200 && code < 300;
             String body;
             try (java.io.InputStream in = streamed.body()) {
-                byte[] buf = in.readNBytes(MAX_RESPONSE_BYTES);
+                byte[] buf = readWithTimeout(in);
                 body = new String(buf, StandardCharsets.UTF_8);
             }
             // 截断到 1KB（存进 webhook_delivery.response_body）
@@ -224,6 +265,29 @@ public class WebhookDeliveryService {
         } catch (Exception e) {
             log.error("webhook_post_failed url={} error={}", url, e.getMessage());
             return new DeliveryResult(false, 0, e.getMessage());
+        }
+    }
+
+    /**
+     * 限量读响应体，**带独立超时**。
+     *
+     * <p>{@code HttpRequest.timeout} 只管到响应头；用
+     * {@code BodyHandlers.ofInputStream()} 之后，读 body 是调用方自己的事，
+     * <b>没有任何超时约束</b> —— 一个返回 200 + 少量字节然后保持连接不断的
+     * 对端（slow-loris）就能把投递线程永久卡住。
+     *
+     * <p>所以把读动作丢进独立线程池，用 {@code Future.get(超时)} 兜住。
+     * 超时 ⇒ 抛 {@link TimeoutException} ⇒ 被上层当作"投递失败"处理
+     * （走重试），线程不会被拖死。
+     */
+    private byte[] readWithTimeout(java.io.InputStream in) throws Exception {
+        Future<byte[]> future = readExecutor.submit(() -> in.readNBytes(MAX_RESPONSE_BYTES));
+        try {
+            return future.get(RESPONSE_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            log.warn("webhook_response_read_timeout, seconds={}", RESPONSE_READ_TIMEOUT_SECONDS);
+            throw e;
         }
     }
 

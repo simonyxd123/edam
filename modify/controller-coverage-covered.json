@@ -206,7 +206,7 @@
     "method": "GET",
     "path": "/watermarks/cache",
     "tag": "watermarks",
-    "summary": "水印缓存查询",
+    "summary": "水印指纹登记查询",
     "impl": "WatermarkController"
   },
   {

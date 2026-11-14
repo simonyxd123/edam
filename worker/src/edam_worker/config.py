@@ -29,6 +29,52 @@ def _env(key: str, default):
     return raw
 
 
+# ============================================================================
+# 仓库里公开可见的占位密钥
+# ============================================================================
+#
+# **为什么 Worker 也要认这批值**：WORKER_TOKEN 是 Worker → Backend 的共享密钥，
+# 持有它就能调用 PATCH /documents/{id}/status —— 把任意文档标成"已加水印"，
+# 或者往水印指纹登记表里写入伪造指纹（能洗白真的泄密，也能栽赃无辜员工）。
+#
+# 而这个值在仓库里就是公开的：helm base 是 change-me-in-production，
+# prod overlay 是 REPLACE_FROM_VAULT，staging overlay 连这一行都没写
+# ⇒ 直接继承 base 的公开值。
+#
+# 与后端的 KnownSecretPlaceholders.java 是同一份清单（两边必须同步）。
+KNOWN_SECRET_PLACEHOLDERS = frozenset({
+    "dev-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256",
+    "change-me-in-production-must-be-256-bit",
+    "change-me-in-production",
+    "replace_from_vault",
+    "dev-password",
+    "dev-token",
+    "changeme",
+    "change-me",
+    "secret",
+    "jwt-secret",
+    "your-secret-key",
+})
+
+
+def known_placeholder(value: str) -> str:
+    """命中已知占位符则返回该占位符（归一化后），否则返回空串。
+
+    **只比对完全相等**，不做包含匹配 —— 包含匹配会把真实密钥里
+    恰好含 "secret" 的情况误判成占位符。
+    """
+    if not value:
+        return ""
+    normalized = value.strip().lower()
+    return normalized if normalized in KNOWN_SECRET_PLACEHOLDERS else ""
+
+
+# 允许使用公开密钥的环境 —— 只有开发类。
+# 与后端 JwtSecretGuard / WorkerTokenGuard 同一套口径：
+# staging 不是开发环境，它连着真实依赖。
+LAX_ENVIRONMENTS = frozenset({"dev", "local", "test"})
+
+
 @dataclass
 class Settings:
     # 运行时
@@ -79,6 +125,12 @@ class Settings:
     # Worker 回调后端时携带的共享密钥
     # 后端 PATCH /videos/{id}/status 校验该头；为空则后端一律拒绝回调
     WORKER_TOKEN: str = field(default_factory=lambda: _env("WORKER_TOKEN", ""))
+
+    # 运行环境标识（dev / staging / production）。
+    # 用来决定"仓库里公开可见的占位密钥"能不能用 ——
+    # dev 放行（本地开发要用），其余一律拒绝启动。
+    # 与后端的 SPRING_PROFILES_ACTIVE 口径一致（staging 也算生产）。
+    EDAM_ENV: str = field(default_factory=lambda: _env("EDAM_ENV", "dev"))
 
     # 运维接口（按 video_id 重触发 HLS）
     OPS_ENABLED: bool = field(default_factory=lambda: _env("OPS_ENABLED", False))

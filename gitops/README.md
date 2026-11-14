@@ -43,8 +43,13 @@ generator），**已删除**。原因：
 | 环境 | `syncPolicy.automated` |
 | --- | --- |
 | dev | `prune: true, selfHeal: true` —— 自动同步 |
-| staging | `{}` —— 手工触发 |
+| staging | `null` —— 手工触发 |
 | prod | `null` —— 手工触发（配合多级审批） |
+
+> ⚠️ **staging 原来写的是 `automated: {}`，那不是"禁用自动同步"** ——
+> ArgoCD 里 `automated` 是结构体，写成 `{}` 就是"开启自动同步 + 默认参数"
+> （prune 默认 true）。2026-11-14 代码审计第七轮改成 `automated: null`，
+> 与注释和本表的"手工"对上。
 
 新增环境时复制一个 Application 即可，比维护 ApplicationSet 模板更可控。
 
@@ -144,6 +149,46 @@ K8s Secret
 ```
 
 **生产密钥必须从 Vault 同步，禁止明文存储在 Git！**
+
+### ExternalSecret 的定义在 helm chart 里，不在 gitops/ 下
+
+`helm/edam/templates/external-secret.yaml`（2026-11-14 代码审计第七轮改）。
+
+原来这份清单放在 `gitops/argocd/external-secrets.yaml`，但：
+
+1. **三个 ArgoCD Application 都不引用它** —— 它们部署的是 helm chart；
+2. `gitops/README.md`（本文件）的安装步骤里也没有 apply 它；
+3. AppProject 的 `namespaceResourceWhitelist` 里**没有** `external-secrets.io`
+   —— 就算接进 Application，ArgoCD 也会以
+   "resource not permitted in project" 拒绝同步。
+
+⇒ 那套 External Secrets **从来没有被下发到集群**，生产实际生效的
+就是 helm 渲染出来的占位符（`REPLACE_FROM_VAULT`）—— 这些值在 Git 里公开，
+等��� JWT 可被伪造、Worker 回调可被伪造。
+
+放进 chart 之后：
+
+- 命名空间跟着 release 走（dev / staging / prod 各自的 namespace），
+  不再写死一个 `edam`；
+- 每个 Secret 只有**一个**写者（`edam-secret` 归 ESO，`edam-admin-secret` 归 helm），
+  不会出现两个 ExternalSecret 共享一个 target、删一个连带删另一个的情况；
+- `helm/edam/values.yaml` 的 `externalSecrets.enabled` 默认 `false`（开发环境
+  直接用 values 里的值），prod / staging overlay 置 `true`。
+
+**前置条件**：集群里装了 External Secrets Operator，且 Vault 里有对应的路径
+（见 `helm/edam/values.yaml` 的 `externalSecrets.keys`）。
+没装的话 ArgoCD 同步会失败（`no matches for kind ExternalSecret`），
+**不会**静默退回占位符跑起来 —— 这正是我们要的行为。
+
+### 启动时会拒绝用公开密钥
+
+后端有 `JwtSecretGuard` / `WorkerTokenGuard`，Worker 也有对应检查：
+在**非开发环境**（production / staging）里，密钥命中仓库里公开的占位符
+⇒ **拒绝启动**。所以占位符没换成真值时，部署会**响亮地失败**，
+而不是悄悄用公开密钥跑起来。
+
+对应的密钥清单在 `backend/.../security/KnownSecretPlaceholders.java`
+与 `worker/src/edam_worker/config.py`（两边必须同步）。
 
 ## 安装 ArgoCD
 

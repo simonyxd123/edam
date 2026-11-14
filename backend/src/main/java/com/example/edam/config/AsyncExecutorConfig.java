@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 
 /**
@@ -44,6 +45,45 @@ public class AsyncExecutorConfig {
         executor.initialize();
         log.info("webhook_executor_initialized, core=4 max=16 queue=500");
         return executor;
+    }
+
+    /**
+     * Webhook 响应体读取线程池。
+     *
+     * <p><b>为什么需要它</b>（2026-11-14 代码审计第七轮）：
+     * {@code HttpRequest.timeout(30s)} 只覆盖到<b>响应头</b> ——
+     * 用 {@code BodyHandlers.ofInputStream()} 时，返回头之后读取 body
+     * 是调用方自己的事，<b>不受那个超时约束</b>。
+     *
+     * <p>而 {@code readNBytes(64KB)} 会一直读到 EOF 或凑满 64KB：
+     * 一个返回 {@code 200} + 少量字节然后<b>保持连接不断</b>的对端
+     * （slow-loris）就能把投递线程永久卡住。
+     * {@code webhookExecutor} 上限 16 线程 ⇒ 16 个挂死后
+     * <b>全部 webhook 投递停摆</b>。
+     *
+     * <p>所以把"读 body"放到一个独立的小池里，用 {@code Future.get(超时)}
+     * 兜住 —— 超时就当作投递失败（走重试），线程不会被拖死。
+     *
+     * <p>拒绝策略用 {@code AbortPolicy}（不是 CallerRuns）：队列满时直接
+     * 抛 {@code RejectedExecutionException}，被投递逻辑捕获 ⇒ 记一次失败。
+     * 用 CallerRuns 的话，调用线程自己读 —— 又回到"永久卡住"的老问题。
+     */
+    @Bean("webhookReadExecutor")
+    public ExecutorService webhookReadExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(64);
+        executor.setKeepAliveSeconds(60);
+        executor.setThreadNamePrefix("webhook-read-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        executor.initialize();
+        // 返回**底层**的 ThreadPoolExecutor（它才是 ExecutorService）。
+        // ThreadPoolTaskExecutor 自己不是 ExecutorService —— 它只是包了一层
+        // 生命周期管理；调用方要的是 submit()/Future 语义。
+        log.info("webhook_read_executor_initialized, core=4 max=8 queue=64");
+        return executor.getThreadPoolExecutor();
     }
 
     /**

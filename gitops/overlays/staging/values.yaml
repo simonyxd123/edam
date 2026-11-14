@@ -47,7 +47,22 @@ ingress:
         - staging-api.example.com
 
 # 密钥（必须通过 External Secrets 从 Vault 同步）
+#
+# externalSecrets.enabled=true ⇒ helm **不再渲染** <fullname>-secret，
+# 改由 External Secrets Operator 从 Vault 写入同名 Secret。
+#
+# 为什么必须开（2026-11-14 代码审计第七轮）：
+# 原来的 ExternalSecret 清单放在 gitops/argocd/external-secrets.yaml，
+# 而三个 ArgoCD Application **都不引用它** ⇒ 那套 External Secrets
+# 从来没有被下发到集群 ⇒ 实际生效的就是下面这些仓库里公开的占位符。
+# 顺带把 workerToken 补上 —— 它原来连占位符都没有，直接继承 helm base 的
+# `change-me-in-production`，而 Worker 与 Backend 两边读到同一个公开值，
+# 校验自然通过 ⇒ 任何人都能伪造文档状态回调。
+externalSecrets:
+  enabled: true
+
 secret:
   dbPassword: "REPLACE_FROM_VAULT"
   vaultToken: "REPLACE_FROM_VAULT"
   jwtSecret: "REPLACE_FROM_VAULT"
+  workerToken: "REPLACE_FROM_VAULT"

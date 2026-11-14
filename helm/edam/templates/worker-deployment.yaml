@@ -37,6 +37,13 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            # 运行环境标识 —— 与后端的 SPRING_PROFILES_ACTIVE 保持一致。
+            #
+            # Worker 用它决定"仓库里公开的占位密钥"能不能用：
+            # 只有 dev/local/test 放行，其余（production / staging）
+            # 命中占位符 ⇒ **拒绝启动**（2026-11-14 代码审计第七轮）。
+            - name: EDAM_ENV
+              value: {{ .Values.backend.env.SPRING_PROFILES_ACTIVE | default "dev" | quote }}
             - name: WORKER_TOKEN
               valueFrom:
                 secretKeyRef:

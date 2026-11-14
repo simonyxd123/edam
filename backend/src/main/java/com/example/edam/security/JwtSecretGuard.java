@@ -7,8 +7,6 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -37,9 +35,10 @@ import java.util.Set;
  *   <li>密钥为空 / 短于 32 字节 ⇒ <b>一律</b>拒绝启动
  *       （短密钥本来也会被 {@code Keys.hmacShaKeyFor} 拒掉，但那个异常
  *       出现在很后面、消息也不直白，这里提前给出可读的原因）</li>
- *   <li>生产 profile 下用了已知占位符 ⇒ <b>拒绝启动</b>（fail-closed）</li>
- *   <li>非生产 profile 下用了已知占位符 ⇒ <b>响亮告警</b>但不拒绝
- *       （本地开发与单测要用这些值，拦了会寸步难行）</li>
+ *   <li>非开发 profile（production / staging / 任何没听说过的）下用了
+ *       已知占位符 ⇒ <b>拒绝启动</b>（fail-closed）</li>
+ *   <li>开发 profile（dev / local / test）下用了已知占位符 ⇒
+ *       <b>响亮告警</b>但不拒绝（本地开发与单测要用这些值，拦了会寸步难行）</li>
  * </ol>
  *
  * <p>⚠️ <b>日志里绝不打印密钥本身</b> —— 只打印"命中了哪个已知占位符"
@@ -52,23 +51,19 @@ import java.util.Set;
 public class JwtSecretGuard {
 
     /**
-     * 已知占位符 —— 全部是仓库里公开可见的值。
-     * 归一化（小写）后比对。
+     * 允许使用公开密钥的 profile —— <b>只有开发类</b>。
+     *
+     * <p>⚠️ <b>staging 不在名单里</b>（2026-11-14 代码审计第七轮）：
+     * 原来只按 "profile 名里含 prod" 判定，于是 {@code staging} 被当成
+     * "非生产" ⇒ 只打一条 WARN 就放行。
+     * 而 staging 是一套**完整的、连着真实依赖的**环境
+     * （ArgoCD 里 {@code targetRevision: main} + 自动同步），
+     * 拿公开密钥跑 = 任何人都能伪造管理员 token 打进去。
+     *
+     * <p>所以判定改成<b>白名单</b>：不在名单里的 profile 一律按生产对待。
+     * 加新的环境类型时默认是"严"，要放宽得显式写进这个集合。
      */
-    private static final List<String> KNOWN_PLACEHOLDERS = List.of(
-        // application.yml 的兜底值（= 没注入 JWT_SECRET 时会用的那个）
-        "dev-jwt-secret-must-be-at-least-256-bits-long-for-hmac-sha256",
-        // helm base chart 的默认值
-        "change-me-in-production-must-be-256-bit",
-        "change-me-in-production",
-        // gitops overlay 的占位符
-        "replace_from_vault",
-        // 其它常见的"忘了改"
-        "changeme", "change-me", "secret", "jwt-secret", "your-secret-key"
-    );
-
-    /** 开发 overlay 专用的值 —— 非生产环境允许（但要告警）。 */
-    private static final String DEV_OVERLAY_SECRET = "dev-jwt-secret-not-for-production";
+    private static final Set<String> LAX_PROFILES = Set.of("dev", "local", "test");
 
     /** HS256 要求密钥 ≥ 256 位 = 32 字节。 */
     private static final int MIN_SECRET_BYTES = 32;
@@ -98,11 +93,11 @@ public class JwtSecretGuard {
         }
 
         String normalized = secret.toLowerCase(Locale.ROOT);
-        String matched = matchKnownPlaceholder(normalized);
-        boolean production = isProductionProfile();
+        String matched = KnownSecretPlaceholders.match(normalized);
+        boolean strict = isStrictEnvironment();
 
         if (matched != null) {
-            if (production) {
+            if (strict) {
                 // 只打印"命中了哪个已知占位符"——那些值本来就在仓库里，
                 // 不构成泄漏；**绝不打印实际生效的密钥**。
                 throw new IllegalStateException(
@@ -116,8 +111,8 @@ public class JwtSecretGuard {
             return;
         }
 
-        if (DEV_OVERLAY_SECRET.equals(normalized)) {
-            if (production) {
+        if (KnownSecretPlaceholders.isDevOverlayValue(normalized)) {
+            if (strict) {
                 throw new IllegalStateException(
                     "edam.jwt.secret 使用了开发 overlay 的公开密钥 —— 生产环境拒绝启动。");
             }
@@ -126,22 +121,27 @@ public class JwtSecretGuard {
         }
 
         // 不打印密钥本身，也不打印它的哈希
-        log.info("jwt_secret_guard_passed, profile={}, production={}",
-            String.join(",", env.getActiveProfiles()), production);
+        log.info("jwt_secret_guard_passed, profile={}, strict={}",
+            String.join(",", env.getActiveProfiles()), strict);
     }
 
-    /** 命中已知占位符则返回该占位符（归一化后的原文），否则 null。 */
-    private String matchKnownPlaceholder(String normalized) {
-        for (String p : KNOWN_PLACEHOLDERS) {
-            if (p.equals(normalized)) {
-                return p;
+    /**
+     * 是否按"生产"对待。
+     *
+     * <p><b>白名单语义</b>：只有 {@code dev / local / test} 放行公开密钥，
+     * 其余（production / staging / 任何没听说过的）一律按生产对待。
+     */
+    private boolean isStrictEnvironment() {
+        String[] profiles = env.getActiveProfiles();
+        if (profiles.length == 0) {
+            // 没设 profile ⇒ 本地开发（application.yml 默认就是 dev）
+            return false;
+        }
+        for (String p : profiles) {
+            if (p == null || !LAX_PROFILES.contains(p.toLowerCase(Locale.ROOT))) {
+                return true;
             }
         }
-        return null;
-    }
-
-    private boolean isProductionProfile() {
-        return Arrays.stream(env.getActiveProfiles())
-            .anyMatch(p -> p != null && p.toLowerCase(Locale.ROOT).contains("prod"));
+        return false;
     }
 }

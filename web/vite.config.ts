@@ -69,6 +69,20 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    server: {
+      deps: {
+        // element-plus 的 ESM 入口会 import 自己的 CSS（theme-chalk/base.css）。
+        // vitest 默认把 node_modules 里的依赖**外置**给 Node 原生加载，
+        // 而 Node 不认 ".css" 扩展名 ⇒ 收集/导航阶段直接抛
+        // ERR_UNKNOWN_FILE_EXTENSION。
+        //
+        // 路由守卫的用例会真的 push 一次路由，而 vue-router 4 在**导航过程中**
+        // 就会 await 懒加载组件 ⇒ 组件里自动引入的 element-plus 组件被加载
+        // ⇒ 正好踩到这个坑。把 element-plus 标成 inline，让 vite 走
+        // 常规的 CSS 处理（测试里 CSS 会被丢弃）。
+        inline: ['element-plus'],
+      },
+    },
     // 没有测试文件时不要让 CI 挂掉（但仓库里已有真实用例，见 src/utils/*.spec.ts）
     passWithNoTests: true,
     coverage: {

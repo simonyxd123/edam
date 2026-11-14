@@ -26,7 +26,7 @@ from prometheus_client import start_http_server
 import requests
 
 from . import __version__
-from .config import settings, timeout_budget_warnings
+from .config import settings, timeout_budget_warnings, known_placeholder, LAX_ENVIRONMENTS
 from .errors import PermanentWorkerError, TaskDeadlineExceeded
 from .ffmpeg_probe import probe_ffmpeg, remediation
 from .hls_keyinfo import probe_key_info_layout
@@ -346,6 +346,43 @@ class WorkerApp:
                       "不配的话回调一律 401 —— 转码完成了 hls_status 也不会变，"
                       "用户点播放还是 404。必须与后端的 edam.worker.token 完全一致"),
             )
+        else:
+            # 占位符密钥 ⇒ **拒绝启动**（2026-11-14 代码审计第七轮）。
+            #
+            # 持有 WORKER_TOKEN 就能伪造文档状态回调：把没水印的文档标成
+            # "已加水印"，或者往指纹登记表里写伪造指纹（洗白真的泄密，
+            # 或者栽赃无辜员工）。而仓库里这个值是公开的
+            # （helm base: change-me-in-production / prod: REPLACE_FROM_VAULT /
+            #  staging 连这一行都没写，直接继承 base 的公开值）。
+            #
+            # 两边都读到同一个公开字符串 ⇒ 校验自然通过 ⇒ 后门一直开着。
+            # 所以宁可起不来，也不要"能跑但溯源结论可被随便改写"。
+            placeholder = known_placeholder(settings.WORKER_TOKEN)
+            if placeholder and settings.EDAM_ENV.strip().lower() not in LAX_ENVIRONMENTS:
+                raise RuntimeError(
+                    f"WORKER_TOKEN 命中了仓库里公开可见的占位符（\"{placeholder}\"）—— "
+                    f"环境 EDAM_ENV={settings.EDAM_ENV} 拒绝启动。"
+                    "持有这个公开值的人可以伪造文档/视频状态回调，"
+                    "把没水印的文档标记成已加水印、或往水印指纹登记表里写入伪造指纹。"
+                    "请通过 Secret / External Secrets 注入真实的随机值。"
+                )
+            if placeholder:
+                log.warning(
+                    "worker_token_is_public_placeholder",
+                    placeholder=placeholder,
+                    action="仅限开发环境使用，溯源结论可被伪造",
+                )
+
+        # 运维接口的 token 同理 —— helm 里 OPS_TOKEN 映射的是同一个
+        # worker-token 键，所以它也会是那个公开值。
+        if settings.OPS_ENABLED:
+            ops_placeholder = known_placeholder(settings.OPS_TOKEN)
+            if ops_placeholder and settings.EDAM_ENV.strip().lower() not in LAX_ENVIRONMENTS:
+                raise RuntimeError(
+                    f"OPS_TOKEN 命中了仓库里公开可见的占位符（\"{ops_placeholder}\"）—— "
+                    f"环境 EDAM_ENV={settings.EDAM_ENV} 拒绝启动。"
+                    "运维接口（人工重跑转码 / 人工比对泄露）必须用真实 token。"
+                )
 
         # 超时预算自检 —— 三档超时必须自上而下递减。
         # 不自洽 ⇒ broker 会先掐断 channel ⇒ 转码被取消 ⇒ 而 CancelledError
