@@ -1,6 +1,7 @@
 package com.example.edam.security;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -141,6 +143,56 @@ public class JwtTokenProvider {
                 .expiration(expiry)
                 .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
+    }
+
+    /**
+     * 解析播放 token 以便续期。签名和格式仍必须有效，但只允许短暂过期；
+     * 续期端点会再次检查当前登录用户和视频权限。ExpiredJwtException 中的 claims
+     * 来自已验签的 JWT，不接受未验签 payload。
+     */
+    /** 允许播放续期接受的最大过期宽限；宽限不是普通 JWT 的有效期。 */
+    public static final long PLAYBACK_RENEWAL_GRACE_SECONDS = 90L;
+
+    public Claims parsePlaybackTokenForRenewal(String token) {
+        Claims claims;
+        if (SmJwtTokenProvider.isSm3Token(token)) {
+            if (smProvider == null) {
+                throw new IllegalArgumentException("GS256 token provider unavailable");
+            }
+            claims = smProvider.parseTokenForRenewal(token);
+        } else {
+            try {
+                claims = parseAndValidate(token);
+            } catch (ExpiredJwtException expired) {
+                claims = expired.getClaims();
+            }
+        }
+        validatePlaybackRenewalExpiration(claims);
+        return claims;
+    }
+
+    /**
+     * Renewal may consume only a recently expired, signed token.  Requiring exp
+     * here is important because a signed token without exp would otherwise be
+     * renewable forever (JJWT's normal parser does not require exp).
+     */
+    private void validatePlaybackRenewalExpiration(Claims claims) {
+        if (claims == null || claims.getExpiration() == null) {
+            throw new IllegalArgumentException("playback token missing expiration");
+        }
+        long now = Instant.now().getEpochSecond();
+        long expiresAt = claims.getExpiration().toInstant().getEpochSecond();
+        if (expiresAt <= now && now - expiresAt > PLAYBACK_RENEWAL_GRACE_SECONDS) {
+            throw new IllegalArgumentException("playback token renewal grace expired");
+        }
+    }
+
+    /** 从已验签 claims 取 exp，供响应契约使用。 */
+    public long expirationEpochSecond(Claims claims) {
+        if (claims == null || claims.getExpiration() == null) {
+            throw new IllegalArgumentException("playback token missing expiration");
+        }
+        return claims.getExpiration().toInstant().getEpochSecond();
     }
 
     /** 播放 token 的 scope claim 值 */

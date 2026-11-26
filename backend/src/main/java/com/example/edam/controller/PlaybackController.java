@@ -103,7 +103,8 @@ public class PlaybackController {
         String token = jwtTokenProvider.createPlaybackToken(userId, videoId, sessionId);
 
         // 2. 生成签名 URL
-        long expires = Instant.now().getEpochSecond() + 600;  // 10 分钟
+        long expires = jwtTokenProvider.expirationEpochSecond(
+            jwtTokenProvider.parseAndValidate(token));
         String m3u8Url = String.format("/api/v1/playback/%d/playlist.m3u8?token=%s",
             videoId, token);
         // segment URL 模板（给前端展示用，实际由 m3u8 内容决定）
@@ -117,6 +118,58 @@ public class PlaybackController {
         response.put("watermark_template", "{employee_no}|{timestamp}");
 
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 在原播放会话内续期 token。旧 token 可刚刚过期，但必须验签；
+     * 当前登录用户、视频绑定和实时查看权限均重新校验。不会创建新的 session_id，
+     * 因而不会切断审计链。
+     */
+    @PostMapping("/{video_id}/token/refresh")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('video:read')")
+    @AuditOp(op = AuditOpType.PLAY, resourceType = "video", resourceId = "#videoId",
+        detail = "event=refresh")
+    public ResponseEntity<Map<String, Object>> refreshToken(
+        @PathVariable("video_id") Long videoId,
+        @RequestParam("token") String oldToken,
+        @CurrentUserId Long userId) {
+        final Claims oldClaims;
+        try {
+            oldClaims = jwtTokenProvider.parsePlaybackTokenForRenewal(oldToken);
+        } catch (Exception e) {
+            log.warn("playback_token_refresh_invalid, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
+        if (!jwtTokenProvider.isPlaybackTokenFor(oldClaims, videoId)
+            || userId == null || !String.valueOf(userId).equals(oldClaims.getSubject())) {
+            log.warn("playback_token_refresh_invalid_scope, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
+        VideoResource video = videoService.getById(videoId);
+        if (!videoPermissionService.canView(video, userId)) {
+            log.warn("playback_token_refresh_denied, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        Object sid = oldClaims.get("session_id");
+        if (sid == null || String.valueOf(sid).isBlank()) {
+            log.warn("playback_token_refresh_missing_session, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
+        String token = jwtTokenProvider.createPlaybackToken(userId, videoId, String.valueOf(sid));
+        long expires = jwtTokenProvider.expirationEpochSecond(
+            jwtTokenProvider.parseAndValidate(token));
+        return ResponseEntity.ok(playbackTokenResponse(videoId, token, String.valueOf(sid), expires));
+    }
+
+    private Map<String, Object> playbackTokenResponse(Long videoId, String token,
+                                                        String sessionId, long expires) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("session_id", sessionId);
+        response.put("m3u8_url", String.format("/api/v1/playback/%d/playlist.m3u8?token=%s", videoId, token));
+        response.put("token", token);
+        response.put("expires_at", Instant.ofEpochSecond(expires).toString());
+        response.put("key_url", String.format(keyUrlTemplate, videoId));
+        return response;
     }
 
     /**
@@ -548,11 +601,11 @@ public class PlaybackController {
         } catch (Exception e) {
             log.warn("play_log_token_invalid, video_id={}, user_id={}, error={}",
                 videoId, userId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            return ResponseEntity.status(HttpStatus.GONE).build();
         }
         if (!jwtTokenProvider.isPlaybackTokenFor(claims, videoId)) {
-            log.warn("play_log_token_not_for_this_video, video_id={}, user_id={}", videoId, userId);
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            log.warn("play_log_token_invalid_scope, video_id={}, user_id={}", videoId, userId);
+            return ResponseEntity.status(HttpStatus.GONE).build();
         }
         // 2. token 必须是**当前用户**的（不能拿同事的 token 冒名上报）
         String subject = subjectOf(claims);

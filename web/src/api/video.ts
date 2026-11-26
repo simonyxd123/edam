@@ -27,8 +27,13 @@ export const videoApi = {
   get: (id: number) => api.get<Video>(`/videos/${id}`),
 
   getPlaybackToken: (id: number) =>
-    api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
+    api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string; expires_at: string }>(
       `/playback/${id}/token`
+    ),
+
+  refreshPlaybackToken: (id: number, token: string) =>
+    api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string; expires_at: string }>(
+      `/playback/${id}/token/refresh?token=${encodeURIComponent(token)}`
     ),
 
   upload: (formData: FormData) =>

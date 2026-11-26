@@ -13,6 +13,7 @@ import './styles/main.scss';
 import { formatDateTime, formatDate, formatTime } from './utils/date';
 import { permission } from './utils/permission';
 import { handleSessionInvalid, isPublicEndpoint, isSessionRecovering } from './utils/session';
+import { isPlaybackAssetEndpoint, shouldHandleDelayed401 } from './utils/network401';
 
 const app = createApp(App);
 
@@ -56,6 +57,25 @@ function extractUrl(input: RequestInfo | URL): string {
   return input.url;
 }
 
+/**
+ * The fetch/XHR hooks are only a last-resort guard. Axios' response
+ * interceptor must get the first chance to refresh, because readystatechange
+ * can fire before that interceptor. A timer lets the interceptor run, while
+ * comparing the token prevents a successful refresh from being undone by the
+ * old 401 response.
+ */
+function deferGlobal401(url: string, tokenAtResponse: string | null, reason: string): void {
+  if (isPlaybackAssetEndpoint(url)) return;
+  setTimeout(() => {
+    if (
+      !isSessionRecovering()
+      && shouldHandleDelayed401(url, tokenAtResponse, localStorage.getItem('access_token'))
+    ) {
+      handleSessionInvalid(reason);
+    }
+  }, 0);
+}
+
 window.fetch = async function (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -65,10 +85,8 @@ window.fetch = async function (
     return ORIG_FETCH(input, init);
   }
   const resp = await ORIG_FETCH(input, init);
-  if (resp.status === 401 && !isSessionRecovering()) {
-    // 正在用 refresh_token 续期时不要登出：续期成功后原请求会被重放，
-    // 这里抢先清 token 会把续期材料一起清掉（详见 utils/session.ts 的说明）。
-    handleSessionInvalid('fetch:401');
+  if (resp.status === 401) {
+    deferGlobal401(url, localStorage.getItem('access_token'), 'fetch:401');
   }
   return resp;
 };
@@ -96,10 +114,9 @@ console.log('[global] fetch wrapper installed');
         if (
           isApiPath(url ?? undefined) &&
           !isPublicEndpoint(url ?? undefined) &&
-          xhr.status === 401 &&
-          !isSessionRecovering()
+          xhr.status === 401
         ) {
-          handleSessionInvalid('xhr:401');
+          deferGlobal401(url ?? '', localStorage.getItem('access_token'), 'xhr:401');
         }
       }
     });
@@ -114,9 +131,8 @@ console.log('[global] fetch wrapper installed');
     const reason = e?.reason as { response?: { status?: number }; config?: { url?: string } } | undefined;
     if (reason?.response?.status === 401) {
       const u = reason.config?.url || '';
-      // 同上：续期进行中不登出
-      if (isApiPath(u) && !isPublicEndpoint(u) && !isSessionRecovering()) {
-        handleSessionInvalid('unhandledrejection:401');
+      if (isApiPath(u) && !isPublicEndpoint(u)) {
+        deferGlobal401(u, localStorage.getItem('access_token'), 'unhandledrejection:401');
       }
     }
   });
@@ -146,12 +162,15 @@ console.log('[global] fetch wrapper installed');
     }
   }
   const token = localStorage.getItem('access_token');
-  if (token && isJwtExpired(token)) {
+  // An expired access token is recoverable while refresh_token exists. Let
+  // the normal API request produce 401 and let Axios perform its single-flight
+  // refresh; clearing both tokens here would make a page reload log the user
+  // out before Axios has any chance to recover the session.
+  if (token && isJwtExpired(token) && !localStorage.getItem('refresh_token')) {
     console.warn('[global] JWT expired on page load, clearing and redirecting');
     handleSessionInvalid('startup:jwt-expired');
   }
 })();
 
 app.mount('#app');
-
 

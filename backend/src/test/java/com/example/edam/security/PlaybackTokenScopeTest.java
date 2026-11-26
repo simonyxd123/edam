@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -90,5 +92,21 @@ class PlaybackTokenScopeTest {
         assertTrue(p.isPlaybackTokenFor(p.parseAndValidate(theirs), 7L),
             "同一个视频、同样的 view 权限 ⇒ 两个 token 都该有效");
         assertFalse(p.isPlaybackTokenFor(p.parseAndValidate(theirs), 8L));
+    }
+
+    @Test
+    void renewalAcceptsOnlyRecentlyExpiredToken() {
+        JwtTokenProvider p = provider();
+        ReflectionTestUtils.setField(p, "accessTokenTtlSeconds", -1L);
+        String token = p.createPlaybackToken(20L, 7L, "sess-1");
+        assertNotNull(p.parsePlaybackTokenForRenewal(token));
+    }
+
+    @Test
+    void renewalRejectsTokenOutsideGraceWindow() {
+        JwtTokenProvider p = provider();
+        ReflectionTestUtils.setField(p, "accessTokenTtlSeconds", -(JwtTokenProvider.PLAYBACK_RENEWAL_GRACE_SECONDS + 5));
+        String token = p.createPlaybackToken(20L, 7L, "sess-1");
+        assertThrows(IllegalArgumentException.class, () -> p.parsePlaybackTokenForRenewal(token));
     }
 }

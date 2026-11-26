@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/client';
+import { videoApi } from '@/api/video';
 import { useUserStore } from '@/stores/user';
 import { describePlaybackError, formatPlaybackError, redactTokenFromUrl } from '@/utils/hlsError';
 import { safeError } from '@/utils/safeLog';
@@ -22,6 +23,12 @@ const video = ref<any>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const m3u8Url = ref<string>('');
 const token = ref<string>('');
+const tokenExpiresAt = ref<number>(0);
+let tokenRefreshTimer: number | null = null;
+let tokenRefreshInFlight: Promise<void> | null = null;
+let nativeRestoreCleanup: (() => void) | null = null;
+let playbackGeneration = 0;
+let disposed = false;
 /**
  * 播放会话 ID（后端签发播放 token 时一起给的）。
  *
@@ -30,7 +37,9 @@ const token = ref<string>('');
  * "某工号在某个时间点把哪个视频看完了"这条证据固化下来。
  */
 const playbackSessionId = ref<string>('');
-const hls = ref<Hls | null>(null);
+// Hls 是有状态的第三方实例，必须保留原始对象身份；深代理会导致
+// hls.value !== instance 恒为 true，使恢复播放和错误处理被当作旧事件丢弃。
+const hls = shallowRef<Hls | null>(null);
 const loading = ref(true);
 const errorMsg = ref('');
 
@@ -58,13 +67,31 @@ let networkRetries = 0;
 let recoveryAttempted = false;
 const NETWORK_MAX_RETRIES = 3;
 
+function onPlaybackVisibilityChange() {
+  if (!document.hidden) {
+    scheduleTokenRefresh();
+    if (tokenExpiresAt.value - Date.now() <= 60_000) void refreshPlaybackToken();
+  }
+}
+function onPlaybackOnline() {
+  scheduleTokenRefresh();
+  if (tokenExpiresAt.value - Date.now() <= 60_000) void refreshPlaybackToken();
+}
 onMounted(() => {
+  document.addEventListener('visibilitychange', onPlaybackVisibilityChange);
+  window.addEventListener('pageshow', onPlaybackVisibilityChange);
+  window.addEventListener('online', onPlaybackOnline);
   loadVideo();
 });
 
 // 路由参数变化 → 重新加载（vue-router 复用组件实例时 onMounted 不会重跑）
 watch(videoId, () => {
   // 先销毁旧实例，否则两个 hls 实例抢同一个 <video> → MediaSource 冲突
+  playbackGeneration++;
+  stopTokenRefresh();
+  tokenRefreshInFlight = null;
+  nativeRestoreCleanup?.();
+  nativeRestoreCleanup = null;
   stopHlsPolling();
   destroyHls();
   errorMsg.value = '';
@@ -74,9 +101,11 @@ watch(videoId, () => {
 });
 
 async function loadVideo() {
+  const generation = playbackGeneration;
   try {
     // 走项目 api 客户端（自动注入 JWT）
     const meta = await api.get<any>(`/videos/${videoId.value}`);
+    if (disposed || generation !== playbackGeneration) return;
     video.value = meta;
     // 每次重新起播都清掉上一次的"根因错误"留档与重试计数
     firstErrorText = '';
@@ -100,15 +129,16 @@ async function loadVideo() {
       return;
     }
 
-    const tk = await api.post<{ m3u8_url: string; token: string; session_id: string; key_url: string }>(
-      `/playback/${videoId.value}/token`,
-    );
+    const tk = await videoApi.getPlaybackToken(Number(videoId.value));
+    if (disposed || generation !== playbackGeneration) return;
     // 后端返回的 m3u8_url 是相对路径 '/api/v1/playback/{id}/playlist.m3u8?token=...'
     const fullUrl = tk.m3u8_url.startsWith('http')
       ? tk.m3u8_url
       : `${window.location.origin}${tk.m3u8_url}`;
     m3u8Url.value = fullUrl;
     token.value = tk.token;
+    tokenExpiresAt.value = Date.parse(tk.expires_at);
+    scheduleTokenRefresh();
     playbackSessionId.value = tk.session_id || '';
     // ⚠️ **不能**打原始 fullUrl —— 它带着 `?token=<播放 JWT>`。
     //
@@ -177,7 +207,7 @@ async function loadVideo() {
  * <p>重建实例 = 换一套全新的 {@code keyLoaderInfo}（空账本），
  * 从根上避开这个状态；顺带也把上一个实例挂着的请求全部放掉。
  */
-function createPlayer(src: string) {
+function createPlayer(src: string, restore?: { time: number; paused: boolean }) {
   // 先毁掉上一个实例 —— 否则两个实例抢同一个 <video> → MediaSource 冲突
   destroyHls();
 
@@ -228,13 +258,31 @@ function createPlayer(src: string) {
   // 并 catch 浏览器 autoplay 拒绝（NotAllowedError），避免误判成 MEDIA_ERROR。
   // 注意：模板里不放 autoplay 属性，否则 <video> 在 MediaSource 就绪前就会触发一遍未连接 source 的 play。
   instance.on(Hls.Events.MEDIA_ATTACHED, () => {
-    if (!videoEl.value) return;
-    videoEl.value.muted = true;
-    const p = videoEl.value.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch((err: any) =>
-        console.warn('[VideoDetail] autoplay blocked, waiting user gesture:', err?.name || err),
-      );
+    const el = videoEl.value;
+    if (!el) return;
+    if (!restore) el.muted = true;
+    const restoreAndMaybePlay = () => {
+      if (hls.value !== instance || disposed) return;
+      if (restore) {
+        try { el.currentTime = Math.max(0, restore.time); } catch { /* metadata may still be loading */ }
+        if (restore.paused) return;
+      }
+      const p = el.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch((err: any) =>
+          console.warn('[VideoDetail] autoplay blocked, waiting user gesture:', err?.name || err),
+        );
+      }
+    };
+    if (restore) {
+      const onMetadata = () => {
+        el.removeEventListener('loadedmetadata', onMetadata);
+        restoreAndMaybePlay();
+      };
+      el.addEventListener('loadedmetadata', onMetadata);
+      // 等待新 MediaSource 的元数据，不能依赖可能残留的旧源 readyState。
+    } else {
+      restoreAndMaybePlay();
     }
   });
 
@@ -273,6 +321,12 @@ function createPlayer(src: string) {
 
     // 致命：先按类型尝试内置恢复，恢复失败 / 重试用尽再切原生 <video>
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+      // Token expiry can surface as HLS NETWORK_ERROR/401. Single-flight renewal
+      // replaces the source only after the response and preserves latest progress.
+      if (errInfo.status === 401) {
+        void refreshPlaybackToken();
+        return;
+      }
       // 网络类（manifest/segment 404/5xx、secure_link 拒签、AES key 拉取失败、MinIO 文件丢失等）
       if (networkRetries < NETWORK_MAX_RETRIES) {
         networkRetries++;
@@ -331,6 +385,121 @@ function createPlayer(src: string) {
   console.log('[VideoDetail] calling hls.attachMedia...');
   instance.attachMedia(el);
   console.log('[VideoDetail] hls.init done');
+}
+
+/**
+ * 在 JWT 到期前续期。只允许一个请求在途；续期响应必须属于当前组件代次，
+ * 否则路由切换/卸载后的旧响应不能重建播放器或覆盖新 token。
+ */
+function stopTokenRefresh() {
+  if (tokenRefreshTimer !== null) {
+    clearTimeout(tokenRefreshTimer);
+    tokenRefreshTimer = null;
+  }
+}
+
+function scheduleTokenRefresh(retry = false) {
+  stopTokenRefresh();
+  if (disposed || !token.value || !Number.isFinite(tokenExpiresAt.value)) return;
+  const leadMs = 60_000;
+  const delay = retry
+    ? 5_000
+    : Math.max(1_000, tokenExpiresAt.value - Date.now() - leadMs);
+  tokenRefreshTimer = window.setTimeout(() => {
+    tokenRefreshTimer = null;
+    void refreshPlaybackToken();
+  }, delay);
+}
+
+async function refreshPlaybackToken(): Promise<void> {
+  if (disposed || !token.value) return;
+  if (tokenRefreshInFlight) return tokenRefreshInFlight;
+  const generation = playbackGeneration;
+  const oldToken = token.value;
+  const id = Number(videoId.value);
+  let request!: Promise<void>;
+  request = (async () => {
+    // Sample as close as possible to the response, not before the network wait.
+    // This preserves progress made while renewal was in flight.
+    try {
+      const tk = await videoApi.refreshPlaybackToken(id, oldToken);
+      if (disposed || generation !== playbackGeneration || String(videoId.value) !== String(id)) return;
+      const restore = videoEl.value
+        ? { time: Number(videoEl.value.currentTime || 0), paused: videoEl.value.paused }
+        : undefined;
+      if (tk.session_id !== playbackSessionId.value) {
+        console.warn('[VideoDetail] playback renewal returned a different session; refusing it');
+        return;
+      }
+      applyPlaybackToken(tk, generation, restore);
+    } catch (e: any) {
+      if (disposed || generation !== playbackGeneration) return;
+      // A 410 means the old playback token is beyond its short renewal grace.
+      // Re-issue a fresh playback token using the still-authenticated user;
+      // this intentionally creates a new session for an auditable restart.
+      const status = e?.response?.status;
+      if (status === 410) {
+        try {
+          const tk = await videoApi.getPlaybackToken(id);
+          if (disposed || generation !== playbackGeneration || String(videoId.value) !== String(id)) return;
+          const restore = videoEl.value
+            ? { time: Number(videoEl.value.currentTime || 0), paused: videoEl.value.paused }
+            : undefined;
+          applyPlaybackToken(tk, generation, restore);
+          return;
+        } catch {
+          // Fall through to a bounded retry; the current source remains intact.
+        }
+      }
+      if (!disposed && generation === playbackGeneration) {
+        console.warn('[VideoDetail] playback token renewal failed; retrying');
+        scheduleTokenRefresh(true);
+      }
+    } finally {
+      if (tokenRefreshInFlight === request) tokenRefreshInFlight = null;
+    }
+  })();
+  tokenRefreshInFlight = request;
+  return request;
+}
+
+function applyPlaybackToken(
+  tk: { m3u8_url: string; token: string; session_id: string; expires_at: string },
+  generation: number,
+  restore?: { time: number; paused: boolean },
+) {
+  const expiresAt = Date.parse(tk.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    throw new Error('playback token response has invalid expiration');
+  }
+  const fullUrl = tk.m3u8_url.startsWith('http')
+    ? tk.m3u8_url : `${window.location.origin}${tk.m3u8_url}`;
+  token.value = tk.token;
+  m3u8Url.value = fullUrl;
+  tokenExpiresAt.value = expiresAt;
+  playbackSessionId.value = tk.session_id || '';
+  scheduleTokenRefresh();
+  if (hls.value) {
+    createPlayer(fullUrl, restore);
+  } else if (videoEl.value) {
+    const el = videoEl.value;
+    nativeRestoreCleanup?.();
+    el.pause();
+    const restoreNative = () => {
+      nativeRestoreCleanup = null;
+      if (disposed || generation !== playbackGeneration || !videoEl.value) return;
+      try { videoEl.value.currentTime = restore?.time || 0; } catch { /* metadata may still be loading */ }
+      if (restore && !restore.paused) videoEl.value.play()?.catch(() => {});
+    };
+    nativeRestoreCleanup = () => {
+      el.removeEventListener('loadedmetadata', restoreNative);
+      nativeRestoreCleanup = null;
+    };
+    el.addEventListener('loadedmetadata', restoreNative, { once: true });
+    el.src = fullUrl;
+    el.load();
+    if (el.readyState >= 1) restoreNative();
+  }
 }
 
 /** 销毁当前 hls 实例（切视频 / 卸载前都要调） */
@@ -443,6 +612,15 @@ function stopHlsPolling() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true;
+  document.removeEventListener('visibilitychange', onPlaybackVisibilityChange);
+  window.removeEventListener('pageshow', onPlaybackVisibilityChange);
+  window.removeEventListener('online', onPlaybackOnline);
+  playbackGeneration++;
+  stopTokenRefresh();
+  tokenRefreshInFlight = null;
+  nativeRestoreCleanup?.();
+  nativeRestoreCleanup = null;
   // destroy + 置空，避免异步回调（如 token刷新、错误事件）触达已销毁实例
   stopHlsPolling();
   destroyHls();

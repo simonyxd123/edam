@@ -527,14 +527,14 @@ class PlaybackControllerTest {
     }
 
     @Test
-    @DisplayName("播放日志：token 无效 ⇒ 401，不落库")
+    @DisplayName("播放日志：token 无效 ⇒ 410，不落库")
     void playLogWithInvalidTokenRejected() {
         when(jwtTokenProvider.parseAndValidate("bad")).thenThrow(new IllegalArgumentException("bad"));
 
         ResponseEntity<Void> resp =
             controller.reportLog(1L, "bad", logRequest("sess-1"), 7L, request());
 
-        assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+        assertEquals(HttpStatus.GONE, resp.getStatusCode());
         verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
@@ -580,4 +580,71 @@ class PlaybackControllerTest {
         assertEquals(HttpStatus.FORBIDDEN, resp.getStatusCode());
         verify(playLogService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
     }
+
+    @Test
+    @DisplayName("播放 token 续期：沿用原 session_id 且返回新过期时间")
+    void refreshReusesSessionId() {
+        io.jsonwebtoken.Claims old = playbackClaims("7", "sess-stable");
+        when(jwtTokenProvider.parsePlaybackTokenForRenewal("old")).thenReturn(old);
+        when(jwtTokenProvider.isPlaybackTokenFor(any(), any())).thenReturn(true);
+        when(videoService.getById(1L)).thenReturn(new VideoResource());
+        when(videoPermissionService.canView(any(), any())).thenReturn(true);
+        when(jwtTokenProvider.createPlaybackToken(7L, 1L, "sess-stable")).thenReturn("new-token");
+        io.jsonwebtoken.Claims renewed = mock(io.jsonwebtoken.Claims.class);
+        when(renewed.getExpiration()).thenReturn(new java.util.Date(1_800_000_000_000L));
+        when(jwtTokenProvider.parseAndValidate("new-token")).thenReturn(renewed);
+        when(jwtTokenProvider.expirationEpochSecond(renewed)).thenReturn(1_800_000_000L);
+
+        ResponseEntity<Map<String, Object>> response =
+            controller.refreshToken(1L, "old", 7L);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("sess-stable", response.getBody().get("session_id"));
+        assertEquals("new-token", response.getBody().get("token"));
+        verify(jwtTokenProvider).createPlaybackToken(7L, 1L, "sess-stable");
+    }
+
+    @Test
+    @DisplayName("播放 token 续期：旧 token 无法验签 ⇒ 410 且不创建新 token")
+    void refreshRejectsInvalidToken() {
+        when(jwtTokenProvider.parsePlaybackTokenForRenewal("bad"))
+            .thenThrow(new IllegalArgumentException("bad"));
+
+        ResponseEntity<Map<String, Object>> response =
+            controller.refreshToken(1L, "bad", 7L);
+
+        assertEquals(HttpStatus.GONE, response.getStatusCode());
+        verify(jwtTokenProvider, never()).createPlaybackToken(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放 token 续期：scope 不匹配 ⇒ 410 且不创建新 token")
+    void refreshRejectsInvalidScopeWithGone() {
+        io.jsonwebtoken.Claims old = playbackClaims("7", "sess-stable");
+        when(jwtTokenProvider.parsePlaybackTokenForRenewal("wrong-scope")).thenReturn(old);
+        when(jwtTokenProvider.isPlaybackTokenFor(any(), any())).thenReturn(false);
+
+        ResponseEntity<Map<String, Object>> response =
+            controller.refreshToken(1L, "wrong-scope", 7L);
+
+        assertEquals(HttpStatus.GONE, response.getStatusCode());
+        verify(jwtTokenProvider, never()).createPlaybackToken(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("播放 token 续期：权限在续期时被撤销 ⇒ 403")
+    void refreshRechecksPermission() {
+        io.jsonwebtoken.Claims old = playbackClaims("7", "sess-stable");
+        when(jwtTokenProvider.parsePlaybackTokenForRenewal("old")).thenReturn(old);
+        when(jwtTokenProvider.isPlaybackTokenFor(any(), any())).thenReturn(true);
+        when(videoService.getById(1L)).thenReturn(new VideoResource());
+        when(videoPermissionService.canView(any(), any())).thenReturn(false);
+
+        ResponseEntity<Map<String, Object>> response =
+            controller.refreshToken(1L, "old", 7L);
+
+        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+        verify(jwtTokenProvider, never()).createPlaybackToken(any(), any(), any());
+    }
+
 }

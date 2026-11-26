@@ -138,6 +138,10 @@ public class SmJwtTokenProvider {
      * {@code parseSignedClaims} 会直接抛异常。所以这里手工验签 + 手工解析 payload。
      */
     public Claims parseToken(String token) {
+        return parseTokenInternal(token, true);
+    }
+
+    private Claims parseTokenInternal(String token, boolean enforceExpiration) {
         if (token == null || token.isBlank()) {
             throw new IllegalArgumentException("Token is empty");
         }
@@ -191,10 +195,15 @@ public class SmJwtTokenProvider {
         if (!(exp instanceof Number expSeconds)) {
             throw new IllegalArgumentException("GS256 token 缺少 exp claim");
         }
-        if (expSeconds.longValue() <= System.currentTimeMillis() / 1000) {
+        if (enforceExpiration && expSeconds.longValue() <= System.currentTimeMillis() / 1000) {
             throw new IllegalArgumentException("JWT 已过期");
         }
         return result;
+    }
+
+    /** 验证 GS256 签名并解析 claims，但不执行 exp 检查，仅供安全续期流程使用。 */
+    public Claims parseTokenForRenewal(String token) {
+        return parseTokenInternal(token, false);
     }
 
     /**
